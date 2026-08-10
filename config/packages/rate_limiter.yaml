@@ -1,0 +1,8 @@
+framework:
+    rate_limiter:
+        # '/mot-de-passe/oubli' est public ET envoie un courriel : sans limite on inonde la boîte
+        # de n'importe qui et on brûle le quota SMTP de l'hébergement.
+        mot_de_passe:
+            policy: 'sliding_window'
+            limit: 5
+            interval: '15 minutes'

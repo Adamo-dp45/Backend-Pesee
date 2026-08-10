@@ -1,0 +1,23 @@
+api_platform:
+    title: Backend Webpesee
+    version: 1.0.0
+    defaults:
+        stateless: true
+        cache_headers:
+            vary: ['Content-Type', 'Authorization', 'Origin']
+
+        # Plafond de la taille de page. Les ressources autorisent le client à choisir
+        # ('paginationClientItemsPerPage'), ce qui sans borne laisse demander 'itemsPerPage=50000' :
+        # une seule requête hydrate alors toute la table et fait tomber le serveur. Le web se limite
+        # déjà à 100, mais l'API est ouverte à tout porteur de jeton, compte machine compris.
+        pagination_maximum_items_per_page: 100
+    eager_loading:
+        max_joins: 50 # Vu qu'une entité peut porter plus de 4 relations or 'ApiPlatform' a une limite de jointures de l'eager-loading '30' par défaut
+
+    show_webby: false # Permet de désactivé l'arraigné
+    use_symfony_listeners: true # Permet d'utiliser le Controller pour les opérations personalisés, va activé l'intégration avec le système de routing de symfony et enregistré automatiquement les controllers comme services
+
+    formats: # Pour definir les formats qu'on veut supporter
+        jsonld: ['application/ld+json']
+        json: ['application/json']
+        multipart : ['multipart/form-data']

@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# This file is the entry point to configure your own services.
+# Files in the packages/ subdirectory configure your dependencies.
+# See also https://symfony.com/doc/current/service_container/import.html
+
+parameters:
+    app.mailer.email: '%env(MAILER_FROM_EMAIL)%'
+    app.mailer.name: '%env(MAILER_FROM_NAME)%'
+    app.api.url: '%env(DEFAULT_URI)%'
+
+services:
+    _defaults:
+        autowire: true      # Automatically injects dependencies in your services.
+        autoconfigure: true # Automatically registers your services as commands, event subscribers, etc.
+
+    App\:
+        resource: '../src/'
+
+    # On décore la fabrique native pour ajouter le schéma 'bearerAuth' aux spécifications OpenApi
+    App\ApiPlatform\OpenApi\OpenApiFactory:
+        decorates: 'api_platform.openapi.factory'
+        arguments: ['@App\ApiPlatform\OpenApi\OpenApiFactory.inner']
+        autoconfigure: false
+
+    # Un seul '_instanceof' : deux clés identiques en YAML, la seconde écrase la première sans rien signaler
+    _instanceof:
+        # Injecte la persistance native d'API Platform dans tous nos processeurs, sous '$processor'
+        ApiPlatform\State\ProcessorInterface:
+            bind:
+                $processor: '@api_platform.doctrine.orm.state.persist_processor'
+
+    # La passerelle mobile money active. En brancher une vraie = changer cette seule ligne,
+    # sans registre ni variable d'environnement tant qu'il n'y en a qu'une à la fois.
+    App\Domain\Paiement\PasserellePaiementInterface: '@App\Domain\Paiement\PasserelleSimulee'
+
+    # L'adresse que le poste de pesée inscrira dans son fichier de configuration
+    App\Domain\Service\CompteMachineService:
+        arguments:
+            $urlApi: '%app.api.url%'

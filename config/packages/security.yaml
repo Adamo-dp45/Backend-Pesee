@@ -1,0 +1,79 @@
+security:
+    password_hashers:
+        Symfony\Component\Security\Core\User\PasswordAuthenticatedUserInterface: 'auto'
+
+    providers:
+        app_user_provider:
+            entity:
+                class: App\Entity\User
+                property: email
+
+    firewalls:
+        dev:
+            pattern: ^/(_profiler|_wdt|assets|build)/
+            security: false
+
+        # Pare-feu distinct du reste de l'API : utiliser un autre provider pour la connexion que
+        # pour les requêtes authentifiées provoque des incohérences au refresh.
+        login:
+            pattern: ^/api/login_check
+            provider: app_user_provider # Pour aller lire le compte en base
+            stateless: true
+            json_login:
+                check_path: /api/login_check
+                username_path: username
+                password_path: password
+                success_handler: lexik_jwt_authentication.handler.authentication_success
+                failure_handler: App\Security\LoginFailureHandler # Pour distinguer le 429 du 401
+            user_checker: App\Security\UserChecker # L'ordre compte : il joue avant l'émission du jeton
+            login_throttling:
+                max_attempts: 4
+                interval: '15 minutes'
+
+        api:
+            pattern: ^/api
+            stateless: true
+            provider: app_user_provider # Et non 'jwt' : 'JWTSubscriber' relit le compte à chaque requête
+            jwt: ~
+            refresh_jwt:
+                check_path: /api/token/refresh
+            logout:
+                path: /api/token/invalidate # Révoque le refresh token en base
+            entry_point: jwt
+
+    # Seule la *première* règle qui correspond est appliquée : on ouvre le strict nécessaire,
+    # puis on ferme tout le reste.
+    access_control:
+        # Authentification et cycle de vie du mot de passe. 'token/refresh' et 'token/invalidate'
+        # doivent rester ouverts : par définition on les appelle quand le jeton d'accès est expiré.
+        #
+        # '/register' n'y figure PLUS : l'inscription est réservée au super administrateur. La
+        # laisser ici la rendrait joignable sans jeton, et un appel anonyme se verrait refusé par le
+        # voter avec un 403 — alors que la vraie réponse est 401, « identifiez-vous d'abord ».
+        #
+        # ATTENTION : ces règles ne suffisent pas pour une opération API Platform. Le 'security:'
+        # déclaré au niveau d'une ressource s'applique à TOUTES ses opérations, y compris celles
+        # qu'on veut publiques — chacune doit donc porter explicitement
+        # 'security: "is_granted(\'PUBLIC_ACCESS\')"', sans quoi l'oubli de mot de passe répond
+        # « JWT Token not found », c'est-à-dire qu'il faudrait être connecté pour le réinitialiser.
+        - { path: '^/api/(login_check|token/refresh|token/invalidate)$', roles: PUBLIC_ACCESS }
+        - { path: '^/api/mot-de-passe/(oubli|reinitialisation)$', roles: PUBLIC_ACCESS }
+
+        # Notifications des passerelles de paiement mobile : elles s'authentifient par signature du
+        # corps de la requête, l'agrégateur ne possède aucun compte.
+        - { path: '^/api/webhooks/', roles: PUBLIC_ACCESS }
+
+        # Point d'entrée et documentation interactive (à couper en production, voir api_platform.yaml).
+        - { path: '^/api(/docs|/\.well-known|/contexts|$)', roles: PUBLIC_ACCESS }
+
+        # Filet : tout le reste exige un jeton valide, y compris un contrôleur qui oublierait son '#[IsGranted]'.
+        - { path: '^/api', roles: IS_AUTHENTICATED_FULLY }
+
+when@test:
+    security:
+        password_hashers:
+            Symfony\Component\Security\Core\User\PasswordAuthenticatedUserInterface:
+                algorithm: auto
+                cost: 4
+                time_cost: 3
+                memory_cost: 10
