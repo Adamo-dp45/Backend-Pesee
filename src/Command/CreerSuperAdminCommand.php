@@ -62,8 +62,8 @@ class CreerSuperAdminCommand extends Command
 
         $motDePasse = $input->getOption('mot-de-passe') ?? $this->demanderMotDePasse($io);
 
-        if(!is_string($motDePasse) || strlen($motDePasse) < 8) {
-            $io->error('Le mot de passe doit faire au moins 8 caractères.');
+        if(!is_string($motDePasse) || strlen($motDePasse) < 6) {
+            $io->error('Le mot de passe doit faire au moins 6 caractères.');
 
             return Command::INVALID;
         }

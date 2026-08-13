@@ -244,6 +244,13 @@ class Site extends EntityBase implements EntrepriseOwnedInterface
     private ?string $motDePasseMachine = null;
 
     /*
+        - L'identifiant du compte machine, posé par les mêmes opérations et dans le même groupe que le mot de passe ci-dessus : les deux vont ensemble, un écran qui affiche l'un sans l'autre ne remet rien d'utilisable à l'installateur.
+        - Il se déduit du code du site, mais la règle de composition appartient à 'CompteMachineService' : l'entité le REÇOIT plutôt que de recopier le domaine, sinon les deux se contrediraient au premier changement.
+    */
+    #[Groups(['read:Site:machine'])]
+    private ?string $identifiantMachine = null;
+
+    /*
         - Le fichier de configuration à déposer sur le poste, composé par 'CompteMachineService' et posé ici par les deux mêmes opérations. Non persisté lui aussi : il ne contient rien que le mot de passe ci-dessus ne rende déjà sensible.
      */
     /** @var array<string, mixed>|null */
@@ -370,6 +377,18 @@ class Site extends EntityBase implements EntrepriseOwnedInterface
     public function setMotDePasseMachine(?string $motDePasseMachine): static
     {
         $this->motDePasseMachine = $motDePasseMachine;
+
+        return $this;
+    }
+
+    public function getIdentifiantMachine(): ?string
+    {
+        return $this->identifiantMachine;
+    }
+
+    public function setIdentifiantMachine(?string $identifiantMachine): static
+    {
+        $this->identifiantMachine = $identifiantMachine;
 
         return $this;
     }

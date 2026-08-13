@@ -62,15 +62,12 @@ use Symfony\Component\Validator\Constraints as Assert;
                 security: [['bearerAuth' => []]]
             )
         ),
-        new Post(
-            security: "is_granted('CREER', 'Entreprise')",
-            processor: AuditProcessor::class,
-            openapi: new Operation(
-                summary: 'Création d\'une entreprise',
-                description: 'Provisionnement manuel par le super administrateur. Le parcours courant est /register',
-                security: [['bearerAuth' => []]]
-            )
-        ),
+        /*
+            - Pas de 'Post' ici, et c'est délibéré : une entreprise ne naît qu'avec son premier
+              administrateur, par '/register'. La créer seule laissait un client que personne ne
+              pouvait ouvrir, et qu'il fallait rattraper par une seconde manipulation.
+            - Le droit 'CREER' sur cette ressource existe toujours : c'est lui que '/register' exige.
+        */
         new Patch(
             security: "is_granted('MODIFIER', object)",
             requirements: ['id' => '\d+'],

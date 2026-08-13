@@ -29,7 +29,9 @@ class RegenererIdentifiantsProcessor implements ProcessorInterface
     {
         $motDePasse = $this->compteMachine->regenerer($data);
 
+        // L'identifiant ET le mot de passe : le renouvellement réécrit les deux, l'écran doit remettre les deux
         $data
+            ->setIdentifiantMachine($this->compteMachine->identifiant($data))
             ->setMotDePasseMachine($motDePasse)
             ->setConfiguration($this->compteMachine->configuration($data, $motDePasse));
 
