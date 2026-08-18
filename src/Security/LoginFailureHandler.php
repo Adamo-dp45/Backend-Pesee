@@ -10,8 +10,7 @@ use Symfony\Component\Security\Core\Exception\TooManyLoginAttemptsAuthentication
 use Symfony\Component\Security\Http\Authentication\AuthenticationFailureHandlerInterface;
 
 /*
-    - Sans lui, 'login_throttling' répond 401 comme un simple mauvais mot de passe et le frontend
-      affiche « identifiants invalides » à quelqu'un qui est en réalité bloqué quinze minutes.
+    - Sans lui, 'login_throttling' répond 401 comme un simple mauvais mot de passe et le frontend affiche « identifiants invalides » à quelqu'un qui est en réalité bloqué quinze minutes.
 */
 class LoginFailureHandler implements AuthenticationFailureHandlerInterface
 {
