@@ -23,12 +23,15 @@ interface PasserellePaiementInterface
      */
     public function verifier(string $reference): ResultatVersement;
 
+    /** L'en-tête où l'agrégateur dépose sa signature. Chacun a la sienne — 'X-Signature', 'X-Token', 'Verify-Hash' — et c'est à la passerelle de la nommer, pas au contrôleur. */
+    public function enteteSignature(): string;
+
     /**
      * Vérifie l'authenticité d'une notification entrante. L'agrégateur n'a pas de compte chez nous : c'est la signature du corps qui l'authentifie, jamais un jeton.
      *
-     * @param array<string, mixed> $corps
+     * Le corps arrive BRUT, tel qu'il a été reçu sur le réseau. Le décoder puis le réencoder pour calculer l'empreinte donnerait un autre texte — ordre des clés, espaces, échappement des accents — et donc une autre signature : le contrôle échouerait sur des notifications parfaitement légitimes.
      */
-    public function notificationAuthentique(array $corps, ?string $signature): bool;
+    public function notificationAuthentique(string $corpsBrut, ?string $signature): bool;
 
     /**
      * Traduit une notification en résultat.

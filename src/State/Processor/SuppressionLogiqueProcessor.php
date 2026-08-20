@@ -6,6 +6,8 @@ use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use App\Entity\EntityBase;
 use App\Entity\User;
+use App\Domain\Enum\TypeActivite;
+use App\Domain\Service\ActiviteLogger;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 
@@ -21,7 +23,8 @@ class SuppressionLogiqueProcessor implements ProcessorInterface
 {
     public function __construct(
         private EntityManagerInterface $em,
-        private Security $security
+        private Security $security,
+        private ActiviteLogger $activites
     )
     {
     }
@@ -39,6 +42,21 @@ class SuppressionLogiqueProcessor implements ProcessorInterface
         if($auteur instanceof User) {
             $data->setDeletedBy($auteur->getId());
         }
+
+        /*
+            - 'deletedBy' et 'deletedAt' disent qui a supprime — mais la restauration les efface et la
+              purge emporte la ligne entiere. Le journal, lui, garde le souvenir du geste.
+        */
+        $this->activites->log(
+            TypeActivite::CORBEILLE_SUPPRESSION,
+            sprintf(
+                '%s a mis a la corbeille %s %s',
+                $auteur instanceof User ? $auteur->getNomComplet() : 'Le systeme',
+                strtolower(substr(strrchr($data::class, chr(92)), 1)),
+                (string) $data
+            ),
+            $data
+        );
 
         $this->em->flush();
 

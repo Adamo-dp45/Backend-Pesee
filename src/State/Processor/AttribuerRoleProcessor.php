@@ -8,6 +8,8 @@ use App\Entity\Input\AttribuerRoleInput;
 use App\Entity\User;
 use App\Repository\UserRepository;
 use App\Security\UserGuard;
+use App\Domain\Enum\TypeActivite;
+use App\Domain\Service\ActiviteLogger;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -26,7 +28,8 @@ class AttribuerRoleProcessor implements ProcessorInterface
         private EntityManagerInterface $em,
         private Security $security,
         private UserGuard $userGuard,
-        private UserRepository $userRepository
+        private UserRepository $userRepository,
+        private ActiviteLogger $activites
     )
     {
     }
@@ -49,7 +52,22 @@ class AttribuerRoleProcessor implements ProcessorInterface
             $cible->setUpdatedBy($auteur->getId());
         }
 
+        // Lu AVANT l'ecrasement : c'est le couple ancien -> nouveau qui fait la valeur de la trace
+        $ancien = $cible->getRolePrincipal()?->libelle() ?? 'aucun role';
+
         $cible->setRoles([$role]);
+
+        $this->activites->log(
+            TypeActivite::USER_ROLE,
+            sprintf(
+                '%s a change le role de %s : %s -> %s',
+                $auteur instanceof User ? $auteur->getNomComplet() : 'Le systeme',
+                $cible->getNomComplet(),
+                $ancien,
+                $cible->getRolePrincipal()?->libelle() ?? $role
+            ),
+            $cible
+        );
 
         $this->em->flush();
 

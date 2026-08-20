@@ -6,6 +6,10 @@ use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use App\Domain\Service\CompteMachineService;
 use App\Entity\Site;
+use App\Entity\User;
+use Symfony\Bundle\SecurityBundle\Security;
+use App\Domain\Enum\TypeActivite;
+use App\Domain\Service\ActiviteLogger;
 use Doctrine\ORM\EntityManagerInterface;
 
 /*
@@ -20,7 +24,9 @@ class RegenererIdentifiantsProcessor implements ProcessorInterface
 {
     public function __construct(
         private CompteMachineService $compteMachine,
-        private EntityManagerInterface $em
+        private EntityManagerInterface $em,
+        private ActiviteLogger $activites,
+        private Security $security
     )
     {
     }
@@ -34,6 +40,23 @@ class RegenererIdentifiantsProcessor implements ProcessorInterface
             ->setIdentifiantMachine($this->compteMachine->identifiant($data))
             ->setMotDePasseMachine($motDePasse)
             ->setConfiguration($this->compteMachine->configuration($data, $motDePasse));
+
+        /*
+            - Le seul geste de l'application qui ne laissait rien du tout : pas meme un 'updatedBy'.
+              Un poste qui cesse de synchroniser apres un renouvellement devenait alors une enigme.
+        */
+        $auteur = $this->security->getUser();
+
+        $this->activites->log(
+            TypeActivite::SITE_IDENTIFIANTS,
+            sprintf(
+                '%s a renouvele les identifiants du poste %s (%s)',
+                $auteur instanceof User ? $auteur->getNomComplet() : 'Le systeme',
+                (string) $data->getLibellesite(),
+                (string) $data->getCode()
+            ),
+            $data
+        );
 
         $this->em->flush();
 

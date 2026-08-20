@@ -1,6 +1,5 @@
 ### Brl
 
-- 
 - **Command**
     > php -S localhost:8000 -t public | symfony serve
     > php bin/console cache:clear
@@ -41,10 +40,7 @@
 - 
 
 - 
-- Dans le select de voyage de la partie création de tickets les voyages n'affiche pas un voyage quand la date de départ est dépassé ! 
 - jspdf, jspdf-autotable, xlsx, xlsx-js-style à reprendre sur github
-.. Api payment : Cinetpay, FedaPay, PayDunya, Hub2, Paystack, BUI == Agrégateurs
-PaiementPro, Stripe :: Webpesee
 Chatgpt : Génération d'images, créatif, tout en un
 Claude : Analyse approfondie, développement, rédaction professionnelle
 
@@ -81,15 +77,6 @@ Claude : Analyse approfondie, développement, rédaction professionnelle
         > php bin/console doctrine:migrations:migrate --no-interaction
         > php bin/console cache:clear --env=prod
         > php bin/console cache:warmup --env=prod
-
-- **Bon à savoir**
-    > Après avoir modifié un groupe de sérialisation, `cache:clear` ne suffit pas :
-      `php bin/console cache:pool:clear --all`, sinon l'API répond avec l'ancienne forme.
-    > Les extensions Doctrine ne cloisonnent pas les requêtes écrites à la main : statistiques,
-      bilan et exports passent par `TenantContext`.
-    > Le mot de passe d'un compte machine n'est renvoyé qu'à sa création ou à sa régénération,
-      et n'est stocké nulle part en clair.
-
 
     "scripts": {
         "auto-scripts": {
@@ -131,7 +118,7 @@ Claude : Analyse approfondie, développement, rédaction professionnelle
         "test": "Prépare la base de test et lance la suite PHPUnit",
         "stan": "Analyse statique PHPStan",
         "lint": "Vérifications rapides du conteneur, des YAML et du mapping Doctrine"
-    },
+    }
 
 
 root@webpesee.com
@@ -146,47 +133,184 @@ Elle refuse une adresse invalide, une adresse déjà prise, un mot de passe de m
 
 
 
+## Le fuseau horaire en UTC
+
+Il n'y avait **aucun réglage** : le fuseau venait du `php.ini` de la machine. Sur ton poste il se trouve qu'aucun n'est déclaré, donc PHP retombait sur UTC — par chance, pas par décision. Un hébergeur en `Europe/Paris` aurait décalé les pesées de deux heures sans que rien ne le signale.
+
+Posé à trois endroits, un par couche :
+
+| Où | Quoi | Pourquoi là |
+|---|---|---|
+| `src/Kernel.php` (les deux projets) | `date_default_timezone_set('UTC')` dans le constructeur | le **seul** point que traversent les trois portes d'entrée : HTTP, console et tests |
+| `config/packages/twig.yaml` (les deux) | `date: timezone: UTC` | Twig suit sinon `date_default_timezone_get()` — l'écrire le met à l'abri d'un `php.ini` |
+| `assets/react/components/cellules.tsx` | `timeZone: 'UTC'` | PHP ne décide de rien dans le navigateur : c'est lui qui formatait avec le fuseau de la machine du lecteur |
+
+Vérifié en simulant un hébergeur mal réglé :
+
+```
+php.ini simulé = Europe/Paris (11:56 CEST)  ->  noyau = UTC (09:56 UTC)
+```
+
+Deux remarques :
+
+- **Le fuseau de MySQL n'entre pas en jeu.** J'ai cherché `NOW()`, `CURDATE()`, `CURRENT_TIMESTAMP` dans tout `src/` : rien. Toutes les dates sont écrites et relues par PHP, y compris le journal de synchronisation qui passe pourtant en SQL direct — il formate la date côté PHP. Je n'ai donc pas ajouté de `SET time_zone` qui n'aurait rien changé.
+- **Au passage, une duplication retirée.** `TablePesees` et `TableAPayer` recopiaient le formatage de date au lieu d'utiliser `dateHeure`. Elles passent maintenant par les fonctions partagées (`dateHeure`, et une nouvelle `dateSeule` pour la date sans l'heure) — sans quoi il aurait fallu poser le fuseau à trois endroits, avec la certitude qu'un quatrième écran l'oublierait.
 
 
 
 
-Le message de correction des dropdownMenu dans les table.tsx
-
-- Met le fuseau horaire de l'application à UTC
-- Sache que j'ai supprimé le `Backend-Webpesee/`, j'espère que tu n'en a plus besoin !
 
 
+Ce qui reste sur la corbeille et l'audit : rien de bloquant. La liste des types dans ActiviteController::TYPES recopie l'énumération de l'API — c'est signalé en commentaire, comme pour le dictionnaire des états, parce qu'une liste déroulante a besoin de ses valeurs avant d'avoir des données à afficher. :: Ici je me dis qu'on pourrait juste renvoyer celui de l'api via un endpoint
+
+Deux détails utiles : deletedBy est un entier illisible, la corbeille rend donc un nom (résolu en une requête pour toute la page), et chaque ligne porte d'où elle venait — sans quoi deux « Hévéa » de deux postes se confondent.
+Le cas qui compte le plus : la purge est journalisée avant l'effacement, et la trace survit. C'est possible parce que le journal ne pointe sa cible que par un type et un identifiant, sans clé étrangère — je l'avais conçu ainsi hier, et c'est ce qui permet aujourd'hui de garder le souvenir d'une ligne qui n'existe plus.
+
+J'ajouterai aussi un garde-fou que Transport n'a pas : **restaurer est refusé si un homonyme vivant existe**, parce que `UniqueParSite` ne compare qu'aux lignes vivantes — restaurer « HEVEA » alors qu'un « Hévéa » a été recréé entre-temps donnerait deux référentiels pour la même chose.
+
+Audit — le grand livre trace déjà l'argent. L'audit ne doit donc pas le doubler : il trace les décisions qui ne laissent aucune trace aujourd'hui.
+    - **La tarification a son propre processor.** [TarificationProcessor](Backend-Webpesee-V2/src/State/Processor/TarificationProcessor.php) remplace `AuditProcessor` sur le PATCH de `Produit` et `Fournisseur`, pour une seule raison : lire le prix **avant**. Il le prend dans l'instantané que Doctrine garde depuis le chargement — encore intact à ce moment-là, le calcul des changements n'ayant pas eu lieu. Une modification qui ne touche pas au prix n'écrit rien : journaliser chaque frappe noierait les décisions qui comptent.
+    - **L'entreprise vient de la cible, pas de l'acteur.** C'est l'écart avec Transport, imposé par le super administrateur : il n'appartient à aucune entreprise mais renouvelle des identifiants et désactive des clients. Prendre son entreprise ne donnerait rien, et le journal du client perdrait précisément les gestes venus de l'extérieur.
+    - **Une trace qui échoue ne fait jamais échouer le geste.** Un blocage de poste refusé parce que l'audit a eu un hoquet serait pire que l'absence de trace.
+    - Le journal est en **lecture seule** (405 sur un POST), cloisonné par entreprise, et réservé à l'administrateur et à l'agent — l'opérateur reçoit 403, c'est un écran de supervision.
+    - [JournalActiviteTest] — **10 cas**, dont trois qui fixent ce que le journal ne doit **pas** faire : ne pas doubler le grand livre, ne pas s'écrire par l'API, ne pas fuiter chez le voisin.
 
 
-# Paiement
 
-**La caisse.** [CaisseService.php](Backend-Webpesee-V2/src/Domain/Service/Caisse/CaisseService.php) est le seul point qui touche un solde : `refresh()` avec `PESSIMISTIC_WRITE`, ordre de verrouillage entreprise→site systématique, et chaque écriture produit sa ligne de grand livre avec `soldeAvant`/`soldeApres`. [PaiementService.php](Backend-Webpesee-V2/src/Domain/Service/Caisse/PaiementService.php) réserve les fonds **avant** l'appel passerelle, dans la même transaction que la création du paiement, borne sur la somme *engagée* (pas confirmée), et `appliquerResultat()` est idempotent pour absorber webhook + réconciliation.
+- On.. normalisation du numéro de téléphone du planteur pour les agrégateurs
+
+## Point 2 — normalisation du numéro
+
+Une seule règle, dans [NumeroMobile.php](Backend-Webpesee-V2/src/Domain/Support/NumeroMobile.php) : tout ce qui entre devient `+2250701020304`. Elle est tirée par les trois portes du numéro, jamais recopiée.
+
+| Porte | Comportement |
+|---|---|
+| Formulaire web | `#[NumeroMobileValide]` sur `contact1`/`contact2` → **refus** avec un exemple dans le message |
+| Synchronisation du poste | **accepte** quand même (elle n'a pas de second essai : un refus perdrait la pesée), la valeur reste telle quelle et `getMotifNonPayable()` la dénonce |
+| Numéro de circonstance | normalisé dans `PaiementService::initier()` **avant** que les fonds ne soient réservés |
+
+Les fiches déjà en base ne se corrigent pas toutes seules — d'où `app:fournisseurs:normaliser-numeros` (`make numeros` pour le `--dry-run`). Passée sur ta base de dev, elle a réécrit 4 planteurs et signalé une saisie que personne ne peut deviner :
+
+```
+#6 sssjsjss — contact1 : 05410
+```
+
+Elle ne corrige jamais un numéro incomplet : deviner le chiffre manquant enverrait l'argent chez quelqu'un d'autre.
+
+Effet de bord que j'ai dû réparer : le déclencheur d'échec de `PasserelleSimulee` testait le **début** du numéro (`00`) — depuis la normalisation ils commencent tous par `+225`, il ne se serait plus jamais déclenché. Il porte maintenant sur la fin.
+
+## Point 3 — signature du webhook
+
+Le défaut réel était de calculer l'empreinte sur le tableau **décodé** : réencoder change le texte (ordre des clés, espaces, accents échappés) donc l'empreinte, et le contrôle aurait refusé des notifications légitimes.
+
+- `notificationAuthentique(string $corpsBrut, …)` — le corps brut, vérifié **avant** tout décodage
+- HMAC-SHA256 + `hash_equals`, secret dans `PASSERELLE_SECRET`
+- **Secret vide ⇒ tout est refusé.** Une variable oubliée en production ouvrirait sinon un point d'entrée public capable de créditer n'importe quelle pesée
+- `enteteSignature()` sur l'interface : chaque agrégateur nomme le sien, le contrôleur n'est plus à rouvrir
+
+Trois tests, dont celui qui attrape précisément le piège : un corps aux clés dans un autre ordre, signé tel quel, doit passer.
+
+## Point 4 — réconciliation planifiée
+
+`make cron` sort la ligne à coller, avec `flock -n` : deux exécutions qui se chevauchent pourraient rembourser deux fois le même versement.
+
+Mais un cron s'arrête sans rien dire, et personne ne surveille le surveillant. `/api/stats/caisse` porte donc `versementsEnVol` et `attenteMinutes`, et l'écran Caisse lève une alerte au-delà de 30 minutes. Le message ne désigne pas de coupable — l'agrégateur peut tarder sans que rien ne soit cassé — il dit quoi regarder.
+
+## Au passage
+
+Les numéros stockés étant devenus illisibles à l'œil, le regroupement se fait à l'**affichage** seulement : filtre Twig `numero` et son pendant React dans `cellules.tsx`. J'ai supprimé `NumeroMobile::afficher()` du backend — une API JSON ne met pas en forme, et un helper inutilisé finit par être branché sur un champ sérialisé.
+
+## Ce qui reste, et qui dépend de l'agrégateur
+
+- écrire le vrai `PasserelleXxx` et changer l'alias dans `services.yaml` (une ligne)
+- décider si `ReseauMobile` se déduit du préfixe plutôt que d'être saisi
+- **modéliser les frais de transaction** — rien ne les représente aujourd'hui, et ils sortiront bien de quelque part
+
+
+
+
+
+
+
+
+* .. Api payment : Cinetpay, PawaPay, LigdiCach, PaiementPro, PayDunya, FedaPay, Hub2, Paystack, BUI
+    > 
+
+- Le paiement
+    > L..
+        > Le paiement porte sur une pesée terminée payable en plusieurs fois
+        > La recharge du solde entreprise est saisi par l'administrateur
+    > Dans le cas.. le paiement est un `décaissement` l'entreprise envoie vers le mobile money d'un planteur
+    > La `CaisseService.php` est le point qui touche un solde, `refresh()` pour l'ordre de verrouillage entreprise→site systématique et chaque écriture produit sa ligne de grand livre avec `soldeAvant` et `soldeApres`
+        > La méthode `rechargerEntreprise()` pour recharger le solde de l'entreprise
+        >  !! `doterSite()` pour l'attribution de l'entreprise et la dotation du site
+        > L'exception `UnprocessableEntityHttpException` si le solde est insuffisant
+    > Le `PaiementService.php` réserve les fonds avant l'appel passerelle, dans la même transaction que la création du paiement, borne sur la somme engagée ou pas confirmée et `appliquerResultat()` est idempotent pour absorber webhook + réconciliation
+    > La réconciliation des paiements doit être planifiée `app:paiements:reconcilier` sinon un un versement dont la notification se perd reste en vol indéfiniment ce qui immobilise l'argent
+
+### Le point qu'on découvre trop tard : le flottant
+
+La distinction n'est pas académique : les API, les tarifs, les habilitations et surtout **le financement** diffèrent. Beaucoup de prestataires ouvrent la collecte tout de suite et le décaissement seulement après vérification de l'entreprise.
+
+Un décaissement ne va pas « chercher » l'argent au moment du clic. Il puise dans un **compte de flottant** que l'entreprise a **provisionné à l'avance** chez l'agrégateur, par virement bancaire. Flottant vide = tous les versements échouent, quels que soient les soldes affichés dans Webpesee.
+
+**Cela dit quelque chose d'important sur votre modèle** : le `solde` d'un pont bascule est une **allocation de gestion**, pas un coffre. Il n'existe qu'une seule poche d'argent réelle — le flottant. Les caisses par poste disent « ce poste a le droit de dépenser tant » ; c'est un budget. Quelqu'un finira par se demander pourquoi la somme des caisses ne correspond à aucun relevé bancaire : mieux vaut l'écrire quelque part dès maintenant.
+
+### Qui appelle-t-on
+
+- **Un agrégateur** — un contrat, une API, les quatre réseaux. En Côte d'Ivoire : CinetPay, PayDunya, Hub2, InTouch. C'est le choix par défaut, et c'est exactement ce que `PasserellePaiementInterface` suppose.
+- **Les opérateurs en direct** (Orange Money, MTN MoMo, Wave) — meilleurs tarifs à gros volume, mais quatre contrats, quatre intégrations, **quatre flottants à approvisionner** et quatre réconciliations. À envisager seulement après.
+
+### La forme de l'échange
+
+Elle est la même partout, et c'est pourquoi votre interface n'a rien à changer :
+
+1. **S'authentifier** — clé + secret, souvent contre un jeton à durée de vie courte.
+2. **Décaisser** — montant, devise `XOF`, **numéro au format international**, opérateur, et **votre propre référence** qui sert de clé d'idempotence. → réponse : accepté + identifiant de transaction.
+3. **Attendre** — webhook signé, plus un endpoint de consultation pour ceux qui n'arrivent jamais.
+
+Vos quatre méthodes couvrent exactement ça : `verser()`, `verifier()`, `notificationAuthentique()`, `lireNotification()`. **Le domaine ne bougera pas.** Les noms de champs exacts viendront de la doc du prestataire retenu.
+
+
+
+
+
+
+
+
+
+### Ce qu'il reste à faire, concrètement
+
+| | Quoi | Pourquoi c'est bloquant |
+|---|---|---|
+| 1 | Une classe `PasserelleXxx` + changer l'alias dans `services.yaml` | c'est la seule ligne à toucher |
+| 2 | **Normaliser le numéro** | `contact1` est du texte libre saisi au poste ; les agrégateurs exigent un format strict. Sinon les échecs tombent un par un, après coup |
+| 3 | **Vérifier la signature du webhook** | `notificationAuthentique()` renvoie `true` sans rien contrôler. C'est une porte publique : n'importe qui pourrait confirmer un versement |
+| 4 | **Planifier `app:paiements:reconcilier`** | la commande existe, rien ne l'exécute. Sans elle, un webhook perdu immobilise les fonds pour toujours |
+| 5 | Décider du **réseau** | beaucoup d'agrégateurs le déduisent du préfixe ; d'autres l'exigent. `ReseauMobile` est saisi à la main aujourd'hui |
+| 6 | Les secrets dans `.env.local` + le bac à sable du prestataire | pour la recette |
+
+**Et une question que rien ne modélise encore** : les **frais**. Chaque décaissement en a. Le grand livre débite aujourd'hui exactement le montant versé — si les frais sont à votre charge, il faudra soit les provisionner, soit leur donner leur propre écriture.
+
+Dis-moi par quoi on commence sur les paiements — le choix de l'agrégateur conditionne les points 1 et 5, mais **2, 3 et 4 sont indépendants** et peuvent être faits dès maintenant.
+
+
+les points 2, 3 et 4 de ma liste (format du numéro, signature du webhook, réconciliation planifiée) sont indépendants du choix de l'agrégateur
+
+
 
 - Lors de la dotation vers un pont bascule, je me dis que normalement l'argent devrait être versé sur le compte de l'opérateur en question, aussi pour le versement planteur :: On peut dire non aussi vu que l'argent peut sortir uniquement du compte de l'admin
 
-- Dans la partie paiement lorsqu'on veut verser le reste à payé d'un planteur on tombe sur "Montant supérieur au reste à payer : 5 320 000 F CFA au maximum." alors la carte et le champ m'affiche la somme de 8320000 F ==> ce fais quand un paiement est cours..
 
 
-| **5** | Caisse & paiements : `CaisseService`, demandes, passerelle simulée, webhook, réconciliation | Cycle dotation → paiement partiel → soldé |
-- La réconciliation des paiements n'est pas planifiée. app:paiements:reconcilier existe mais rien ne la déclenche : un versement dont la notification se perd reste « en vol » indéfiniment, immobilisant l'argent. Il faut un cron, ou le Scheduler de Symfony.
-| Paiement | Porte **sur une pesée précise**, **mobile money uniquement**, payable en plusieurs fois |
-| Passerelle de paiement | **Abstraction `PaymentGatewayInterface` + driver simulé**, agrégateur réel branché plus tard |
-| Recharge solde entreprise | **Saisie admin, immédiate**, historisée |
-- **`prixunitaire`**, **`montantDu`**, **`montantPaye`** (défaut 0), **`statutReglement`** — le montant payé est dénormalisé pour éviter un `SUM()` sur chaque ligne de liste. Seule une pesée `TERMINEE` porte une créance et devient payable
 
-### `CaisseService` — le cœur des invariants
 
-Toutes les écritures de solde passent par lui ; aucun processor ne touche `->setSolde()` directement. Chaque opération pose un **verrou pessimiste** (`LockMode::PESSIMISTIC_WRITE`) sur la ligne `entreprise`/`site` et écrit un `MouvementCaisse` avec `soldeAvant`/`soldeApres` :
-
-| Méthode | Effet |
-|---|---|
-| `rechargerEntreprise(Entreprise, int, User)` | + solde entreprise (RECHARGE) |
-| `doterSite(Site, int, User)` | − entreprise (ATTRIBUTION) et + site (DOTATION), transactionnel |
 | `debiterSite(Site, int, Paiement)` | − site (PAIEMENT) |
 | `rembourserSite(Site, int, Paiement)` | + site (REMBOURSEMENT), sur échec de payout |
 | `ajuster(...)` | ± avec motif obligatoire, réservé à l'**administrateur de l'entreprise** (correction d'erreur de saisie) |
 
-Refus explicite si le solde est insuffisant (`UnprocessableEntityHttpException` avec un message FR).
+
+
 
 ### Flux de paiement d'un planteur
 
@@ -326,6 +450,20 @@ App\Domain\Paiement\PasserellePaiementInterface: '@App\Domain\Paiement\Passerell
 Elle déroule tout le cycle sans agrégateur : un numéro commençant par `00` fait échouer, un montant finissant par `99` réussit immédiatement, le reste part en `ENVOYE` et attend le webhook. Passer en production, c'est **écrire une classe** — CinetPay, PayDunya — et **changer cette seule ligne**. Ni la caisse ni les paiements ne bougent.
 
 Deux points à traiter avant ce jour-là : `notificationAuthentique()` renvoie `true` sans rien vérifier dans la version simulée — c'est là que devra vivre le contrôle de signature — et `app:paiements:reconcilier` doit être planifié, sinon le filet n'existe pas.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -661,17 +799,26 @@ validator.yaml
 
 
 
-git push -u origin main
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
 On vas développer l'application en architecture séparé 
     - Backend : Symfony, API..
     - Frontend : Angular
-
-- Ignore le fichier brl.md du projet, c'est juste un brouillon
-
-
+Ignore le fichier brl.md du projet, c'est juste un brouillon
+Donne moi le prompt à donner à Claude Code
 
 - - 
 Salut Claude Code, mon patron m'a demandé de développé une application web qui a pour objectif de générer un certifcat de vérification qui contient 2 pages mais il ne m'a pas donnée assez d'informations. Voici quelques notions que j'ai compris :
@@ -679,25 +826,16 @@ Salut Claude Code, mon patron m'a demandé de développé une application web qu
 - En réalité :
     1. **Le technicien** se déplace chez un client pour intervenir sur un équipement de pesage (pont bascule, ou éventuellement un autre type d'appareil)
     2. Il remplit une **fiche d'intervention** contenant les informations de l'intervention
-    3. Puis arrivée au bureau il donne la fiche d'intervention à mon patron qui rédige le certificat, la page 2 du certificat contient les résultats de 3 contrôles :
-        - **Contrôle de fidélité**
-        - **Contrôle de justesse**
-        - **Contrôle d'excentration**
+    3. Puis arrivée au bureau il donne la fiche d'intervention à mon patron qui rédige le certificat, la page 2 du certificat contient les résultats de **3 contrôles métrologiques** :
+        - Contrôle de fidélité
+        - Contrôle de justesse
+        - Contrôle d'excentration
 
-Mon patron m'a aussi dit que pour le contrôle d'excentration le pont bascule peut avoir entre 4,6,8 ou 12 capteurs ce qui fait l'objet des colonnes du tableau de contrôle d'excentration
+Mon patron m'a aussi dit que pour le contrôle d'excentration le pont bascule peut avoir entre 4,6,8 ou 12 capteurs ce qui fait l'objet des colonnes du tableau de contrôle d'excentration === Oui le pont bascule peut avoir plusieurs capteurs(dynamique) === il faudra générer dynamiquement N colonnes selon le nombre de capteurs choisi
 
-- Maintenant, mon patron voudrait d'une application qui lui permettra de dédié ça tâche à la sécrétaire :: d'abord question est ce que le technicien saisi dans l'appli
-
-
+- Maintenant, Le patron veut dédier cette tâche à la sécrétaire via l'application
 
 J'envoi l'image de la fiche d'intervention du technicien et les images du certificat de vérification que l'application doit générer. ce que j'ai mis en bic sont de nouvelles variables qu'on vas rajouter
-
-
-
-
-- Le patron veut dédier cette tâche à la sécrétaire
-- Le technicien ne saisi pas dans l'application il rend juste ça fiche d'intervention à la sécrétaire
-
 
 - Y'a t'il un **calcul automatique** qui est fait dans les parties :
     | Élément | Valeur observée | Origine probable |
@@ -719,67 +857,32 @@ J'envoi l'image de la fiche d'intervention du technicien et les images du certif
 
         Oui, caluclé selon les 3
 
-Si ces règles sont confirmées, l'appli peut **calculer automatiquement** les limites, les écarts et le verdict final — le technicien n'aurait qu'à saisir les valeurs lues, pas les tolérances.
+Pour ce que j'ai compris concernant les contrôles :
 
-## Le tableau d'excentration — la partie dynamique
+- Contrôle de fidélité
+    > On peut avoir plusieurs points d'éssais
+    > La valeur nominale est saisi par l'utilisateur
+    > valeur nominale - indication lue = écart relevé, écart maximal relevé = le maximum des écarts relevés
 
-C'est le point que tu as souligné : le tableau a des colonnes = nombre de capteurs (4, 6, 8 ou 12), avec pour chaque position (capteur) :
-- N° de position
-- Valeur Nominale VN (kg)
-- Indication lue I (kg)
-- Indication + surcharge de sensibilité (kg)
-- Écart relevé (kg)
-- + une colonne EMT fixe à droite
+- Contrôle de justesse
+    > On peut avoir plusieurs points d'éssais générer de façon automatique
+    > La valeur nominale est saisi par l'utilisateur (et ne doit pas dépasser la moitié de la portée max (max/2)) et les points d'éssai généres doivent être multiple de l'EMT
+    > valeur lue en montée (simple à comprendre), valeur lue en descente (simple à comprendre), indication + surchage de sensibilité (l'utilisateur peut entrer une valeur (ex: 8kg) mais doit être en dessous de l'EMT, donc ex: s'il rente (ex: 8kg) et que la valeur nominale est 10 000 ça devient 10 008)
+    > L'écart relevé ici = indication.. sensibilité - valeur.. (je crois)
 
-Sur l'exemple fourni, le pont bascule a 4 capteurs → seules 4 colonnes sont remplies (le gabarit papier semble prévoir 6 colonnes fixes, dont 2 vides ici). Pour l'appli, il faudra générer dynamiquement N colonnes selon le nombre de capteurs choisi. ?? Ou se limiter à 6 ? :: Oui le pont bascule peut avoir plusieurs capteurs(dynamique)
+- Pour le contrôle d'excentration, lui il a max/3 et je t'ai déjà dit qu'on peut avoir plusieurs capteurs.. , je pense que tu peux comprendre
 
-
-3. Le **N° de certificat** (CVSOC2002050625) — c'est quel format de génération ? Auto-incrémenté par année/mois ?
-4. Pour le **contrôle de justesse**, le nombre de "points d'essai" (0 à 4 ici) est-il toujours fixe à 5, ou variable aussi ?
-5. Le **verdict "CONFORME"** — calculé automatiquement à partir des 3 cases Oui/Non, ou saisi manuellement par la secrétaire ?
-7. Faut-il stocker un **historique** des certificats (recherche par client/date/n° certificat) ?
-
-4. **"Pont bascule ou autres appareils"** : les autres types d'équipements suivent-ils le même certificat en 2 pages, ou seulement le pont bascule a ce format avec les 3 contrôles ? Tous
-
-
-- La mise en page exacte à reproduire (pour que je sache si on vise un PDF fidèle au template ou une appli qui génère juste les données)
-- La structure exacte du tableau d'excentration
-
-1. Je suis d'accord avec le fait qu'il paege. 
+1. Le technicien ne saisi pas dans l'application il rend juste ça fiche d'intervention à la secrétaire
 2. Les formules ne dépendent pas de la classe de précision de la norme FD X 07‑016
-3. Le N° du certificat (CVSOC2) ne change pas, 02 incrémenté auto en fonction du nombre de CV éffectué dans le mois, 050625 .. MJA en 2 caractère
-4. 
-5. 
+3. Le N° du certificat (CVSOC20) ne change pas, (02) incrémenté automatiquement en fonction du nombre de CV effectué dans le mois, (050625) Mois,Jour,Année en 2 caractères chacun
+    3. Le **N° de certificat** (CVSOC2002050625) — c'est quel format de génération ? Auto-incrémenté par année/mois ?
+4. Le nombre de "points d'essai" est variable 
+    4. Pour le **contrôle de justesse**, le nombre de "points d'essai" (0 à 4 ici) est-il toujours fixe à 5, ou variable aussi ?
+5. Oui, calculé automatiquement à partir des 4 cases
+    5. Le **verdict "CONFORME"** — calculé automatiquement à partir des 3 cases Oui/Non, ou saisi manuellement par la secrétaire ?
 6. Oui la sortie attendue est PDF téléchargeable/imprimable
 7. Oui
-
-
-- Les autres types d'équipements .. Oui
-
-
-
-
-Contrôle de fidélité :
-                                        |   valeur nominale - indication lue = écrat relevé, écart maximal relevé = max(écart relevé)
-On peut avoir plusieurs points d'éssai  |   La valeur nominale est saisi par l'utilisateur
-                                        |
-
-Contrôle de justesse :
-                                        |   valeur nominale saisi par l'utilisateur(et ne doit pas dépasser la moitié de la portée max) et les points d'éssai généres doivent être multiple de l'EMT
-On peut avoir plusieurs points d'éssai  |  valeur lue en montée, valeur lue en descente, indication + surchage de sensibilité (l'utilisateur peut entrer une valeur ex:8kg mais doit être en dessous de l'EMT sur les valeurs nominale, donc ex: s'il rente 8 la valeur nominale si 10 000 devient 10 008 )
-générer de façon automatique            | l'écart revlévé ici = indication surha.. - valeur nominale
-
-
-
-
-
-
-
-
-- **Contrôle de fidélité** (répétabilité des mesures)
-- **Contrôle de justesse** (écart entre valeur mesurée et valeur de référence)
-- **Contrôle d'excentration** (test de charge décentrée sur les capteurs — avec un tableau dont le nombre de colonnes varie selon le nombre de capteurs du pont bascule : 4, 6, 8 ou 12)
-
+    7. Faut-il stocker un **historique** des certificats (recherche par client/date/n° certificat) ?
 
 ## Certificat
 
@@ -791,3 +894,55 @@ En-tête fixe (SOCAF, accréditation COFRAC N°2‑1376), N° de certificat, cli
 
 **Certificat page 2** (« RESULTAT D'ETALONNAGE »)
 Les **3 contrôles** que ton patron a mentionnés, chacun avec un tableau de mesures + une case Oui/Non de conformité, puis un verdict global "CONFORME" et la référence à la norme **FD X 07‑016**.
+
+
+
+
+
+
+
+
+
+
+Le calcule des écart, c'est `indication lue - valeur nominale` pour tous, mais pour la partie justesse il ne faut pas ténir conte de l'ordre
+
+1. Pour le contrôle de fidélité, si les écarts peuvent être positifs ou négatifs, "le maximum" veut dire la plus grande valeur en valeur absolue (peu importe le signe), ou littéralement la plus grande valeur signée ? Un écart de −25 kg est pire qu'un écart de +5 kg pour la conformité, donc si c'est un max signé classique, on perdrait le pire cas. Je pencherais pour la valeur absolue, à confirmer
+    > Avec les signes
+
+2. !! de justesse, Les deux contraintes de génération sont claires : VN max saisie par l'utilisateur ≤ Portée max ÷ 2, et les points intermédiaires doivent être multiples de l'EMT. Ça colle avec l'exemple réel (200, 2000, 5000, 10000 sont bien tous multiples de 20, l'EMT de ce certificat), ce qui manque : **l'algorithme exact de génération**, Avec un maximum de 10 000, les points générés sont 200 / 2 000 / 5 000 / 10 000 — soit environ 2% / 20% / 50% / 100% du maximum. Est-ce que c'est vraiment un jeu de pourcentages fixes comme ça (et si oui, lesquels exactement), ou une autre règle (nombre de points fixe, autre répartition) ? Une seule exemple ne suffit pas à déduire la formule avec certitude.
+
+**L'écart relevé ne colle pas à l'exemple réel.** J'ai testé ta formule (`indication+surcharge − valeur nominale`) sur la ligne 1 du vrai certificat : indication+surcharge = 10 000, valeur nominale = 200 → ça donnerait un écart de **9 800 kg**, alors que le certificat affiche **0**. Et 9 800 dépasserait largement la tolérance de ±20, donc ça changerait le verdict. ==> On a déjà une valeur min (Porté mini) et une valeur max (Saisi par l'utilisateur), les points intermédiaires doivent être entre eux.. ou points d'éssai
+
+En revanche, `Valeur lue en montée − Valeur nominale` colle exactement sur les 5 lignes du certificat (200−200=0, 2000−2000=0, etc.). Mon hypothèse : la colonne "indication + surcharge de sensibilité" sert plutôt à un calcul **séparé** pour la case "Sensibilité correcte" (vérifier que l'appareil détecte bien le petit poids ajouté), indépendant de l'écart de justesse lui-même. Mais je ne veux pas trancher à ta place là-dessus — peux-tu revérifier avec ton patron laquelle des deux formules est la bonne ?
+    == Si les 3 colônnes sont rempli alors les 2 cases sont Oui
+
+3. !! d'excentration, je pars sur le même principe que fidélité (`Écart relevé = VN − Indication lue`, limite = Portée max ÷ 3). Je te fais confiance là-dessus comme tu l'as dit — dis-moi si en fait la colonne "surcharge de sensibilité" y joue aussi un rôle particulier === Demander si le **surcharge de sensibilité** joue un rôle dans le calcul de l'écart
+    > `indication lue - valeur nominale` l'ordre ne compte pas ici ça a fait 10000 - 10000 etc...  c'est le patron même qui a renversé pour la cohérence, pour la **surcharge de sensibilité** je crois que non
+
+- N° certificat = CVSOC20 + compteur (2 chiffres) + date JJMMAA	🤔 date à revérifier un jour
+    > Oui, c'est JJMMAA
+- On doit avoir la possibilité de modifier les valeurs des colonnes
+
+
+
+
+
+
+
+Sur la **source des valeurs de mesure brutes** tu avais raison, ..
+
+- A quel moment sont saisi les valeurs nominale (ou la source des valeurs de mesure brutes) ?
+    > Pour le contrôle de justesse est générer automatiquement
+    > Pour les autres, On doit avoir la possibilité de saisir ou générer les points d'essai(le techinicien peut le faire sur terrain)
+
+**Sur le certificat que tu m'as envoyé**, la page 2 affiche des dizaines de valeurs précises : pour la fidélité, des points à 15 000 kg / 12 500 kg / 10 000 kg avec leur indication lue correspondante ; pour la justesse, des points à 200 / 2 000 / 5 000 / 10 000 kg avec les lectures en montée et en descente ; pour l'excentration, 3 000 kg sur chacun des 4 capteurs avec leurs indications lues.
+
+Aucun de ces chiffres n'apparaît sur la fiche d'intervention. Or ce sont de vraies mesures physiques : à un moment donné, quelqu'un a posé des poids étalons de 15 000 kg sur le pont bascule et a lu ce que l'écran affichait. Cette lecture a forcément été notée quelque part, sur le moment, pour ne pas être oubliée avant d'arriver au bureau.
+
+C'est cet endroit que je n'ai pas identifié. Trois pistes à vérifier avec ton patron :
+
+* Soite..
+
+1. Il existe un **document papier séparé** (une feuille de relevé de mesures, ou un procès-verbal d'étalonnage) que le technicien remplit sur place pendant les tests, en plus de la fiche d'intervention — et qu'il remet aussi à la secrétaire. Si c'est le cas, c'est ce document-là (pas la fiche que j'ai déjà vue) qui alimente vraiment la page 2, et j'aurais besoin de le voir.
+2. Le technicien **communique les chiffres oralement** à son retour (téléphone ou de vive voix), et la secrétaire les transcrit directement dans l'application.
+3. Le **logiciel installé sur le pont bascule** — mentionné sur ta fiche ("installation du logiciel, de MySQL et le serveur") — enregistre lui-même ces valeurs pendant l'étalonnage, quelque part récupérable par export ou connexion directe. ==> Non

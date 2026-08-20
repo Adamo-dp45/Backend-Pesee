@@ -52,6 +52,39 @@ class PaiementRepository extends ServiceEntityRepository
             ->getResult();
     }
 
+    /**
+     * Ce qui est en vol chez l'agrégateur, et depuis quand.
+     *
+     * La RÉCONCILIATION est une commande planifiée : si le cron s'arrête, plus rien ne le dit. Les
+     * versements restent en attente, les caisses restent amputées, et personne ne s'en aperçoit
+     * avant qu'un opérateur ne puisse plus payer. Cette mesure rend la panne visible à l'écran :
+     * un versement qui attend depuis des heures ne peut signifier qu'une chose.
+     *
+     * @param list<int> $siteIds
+     *
+     * @return array{nombre: int, depuis: ?\DateTimeImmutable}
+     */
+    public function versementsEnVol(array $siteIds): array
+    {
+        if($siteIds === []) {
+            return ['nombre' => 0, 'depuis' => null];
+        }
+
+        $ligne = $this->createQueryBuilder('p')
+            ->select('COUNT(p.id) AS nombre', 'MIN(p.createdAt) AS depuis')
+            ->andWhere('p.site IN (:sites)')
+            ->andWhere('p.statut IN (:statuts)')
+            ->setParameter('sites', $siteIds)
+            ->setParameter('statuts', StatutPaiement::enCours())
+            ->getQuery()
+            ->getSingleResult();
+
+        // 'MIN()' sur une date revient en chaîne : Doctrine ne sait pas qu'agréger une date rend une date
+        $depuis = $ligne['depuis'] === null ? null : new \DateTimeImmutable((string) $ligne['depuis']);
+
+        return ['nombre' => (int) $ligne['nombre'], 'depuis' => $depuis];
+    }
+
     public function findOneByReference(string $reference): ?Paiement
     {
         return $this->findOneBy(['reference' => $reference]);

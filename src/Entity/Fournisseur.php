@@ -14,12 +14,15 @@ use ApiPlatform\OpenApi\Model\Operation;
 use App\Domain\Enum\ReseauMobile;
 use App\Domain\Enum\StatutActivation;
 use App\Domain\Support\Cle;
+use App\Domain\Support\NumeroMobile;
 use App\Entity\Interface\SiteOwnedInterface;
 use App\Entity\Operation as Pesee; // Aliasé : 'Operation' désigne déjà celle d'OpenAPI dans ce fichier
 use App\Repository\FournisseurRepository;
 use App\State\Provider\CompteurPeseesProvider;
 use App\State\Processor\AuditProcessor;
+use App\State\Processor\TarificationProcessor;
 use App\State\Processor\SuppressionLogiqueProcessor;
+use App\Validator\NumeroMobileValide;
 use App\Validator\UniqueParSite;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
@@ -81,7 +84,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         new Patch(
             security: "is_granted('MODIFIER', object)",
             requirements: ['id' => '\d+'],
-            processor: AuditProcessor::class,
+            processor: TarificationProcessor::class, // Retient le prix AVANT, pour le journal des activités
             openapi: new Operation(
                 summary: 'Modification d\'un planteur',
                 description: 'C\'est ici qu\'on renseigne le numéro mobile money, sans lequel aucun versement n\'est possible, et le prix spécial',
@@ -137,13 +140,24 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
     #[ORM\Column(length: 255)]
     private ?string $cle = null; // Dérivée du nom ET du prénom, voir 'Cle'
 
+    /*
+        - La contrainte ne vaut que pour les écritures par l'API, c'est-à-dire le formulaire web. La
+          synchronisation, elle, écrit par l'EntityManager sans passer par le validateur : un numéro
+          mal saisi au poste entre quand même, et c'est voulu — perdre une pesée pour une faute de
+          frappe serait hors de proportion.
+        - Le web est le seul endroit où le numéro peut être corrigé, et le formulaire montre toujours
+          ce champ : refuser ici, c'est faire corriger celui qui a la fiche sous les yeux plutôt que
+          celui qui a le planteur devant lui.
+    */
     #[ORM\Column(length: 30, nullable: true)]
-    #[Assert\Length(min: 8, max: 30, minMessage: 'Le numéro doit faire au moins {{ limit }} chiffres')]
+    #[Assert\Length(max: 30)]
+    #[NumeroMobileValide]
     #[Groups(['read:Fournisseur', 'write:Fournisseur', 'read:Operation', 'read:Paiement'])]
     private ?string $contact1 = null;
 
     #[ORM\Column(length: 30, nullable: true)]
-    #[Assert\Length(min: 8, max: 30)]
+    #[Assert\Length(max: 30)]
+    #[NumeroMobileValide]
     #[Groups(['read:Fournisseur', 'write:Fournisseur'])]
     private ?string $contact2 = null;
 
@@ -253,7 +267,7 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
 
     public function setContact1(?string $contact1): static
     {
-        $this->contact1 = $contact1;
+        $this->contact1 = $this->numero($contact1);
 
         return $this;
     }
@@ -265,9 +279,30 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
 
     public function setContact2(?string $contact2): static
     {
-        $this->contact2 = $contact2;
+        $this->contact2 = $this->numero($contact2);
 
         return $this;
+    }
+
+    /*
+        - Le numéro est ramené à sa forme canonique DANS le setter, au même titre que l'adresse e-mail
+          est mise en minuscules ailleurs. C'est ce qui fait que les trois portes d'entrée — la fiche
+          web, le poste de pesée, le versement de circonstance — aboutissent à la même écriture.
+
+        - Une saisie qu'on ne sait pas normaliser est CONSERVÉE telle quelle plutôt que rejetée ici :
+          la synchronisation ne valide pas, et perdre une pesée parce qu'un numéro est mal tapé serait
+          hors de proportion. L'écran la montre, 'getMotifNonPayable()' dit pourquoi elle ne vaut rien,
+          et la validation la refuse sur le chemin web.
+    */
+    private function numero(?string $valeur): ?string
+    {
+        $valeur = trim((string) $valeur);
+
+        if($valeur === '') {
+            return null;
+        }
+
+        return NumeroMobile::normaliser($valeur) ?? $valeur;
     }
 
     public function getReseau(): ?ReseauMobile
@@ -347,6 +382,15 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
 
         if($this->contact1 === null || $this->contact1 === '') {
             return 'Ce planteur n\'a pas de numéro de téléphone : le paiement mobile est impossible.';
+        }
+
+        /*
+            - Un numéro que l'agrégateur refusera. Le dire ICI plutôt qu'au versement change tout :
+              l'opérateur le corrige depuis la fiche, au calme, au lieu de le découvrir avec le
+              planteur devant lui. Le cas vient surtout du poste, qui accepte n'importe quelle saisie.
+        */
+        if(!NumeroMobile::estValide($this->contact1)) {
+            return sprintf('Le numéro « %s » n\'est pas un numéro mobile reconnu : corrigez-le avant de payer.', $this->contact1);
         }
 
         return null;

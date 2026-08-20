@@ -30,6 +30,9 @@ final class PaiementWebhookTest extends InvariantTestCase
 {
     private const CAISSE_INITIALE = 100_000;
 
+    /* Marqueur interne : demande à 'notifier()' de calculer la vraie signature. */
+    private const SIGNER = '__signer__';
+
     public function testUneConfirmationRejoueeNeCrediteQuUneFois(): void
     {
         [$paiement, $pesee, $site] = $this->engagerUnVersement(20_000);
@@ -168,6 +171,73 @@ final class PaiementWebhookTest extends InvariantTestCase
         self::assertStringContainsString('en cours', $this->reponse()['detail'] ?? '');
     }
 
+    /*
+        - Le webhook est PUBLIC : sans compte ni jeton, la signature est la seule chose qui distingue
+          l'agrégateur de n'importe qui. Une notification non signée qui passerait permettrait à un
+          inconnu de faire confirmer un versement, donc de créditer une pesée sans qu'un franc soit
+          sorti — ou de déclencher un remboursement, donc de créer de l'argent dans une caisse.
+        - 401 et non 200, contrairement au reste : une notification non signée n'est pas une
+          notification qu'on choisit d'ignorer, et l'émetteur doit l'apprendre.
+    */
+    public function testUneNotificationNonSigneeEstRefusee(): void
+    {
+        [$paiement, , $site] = $this->engagerUnVersement(20_000);
+
+        $this->notifier($paiement->getReference(), 'ECHOUE', signature: null);
+
+        self::assertSame(401, $this->client->getResponse()->getStatusCode());
+
+        $this->em->clear();
+
+        self::assertSame(StatutPaiement::ENVOYE, $this->relire(Paiement::class, $paiement->getId())->getStatut());
+        self::assertSame(self::CAISSE_INITIALE - 20_000, $this->soldeDuSite($site), 'Une notification non signée a remboursé la caisse');
+    }
+
+    public function testUneSignatureFausseEstRefusee(): void
+    {
+        [$paiement, , $site] = $this->engagerUnVersement(20_000);
+
+        $this->notifier($paiement->getReference(), 'REUSSI', signature: str_repeat('a', 64));
+
+        self::assertSame(401, $this->client->getResponse()->getStatusCode());
+
+        $this->em->clear();
+
+        self::assertSame(StatutPaiement::ENVOYE, $this->relire(Paiement::class, $paiement->getId())->getStatut());
+        self::assertSame(self::CAISSE_INITIALE - 20_000, $this->soldeDuSite($site));
+    }
+
+    /*
+        - Le point précis que ce contrôle doit attraper : une signature calculée sur les données
+          RÉENCODÉES au lieu du corps reçu. Les deux textes disent la même chose et n'ont pourtant pas
+          la même empreinte — ordre des clés, espaces, accents échappés. Vérifier sur le réencodage
+          reviendrait à refuser des notifications parfaitement légitimes, une sur deux et sans motif
+          lisible.
+    */
+    public function testLaSignaturePorteSurLeCorpsRecuEtNonSurSonReencodage(): void
+    {
+        [$paiement, , $site] = $this->engagerUnVersement(20_000);
+
+        // Mêmes données, autre écriture : espaces, ordre des clés. C'est ce texte-là qui est signé.
+        $corps = sprintf(
+            '{ "transaction": "SIM-%s",  "statut": "REUSSI", "reference": "%s" }',
+            $paiement->getReference(),
+            $paiement->getReference()
+        );
+
+        $this->client->request('POST', '/api/webhooks/paiement', [], [], [
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_X_SIGNATURE' => hash_hmac('sha256', $corps, self::secret()),
+        ], $corps);
+
+        self::assertSame(200, $this->client->getResponse()->getStatusCode());
+
+        $this->em->clear();
+
+        self::assertSame(StatutPaiement::REUSSI, $this->relire(Paiement::class, $paiement->getId())->getStatut());
+        self::assertSame(self::CAISSE_INITIALE - 20_000, $this->soldeDuSite($site));
+    }
+
     /* ---- Montage ----------------------------------------------------------------------------- */
 
     /**
@@ -194,20 +264,35 @@ final class PaiementWebhookTest extends InvariantTestCase
         return [$paiement, $pesee, $site];
     }
 
-    private function notifier(?string $reference, string $statut): void
+    /**
+     * Poste une notification signée, comme le ferait l'agrégateur.
+     *
+     * La signature porte sur le CORPS BRUT, pas sur les données décodées : c'est tout l'objet du
+     * contrôle, et le test doit s'y prendre exactement comme l'émetteur.
+     */
+    private function notifier(?string $reference, string $statut, ?string $signature = self::SIGNER): void
     {
-        $this->client->request(
-            'POST',
-            '/api/webhooks/paiement',
-            [],
-            [],
-            ['CONTENT_TYPE' => 'application/json'],
-            json_encode([
-                'reference' => $reference,
-                'statut' => $statut,
-                'transaction' => 'SIM-' . $reference,
-            ], JSON_THROW_ON_ERROR)
-        );
+        $corps = json_encode([
+            'reference' => $reference,
+            'statut' => $statut,
+            'transaction' => 'SIM-' . $reference,
+        ], JSON_THROW_ON_ERROR);
+
+        $entetes = ['CONTENT_TYPE' => 'application/json'];
+
+        if($signature !== null) {
+            $entetes['HTTP_X_SIGNATURE'] = $signature === self::SIGNER
+                ? hash_hmac('sha256', $corps, self::secret())
+                : $signature;
+        }
+
+        $this->client->request('POST', '/api/webhooks/paiement', [], [], $entetes, $corps);
+    }
+
+    /* Le secret vient de l'environnement de test, pas d'une constante recopiée : une valeur en double finit toujours par diverger de celle que le code lit. */
+    private static function secret(): string
+    {
+        return (string) ($_ENV['PASSERELLE_SECRET'] ?? $_SERVER['PASSERELLE_SECRET'] ?? '');
     }
 
     /** @return list<MouvementCaisse> */

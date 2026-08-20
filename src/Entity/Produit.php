@@ -17,6 +17,7 @@ use App\Entity\Operation as Pesee; // Aliasé : 'Operation' désigne déjà cell
 use App\Repository\ProduitRepository;
 use App\State\Provider\CompteurPeseesProvider;
 use App\State\Processor\AuditProcessor;
+use App\State\Processor\TarificationProcessor;
 use App\State\Processor\SuppressionLogiqueProcessor;
 use App\Validator\UniqueParSite;
 use Doctrine\Common\Collections\ArrayCollection;
@@ -83,7 +84,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         new Patch(
             security: "is_granted('MODIFIER', object)",
             requirements: ['id' => '\d+'],
-            processor: AuditProcessor::class,
+            processor: TarificationProcessor::class, // Retient le prix AVANT, pour le journal des activités
             openapi: new Operation(
                 summary: 'Tarification d\'un produit',
                 description: 'Le prix saisi ici l\'emporte, jusqu\'à ce que le poste envoie une valeur différente de la sienne',
@@ -278,8 +279,7 @@ class Produit extends EntityBase implements SiteOwnedInterface
     #[Groups(['read:Produit'])]
     public function getPeseesCount(): int
     {
-        return $this->peseesCount
-            ?? $this->pesees->matching(Criteria::create()->where(Criteria::expr()->isNull('deletedAt')))->count();
+        return $this->peseesCount ?? $this->pesees->matching(Criteria::create()->where(Criteria::expr()->isNull('deletedAt')))->count();
     }
 
     public function __toString(): string

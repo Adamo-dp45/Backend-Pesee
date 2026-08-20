@@ -7,6 +7,7 @@ use App\Domain\Enum\StatutPaiement;
 use App\Domain\Enum\StatutReglement;
 use App\Domain\Paiement\PasserellePaiementInterface;
 use App\Domain\Paiement\ResultatVersement;
+use App\Domain\Support\NumeroMobile;
 use App\Entity\Operation;
 use App\Domain\Service\MailerService;
 use App\Entity\Paiement;
@@ -61,6 +62,19 @@ class PaiementService
         if($numero === null || $numero === '') {
             throw new UnprocessableEntityHttpException($planteur->getMotifNonPayable() ?? 'Ce planteur n\'a pas de numéro de téléphone.');
         }
+
+        /*
+            - LE dernier contrôle avant que l'argent ne quitte la caisse. Les setters du planteur
+              normalisent déjà, mais le numéro de circonstance n'y passe pas : il arrive du corps de la
+              requête et va droit à l'agrégateur. Le laisser filer, c'est réserver les fonds, appeler
+              la passerelle, essuyer un refus, puis rembourser — trois écritures pour une faute de
+              frappe.
+            - On normalise plutôt que de refuser une forme correcte mal écrite : « 07 01 02 03 04 »
+              est un numéro valable, tapé comme on le lit.
+        */
+        $numero = NumeroMobile::normaliser($numero) ?? throw new UnprocessableEntityHttpException(
+            sprintf('Le numéro « %s » n\'est pas un numéro mobile reconnu.', $numero)
+        );
 
         if($planteur->getMotifNonPayable() !== null && $numeroDestinataire === null) {
             throw new UnprocessableEntityHttpException($planteur->getMotifNonPayable());
@@ -117,7 +131,6 @@ class PaiementService
                 'reference' => $paiement->getReference(),
                 'erreur' => $e->getMessage(),
             ]);
-
             $paiement->setStatut(StatutPaiement::ENVOYE)->setMessageErreur($e->getMessage());
             $this->em->flush();
 
@@ -177,7 +190,6 @@ class PaiementService
                     'reference' => $paiement->getReference(),
                     'erreur' => $e->getMessage(),
                 ]);
-
                 continue;
             }
 

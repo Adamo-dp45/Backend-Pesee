@@ -1,4 +1,4 @@
-.PHONY: install deploy db-reset fixtures test stan lint keys
+.PHONY: install deploy cron db-reset fixtures numeros test stan lint keys
 
 ## ------------------------------------------------------------------
 ## Déploiement
@@ -15,6 +15,26 @@ install: # Recette de mise en production, '-n' pour qu'il fasse de manière sile
 	php bin/console cache:warmup --env=prod
 
 ## ------------------------------------------------------------------
+## Tâches planifiées
+## ------------------------------------------------------------------
+
+# Les lignes à coller dans le crontab du serveur ('crontab -e'). À faire une fois,
+# à la première mise en production.
+#
+# Pourquoi un cron et pas le Scheduler de Symfony : celui-ci suppose un worker qui
+# tourne en permanence, là où un hébergement mutualisé ne sait offrir qu'un cron.
+#
+# Pourquoi 'flock' : deux exécutions qui se chevauchent pourraient réinterroger le
+# même versement en même temps et le rembourser deux fois. '-n' préfère sauter un
+# tour plutôt que d'empiler les processus.
+#
+# Si ce cron s'arrête, l'écran Caisse le dit : les versements en vol s'y accumulent
+# avec leur ancienneté. C'est le seul témoin — il n'y a personne pour surveiller le
+# cron lui-même.
+cron:
+	@echo "*/5 * * * * /usr/bin/flock -n /tmp/webpesee-reconcilier.lock php $(CURDIR)/bin/console app:paiements:reconcilier --env=prod >> $(CURDIR)/var/log/cron.log 2>&1"
+
+## ------------------------------------------------------------------
 ## Développement
 ## ------------------------------------------------------------------
 
@@ -26,6 +46,12 @@ db-reset:
 	php bin/console doctrine:database:create
 	php bin/console doctrine:migrations:migrate --no-interaction
 	php bin/console doctrine:schema:validate
+
+# Reprise à passer UNE FOIS sur une base antérieure à la normalisation des numéros.
+# Les planteurs saisis avant gardent la forme dans laquelle ils ont été tapés et
+# resteraient impayables. '--dry-run' d'abord, pour voir ce qui serait réécrit.
+numeros:
+	php bin/console app:fournisseurs:normaliser-numeros --dry-run
 
 # Charge le jeu de démonstration (entreprises, sites, opérateurs, pesées, caisse).
 fixtures:

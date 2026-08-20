@@ -1,0 +1,65 @@
+<?php
+
+namespace App\Domain\Enum;
+
+/*
+    - Les gestes que le journal d'audit retient. La liste n'est pas « tout ce qu'on peut faire » : le
+      grand livre trace déjà l'argent — qui, combien, solde avant, solde après — et le redoubler ici
+      donnerait deux versions d'une même vérité, qui finiraient par diverger.
+
+    - N'y figure donc que ce qui ne laissait AUCUNE trace exploitable. Les entités portent bien un
+      'updatedBy', mais il ne dit ni quand, ni quoi, ni depuis quelle valeur : il est écrasé par la
+      modification suivante. Renouveler les identifiants d'un poste ne laissait même pas cela.
+
+    - Un cas par SENS ('SITE_BLOQUE' et 'SITE_DEBLOQUE') plutôt qu'un seul type à lire dans le
+      libellé : c'est ce qui permet de filtrer « montre-moi les blocages » sans fouiller du texte.
+*/
+enum TypeActivite: string
+{
+    /*
+        - Le plus important des trois groupes. Un prix décide de ce que touche un planteur, et il
+          change la valeur des pesées non encore payées. Rien ne conservait l'ancien.
+    */
+    case PRODUIT_TARIFE = 'PRODUIT_TARIFE';         // Prix au kilo d'un produit
+    case FOURNISSEUR_TARIFE = 'FOURNISSEUR_TARIFE'; // Prix spécial négocié avec un planteur
+
+    // Ce qui coupe ou rouvre un accès
+    case SITE_BLOQUE = 'SITE_BLOQUE';
+    case SITE_DEBLOQUE = 'SITE_DEBLOQUE';
+    case SITE_OPERATEUR = 'SITE_OPERATEUR';         // Qui tient la caisse de ce poste
+    case SITE_IDENTIFIANTS = 'SITE_IDENTIFIANTS';   // Renouvellement du mot de passe du poste
+    case USER_SUSPENDU = 'USER_SUSPENDU';
+    case USER_REACTIVE = 'USER_REACTIVE';
+    case USER_ROLE = 'USER_ROLE';
+    case ENTREPRISE_DESACTIVEE = 'ENTREPRISE_DESACTIVEE';
+    case ENTREPRISE_REACTIVEE = 'ENTREPRISE_REACTIVEE';
+
+    /*
+        - La corbeille. 'deletedBy' et 'deletedAt' disent qui a supprimé — mais la restauration les
+          efface, et la purge efface la ligne entière. Sans ces trois cas, un référentiel peut
+          disparaître définitivement sans que rien n'en garde le souvenir.
+    */
+    case CORBEILLE_SUPPRESSION = 'CORBEILLE_SUPPRESSION';
+    case CORBEILLE_RESTAURATION = 'CORBEILLE_RESTAURATION';
+    case CORBEILLE_PURGE = 'CORBEILLE_PURGE';
+
+    public function libelle(): string
+    {
+        return match($this) {
+            self::PRODUIT_TARIFE => 'Tarification d\'un produit',
+            self::FOURNISSEUR_TARIFE => 'Prix spécial d\'un planteur',
+            self::SITE_BLOQUE => 'Blocage d\'un pont bascule',
+            self::SITE_DEBLOQUE => 'Déblocage d\'un pont bascule',
+            self::SITE_OPERATEUR => 'Affectation de l\'opérateur',
+            self::SITE_IDENTIFIANTS => 'Renouvellement des identifiants d\'un poste',
+            self::USER_SUSPENDU => 'Suspension d\'un compte',
+            self::USER_REACTIVE => 'Réactivation d\'un compte',
+            self::USER_ROLE => 'Changement de rôle',
+            self::ENTREPRISE_DESACTIVEE => 'Désactivation d\'une entreprise',
+            self::ENTREPRISE_REACTIVEE => 'Réactivation d\'une entreprise',
+            self::CORBEILLE_SUPPRESSION => 'Mise à la corbeille',
+            self::CORBEILLE_RESTAURATION => 'Restauration depuis la corbeille',
+            self::CORBEILLE_PURGE => 'Suppression définitive',
+        };
+    }
+}

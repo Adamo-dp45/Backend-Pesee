@@ -10,6 +10,8 @@ use App\Entity\Site;
 use App\Entity\User;
 use App\Repository\SiteRepository;
 use App\Repository\UserRepository;
+use App\Domain\Enum\TypeActivite;
+use App\Domain\Service\ActiviteLogger;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -29,7 +31,8 @@ class AssignerOperateurProcessor implements ProcessorInterface
         private EntityManagerInterface $em,
         private SiteRepository $siteRepository,
         private UserRepository $userRepository,
-        private Security $security
+        private Security $security,
+        private ActiviteLogger $activites
     )
     {
     }
@@ -51,6 +54,19 @@ class AssignerOperateurProcessor implements ProcessorInterface
         if($auteur instanceof User) {
             $site->setUpdatedBy($auteur->getId());
         }
+
+        $this->activites->log(
+            TypeActivite::SITE_OPERATEUR,
+            sprintf(
+                '%s a %s sur le pont bascule %s',
+                $auteur instanceof User ? $auteur->getNomComplet() : 'Le système',
+                $site->getOperateur() === null
+                    ? 'libéré la caisse'
+                    : 'confié la caisse à ' . $site->getOperateur()->getNomComplet(),
+                (string) $site->getLibellesite()
+            ),
+            $site
+        );
 
         $this->em->flush();
 

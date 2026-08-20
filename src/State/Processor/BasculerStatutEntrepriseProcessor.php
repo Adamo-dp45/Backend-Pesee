@@ -6,6 +6,8 @@ use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use App\Entity\Entreprise;
 use App\Entity\User;
+use App\Domain\Enum\TypeActivite;
+use App\Domain\Service\ActiviteLogger;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 
@@ -21,7 +23,8 @@ class BasculerStatutEntrepriseProcessor implements ProcessorInterface
 {
     public function __construct(
         private EntityManagerInterface $em,
-        private Security $security
+        private Security $security,
+        private ActiviteLogger $activites
     )
     {
     }
@@ -35,6 +38,19 @@ class BasculerStatutEntrepriseProcessor implements ProcessorInterface
         if($auteur instanceof User) {
             $data->setUpdatedBy($auteur->getId());
         }
+
+        $active = $data->estActive();
+
+        $this->activites->log(
+            $active ? TypeActivite::ENTREPRISE_REACTIVEE : TypeActivite::ENTREPRISE_DESACTIVEE,
+            sprintf(
+                '%s a %s l\'entreprise %s',
+                $auteur instanceof User ? $auteur->getNomComplet() : 'Le système',
+                $active ? 'réactivé' : 'désactivé',
+                (string) $data->getNom()
+            ),
+            $data
+        );
 
         $this->em->flush();
 

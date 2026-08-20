@@ -68,6 +68,14 @@ final class CaisseProvider implements ProviderInterface
 
         $sortie->demandesEnAttente = $this->demandes->compterParStatut($siteIds, StatutDemande::EN_ATTENTE);
 
+        // Le témoin de la réconciliation : sans lui, un cron arrêté ne se remarque qu'au moment où un opérateur ne peut plus payer
+        $enVol = $this->paiements->versementsEnVol($siteIds);
+
+        $sortie->versementsEnVol = $enVol['nombre'];
+        $sortie->attenteMinutes = $enVol['depuis'] === null
+            ? null
+            : max(0, intdiv(time() - $enVol['depuis']->getTimestamp(), 60));
+
         return $sortie;
     }
 }

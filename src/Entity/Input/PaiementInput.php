@@ -3,6 +3,7 @@
 namespace App\Entity\Input;
 
 use App\Domain\Enum\ReseauMobile;
+use App\Validator\NumeroMobileValide;
 use Symfony\Component\Serializer\Attribute\Groups;
 use Symfony\Component\Validator\Constraints as Assert;
 
@@ -22,7 +23,15 @@ final class PaiementInput
     #[Groups(['write:Paiement'])]
     public ?int $montant = null;
 
-    #[Assert\Length(min: 8, max: 30, minMessage: 'Le numéro doit faire au moins {{ limit }} chiffres')]
+    /*
+        - La forme est vérifiée dès la saisie plutôt qu'au moment de l'appel à l'agrégateur : le
+          refuser ici coûte un message, le refuser là-bas coûte une réservation de fonds, un aller-
+          retour réseau et un remboursement.
+        - La règle elle-même vit dans 'NumeroMobile', d'où la normalisation la tire aussi : les deux
+          ne peuvent pas diverger.
+    */
+    #[Assert\Length(max: 30)]
+    #[NumeroMobileValide]
     #[Groups(['write:Paiement'])]
     public ?string $numeroDestinataire = null;
 

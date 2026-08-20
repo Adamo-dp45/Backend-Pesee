@@ -34,16 +34,27 @@ final class WebhookPaiementController extends AbstractController
     #[Route('', name: 'notifier', methods: ['POST'])]
     public function notifier(Request $request): JsonResponse
     {
-        try {
-            $corps = $request->toArray();
-        } catch(\Throwable) {
-            return $this->accuser('Corps illisible');
-        }
+        /*
+            - La signature d'abord, sur le corps BRUT et avant tout décodage. Deux raisons :
+              · l'empreinte porte sur les octets exacts qui ont été signés ; décoder puis réencoder
+                donnerait un autre texte — ordre des clés, espaces, accents échappés — donc une autre
+                signature, et le contrôle échouerait sur des notifications légitimes ;
+              · tant que l'émetteur n'est pas authentifié, son corps ne mérite aucun traitement.
+            - L'en-tête est nommé par la passerelle : chaque agrégateur a le sien, et ce contrôleur ne
+              doit pas être à rouvrir le jour où l'on en change.
+        */
+        $corpsBrut = $request->getContent();
 
-        if(!$this->passerelle->notificationAuthentique($corps, $request->headers->get('X-Signature'))) {
+        if(!$this->passerelle->notificationAuthentique($corpsBrut, $request->headers->get($this->passerelle->enteteSignature()))) {
             $this->logger->warning('Signature de notification invalide sur {passerelle}', ['passerelle' => $this->passerelle->nom()]);
 
             return new JsonResponse(['message' => 'Signature invalide'], Response::HTTP_UNAUTHORIZED);
+        }
+
+        $corps = json_decode($corpsBrut, true);
+
+        if(!is_array($corps)) {
+            return $this->accuser('Corps illisible');
         }
 
         $reference = isset($corps['reference']) ? (string) $corps['reference'] : '';

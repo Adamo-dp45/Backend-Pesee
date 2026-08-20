@@ -6,6 +6,8 @@ use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use App\Entity\Site;
 use App\Entity\User;
+use App\Domain\Enum\TypeActivite;
+use App\Domain\Service\ActiviteLogger;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 
@@ -21,7 +23,8 @@ class BasculerStatutSiteProcessor implements ProcessorInterface
 {
     public function __construct(
         private EntityManagerInterface $em,
-        private Security $security
+        private Security $security,
+        private ActiviteLogger $activites
     )
     {
     }
@@ -35,6 +38,21 @@ class BasculerStatutSiteProcessor implements ProcessorInterface
         if($auteur instanceof User) {
             $data->setUpdatedBy($auteur->getId());
         }
+
+        // Avant le flush : la trace part dans la même transaction que le geste
+        $bloque = !$data->accepteLaSynchronisation();
+
+        $this->activites->log(
+            $bloque ? TypeActivite::SITE_BLOQUE : TypeActivite::SITE_DEBLOQUE,
+            sprintf(
+                '%s a %s le pont bascule %s (%s)',
+                $auteur instanceof User ? $auteur->getNomComplet() : 'Le système',
+                $bloque ? 'bloqué' : 'débloqué',
+                (string) $data->getLibellesite(),
+                (string) $data->getCode()
+            ),
+            $data
+        );
 
         $this->em->flush();
 
