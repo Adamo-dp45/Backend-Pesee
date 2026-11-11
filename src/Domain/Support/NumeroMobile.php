@@ -3,27 +3,15 @@
 namespace App\Domain\Support;
 
 /*
-    - Un numéro de téléphone destiné au mobile money. Il entre par TROIS portes qui ne se ressemblent
-      pas : la fiche saisie sur le web, le libellé poussé par le poste de pesée, et le numéro de
-      circonstance tapé au moment d'un versement. Chacune donne des formes différentes du même
-      numéro — « 07 01 02 03 04 », « +225 0701020304 », « 002250701020304 », « 07.01.02.03.04 ».
+    - Un numéro de téléphone destiné au mobile money. Il entre par TROIS portes qui ne se ressemblent pas : la fiche saisie sur le web, le libellé poussé par le poste de pesée, et le numéro de circonstance tapé au moment d'un versement. Chacune donne des formes différentes du même numéro — « 07 01 02 03 04 », « +225 0701020304 », « 002250701020304 », « 07.01.02.03.04 ».
 
-    - Les agrégateurs, eux, n'en acceptent qu'une. Sans normalisation, l'écart ne se découvre qu'au
-      versement, planteur devant soi, un refus à la fois. On ramène donc tout à une forme canonique
-      dès l'entrée : E.164, indicatif compris — '+2250701020304'.
+    - Les agrégateurs, eux, n'en acceptent qu'une. Sans normalisation, l'écart ne se découvre qu'au versement, planteur devant soi, un refus à la fois. On ramène donc tout à une forme canonique dès l'entrée : E.164, indicatif compris — '+2250701020304'.
 
-    - Côte d'Ivoire par défaut, et c'est assumé : le produit s'y déploie, les montants sont en francs
-      CFA et les quatre réseaux proposés sont ivoiriens. L'indicatif est une constante pour qu'un
-      déploiement ailleurs soit un changement d'une ligne, pas une chasse dans le code.
+    - Côte d'Ivoire par défaut, et c'est assumé : le produit s'y déploie, les montants sont en francs CFA et les quatre réseaux proposés sont ivoiriens. L'indicatif est une constante pour qu'un déploiement ailleurs soit un changement d'une ligne, pas une chasse dans le code.
 
-    - Ce qui n'est pas ici non plus : la mise en forme pour l'œil. L'API rend du JSON, et la valeur
-      qui en sort doit rester canonique — c'est celle que le formulaire renverra. Le regroupement
-      lisible appartient aux écrans, côté 'Frontend-Webpesee' : filtre Twig 'numero' et son pendant
-      React dans 'cellules.tsx'.
+    - Ce qui n'est pas ici non plus : la mise en forme pour l'œil. L'API rend du JSON, et la valeur qui en sort doit rester canonique — c'est celle que le formulaire renverra. Le regroupement lisible appartient aux écrans, côté 'Frontend-Webpesee' : filtre Twig 'numero' et son pendant React dans 'cellules.tsx'.
 
-    - Ce qui n'est PAS vérifié ici : que le numéro existe, ni qu'il appartienne au réseau annoncé.
-      Seul l'agrégateur le sait, et il le dira. On vérifie la FORME, ce qui suffit à éliminer les
-      fautes de frappe et les champs à moitié remplis.
+    - Ce qui n'est PAS vérifié ici : que le numéro existe, ni qu'il appartienne au réseau annoncé. Seul l'agrégateur le sait, et il le dira. On vérifie la FORME, ce qui suffit à éliminer les fautes de frappe et les champs à moitié remplis.
 */
 final class NumeroMobile
 {

@@ -12,7 +12,9 @@ use ApiPlatform\Metadata\Patch;
 use ApiPlatform\Metadata\Post;
 use ApiPlatform\OpenApi\Model\Operation;
 use App\Domain\Enum\StatutEntreprise;
+use App\Domain\Enum\TypeCaisse;
 use App\Entity\Input\MontantInput;
+use App\Entity\Interface\CompteInterface;
 use App\Repository\EntrepriseRepository;
 use App\State\Processor\AuditProcessor;
 use App\State\Processor\BasculerStatutEntrepriseProcessor;
@@ -121,7 +123,7 @@ use Symfony\Component\Validator\Constraints as Assert;
     'statut' => 'exact',
 ])]
 #[ApiFilter(OrderFilter::class, properties: ['nom', 'createdAt'])]
-class Entreprise extends EntityBase
+class Entreprise extends EntityBase implements CompteInterface
 {
     #[ORM\Id]
     #[ORM\GeneratedValue]
@@ -166,11 +168,19 @@ class Entreprise extends EntityBase
     private ?string $email = null;
 
     /*
-        - En lecture seule côté API : un solde ne se pose pas, il résulte des mouvements de caisse. Le recharger passera par un verbe dédié qui écrit la ligne de grand livre correspondante.
+        - En lecture seule côté API : un solde ne se pose pas, il résulte des mouvements de caisse. Le recharger passe par un verbe dédié qui écrit la ligne de grand livre correspondante.
+
+        - DEUX soldes et non un : les espèces et le flotte mobile money ne se convertissent pas l'un en l'autre, et les additionner laissait croire qu'on pouvait doter le flotte d'un poste avec des billets. Voir 'TypeCaisse'.
+
+        - En francs CFA entiers. 'BIGINT' : un solde d'entreprise dépasse vite les 2 milliards d'un INT.
     */
     #[ORM\Column(type: Types::BIGINT, options: ['default' => 0])]
     #[Groups(['read:Entreprise'])]
-    private int $solde = 0; // En francs CFA entiers. 'BIGINT' : un solde d'entreprise dépasse vite les 2 milliards d'un INT
+    private int $soldePhysique = 0;
+
+    #[ORM\Column(type: Types::BIGINT, options: ['default' => 0])]
+    #[Groups(['read:Entreprise'])]
+    private int $soldeNumerique = 0;
 
     #[ORM\Column(enumType: StatutEntreprise::class, options: ['default' => 'ACTIVE'])]
     #[Groups(['read:Entreprise'])]
@@ -271,16 +281,46 @@ class Entreprise extends EntityBase
         return $this;
     }
 
-    public function getSolde(): int
+    public function getSoldePhysique(): int
     {
-        return (int) $this->solde;
+        return (int) $this->soldePhysique;
     }
 
-    public function setSolde(int $solde): static
+    public function getSoldeNumerique(): int
     {
-        $this->solde = $solde;
+        return (int) $this->soldeNumerique;
+    }
+
+    public function getSoldeDe(TypeCaisse $caisse): int
+    {
+        return match($caisse) {
+            TypeCaisse::PHYSIQUE => $this->getSoldePhysique(),
+            TypeCaisse::NUMERIQUE => $this->getSoldeNumerique(),
+        };
+    }
+
+    public function setSoldeDe(TypeCaisse $caisse, int $montant): static
+    {
+        match($caisse) {
+            TypeCaisse::PHYSIQUE => $this->soldePhysique = $montant,
+            TypeCaisse::NUMERIQUE => $this->soldeNumerique = $montant,
+        };
 
         return $this;
+    }
+
+    /*
+        - Le cumul des deux caisses. Il se LIT — sur un tableau de bord, « ce que pèse l'entreprise » — mais il ne se DÉPENSE pas : aucune dépense ne tire sur ce total, chacune va chercher sa caisse. C'est pour cela qu'il n'a pas de setter.
+    */
+    #[Groups(['read:Entreprise'])]
+    public function getSolde(): int
+    {
+        return $this->getSoldePhysique() + $this->getSoldeNumerique();
+    }
+
+    public function getLibelleCompte(): string
+    {
+        return (string) $this->nom;
     }
 
     public function getStatut(): StatutEntreprise

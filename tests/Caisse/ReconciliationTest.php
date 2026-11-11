@@ -3,6 +3,7 @@
 namespace App\Tests\Caisse;
 
 use App\Domain\Enum\Role;
+use App\Domain\Enum\ModeReglement;
 use App\Domain\Enum\StatutPaiement;
 use App\Domain\Service\Caisse\PaiementService;
 use App\Entity\Paiement;
@@ -99,7 +100,7 @@ final class ReconciliationTest extends InvariantTestCase
         $planteur = $this->creerPlanteur($site);
         $pesee = $this->creerPesee($site, $produit, $planteur, 1_000);
 
-        $paiement = self::getContainer()->get(PaiementService::class)->initier($pesee, 20_000, $operateur);
+        $paiement = self::getContainer()->get(PaiementService::class)->initier($pesee, 20_000, ModeReglement::MOBILE_MONEY, $operateur);
 
         self::assertSame(StatutPaiement::ENVOYE, $paiement->getStatut(), 'Le décor suppose un versement en vol');
 

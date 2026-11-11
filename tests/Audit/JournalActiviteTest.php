@@ -146,7 +146,7 @@ final class JournalActiviteTest extends InvariantTestCase
     */
     public function testLesMouvementsDArgentNeSontPasDoubles(): void
     {
-        $this->appeler('PATCH', '/api/sites/' . $this->site->getId() . '/dotation', $this->admin, ['montant' => 50_000]);
+        $this->appeler('PATCH', '/api/sites/' . $this->site->getId() . '/dotation', $this->admin, ['montant' => 50_000, 'caisse' => 'NUMERIQUE']);
         self::assertSame(200, $this->client->getResponse()->getStatusCode());
 
         self::assertCount(0, $this->activites(), 'La dotation est déjà au grand livre');

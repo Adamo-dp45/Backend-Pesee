@@ -13,6 +13,7 @@ use ApiPlatform\Metadata\Patch;
 use ApiPlatform\Metadata\Post;
 use ApiPlatform\OpenApi\Model\Operation;
 use App\Domain\Enum\StatutDemande;
+use App\Domain\Enum\TypeCaisse;
 use App\Entity\Input\TraiterDemandeInput;
 use App\Entity\Interface\SiteOwnedInterface;
 use App\Repository\DemandeSoldeRepository;
@@ -141,6 +142,15 @@ class DemandeSolde extends EntityBase implements SiteOwnedInterface
     #[Groups(['read:DemandeSolde', 'write:DemandeSolde', 'write:DemandeSolde:correction'])]
     private int $montantDemande = 0;
 
+    /*
+        - QUELLE caisse l'opérateur demande à voir réapprovisionner. Les deux ne se remplacent pas : être à court de billets pendant que le flotte déborde est un cas courant, et une demande qui ne disait pas laquelle obligeait l'administrateur à deviner — ou à doter les deux.
+        - Corrigeable tant que la demande est en attente, au même titre que le montant : on se trompe de caisse aussi facilement que de chiffre.
+    */
+    #[ORM\Column(enumType: TypeCaisse::class, options: ['default' => 'NUMERIQUE'])]
+    #[Assert\NotNull(message: 'La caisse à réapprovisionner est obligatoire')]
+    #[Groups(['read:DemandeSolde', 'write:DemandeSolde', 'write:DemandeSolde:correction'])]
+    private TypeCaisse $caisse = TypeCaisse::NUMERIQUE;
+
     #[ORM\Column(nullable: true)]
     #[Groups(['read:DemandeSolde'])]
     private ?int $montantAccorde = null; // Renseigné à l'approbation seulement : il peut être inférieur au demandé
@@ -192,6 +202,24 @@ class DemandeSolde extends EntityBase implements SiteOwnedInterface
         $this->montantDemande = $montantDemande;
 
         return $this;
+    }
+
+    public function getCaisse(): TypeCaisse
+    {
+        return $this->caisse;
+    }
+
+    public function setCaisse(TypeCaisse $caisse): static
+    {
+        $this->caisse = $caisse;
+
+        return $this;
+    }
+
+    #[Groups(['read:DemandeSolde'])]
+    public function getCaisseLibelle(): string
+    {
+        return $this->caisse->libelle();
     }
 
     public function getMontantAccorde(): ?int

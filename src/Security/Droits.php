@@ -1,0 +1,139 @@
+<?php
+
+namespace App\Security;
+
+use App\Domain\Enum\Role;
+
+/*
+    - Qui peut quoi, par rôle et par ressource. C'est la SEULE source de vérité des droits grossiers
+      de l'application — API et frontend confondus.
+
+    - La table est lue à DEUX endroits, et c'est tout l'intérêt de l'avoir sortie du voter :
+        · 'AccesVoter', qui tranche chaque appel à l'API ;
+        · '/me', qui la renvoie À PLAT au frontend pour qu'il sache quels boutons afficher.
+      Le frontend en tenait jusqu'ici une copie manuscrite, à reporter à chaque changement. Une
+      copie finit par diverger, et celle-ci divergeait en silence : un bouton manquant ne lève
+      aucune erreur, il laisse seulement croire que le droit n'existe pas.
+
+    - Ce que la table ne sait PAS dire reste ailleurs : le périmètre ('Perimetre') et la hiérarchie
+      de gestion des comptes ('UserGuard'). Un droit accordé ici peut donc être refusé sur un objet
+      précis. C'est pourquoi ce que reçoit le frontend n'est pas une autorisation mais une
+      PLAUSIBILITÉ : l'API refait le calcul complet à chaque appel.
+*/
+final class Droits
+{
+    public const VOIR = 'VOIR';
+    public const CREER = 'CREER';
+    public const MODIFIER = 'MODIFIER';
+    public const SUPPRIMER = 'SUPPRIMER';
+    public const BLOQUER = 'BLOQUER';
+    public const ATTRIBUER = 'ATTRIBUER';
+    public const RECHARGER = 'RECHARGER';
+    public const TRAITER = 'TRAITER';
+    public const PAYER = 'PAYER';
+    public const PROMOUVOIR = 'PROMOUVOIR';
+    public const PRELEVER = 'PRELEVER'; // Ouvrir ou arrêter la mise en compte d'un planteur
+
+    /** @var list<string> */
+    public const ACTIONS = [
+        self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER, self::BLOQUER,
+        self::ATTRIBUER, self::RECHARGER, self::TRAITER, self::PAYER, self::PROMOUVOIR,
+        self::PRELEVER,
+    ];
+
+    /*
+        - Une ressource absente de la ligne d'un rôle lui est fermée, et un rôle absent de la table
+          n'a aucun droit — c'est ce qui écarte le compte machine ('ROLE_SITE'), qui ne sait que
+          déposer des pesées.
+
+        - Les ressources des étapes suivantes sont déjà listées : la table se lit d'un bloc, et
+          l'oubli d'une ligne se voit tout de suite.
+    */
+    private const TABLE = [
+        Role::SUPER_ADMIN->value => [
+            'Entreprise' => [self::VOIR, self::CREER, self::MODIFIER, self::BLOQUER],
+            'User' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER, self::BLOQUER, self::PROMOUVOIR],
+            /*
+                - 'BLOQUER' lui revient au même titre qu'à l'administrateur du client : c'est lui qui
+                  met les postes en service, donc lui qu'on appelle quand l'un d'eux déraille — et il
+                  peut avoir à le couper sans attendre que le client s'en aperçoive.
+                - Il n'a en revanche ni 'ATTRIBUER' ni les ressources d'exploitation : couper un poste
+                  n'est pas toucher à la caisse qu'il tient.
+            */
+            'Site' => [self::VOIR, self::CREER, self::MODIFIER, self::BLOQUER],
+        ],
+        Role::ADMIN->value => [
+            'Entreprise' => [self::VOIR, self::MODIFIER, self::RECHARGER],
+            'User' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER, self::BLOQUER, self::PROMOUVOIR],
+            'Site' => [self::VOIR, self::MODIFIER, self::BLOQUER, self::ATTRIBUER],
+            'Produit' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER],
+            'Fournisseur' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER, self::PRELEVER], // Lui seul ouvre et arrête une mise en compte
+            'Operation' => [self::VOIR],
+            'Paiement' => [self::VOIR, self::PAYER],
+            'MouvementCaisse' => [self::VOIR],
+            'MouvementEpargne' => [self::VOIR],
+            'DemandeSolde' => [self::VOIR, self::TRAITER],
+            'DemandePrelevement' => [self::VOIR, self::TRAITER],
+            'SynchronisationLot' => [self::VOIR],
+            'Activite' => [self::VOIR], // Le journal des decisions : une lecture de supervision
+        ],
+        Role::AGENT->value => [
+            'Entreprise' => [self::VOIR],
+            'User' => [self::VOIR, self::CREER, self::MODIFIER, self::BLOQUER, self::PROMOUVOIR], // Sur des opérateurs seulement : c'est 'UserGuard' qui borne la cible
+            'Site' => [self::VOIR],
+            'Produit' => [self::VOIR],
+            'Fournisseur' => [self::VOIR],
+            'Operation' => [self::VOIR],
+            'Paiement' => [self::VOIR],
+            'MouvementCaisse' => [self::VOIR],
+            'MouvementEpargne' => [self::VOIR],
+            'DemandeSolde' => [self::VOIR],
+            'DemandePrelevement' => [self::VOIR],
+            'SynchronisationLot' => [self::VOIR],
+            'Activite' => [self::VOIR],
+        ],
+        Role::OPERATEUR->value => [
+            'Site' => [self::VOIR],
+            'Produit' => [self::VOIR, self::MODIFIER],                  // Il tarifie
+            'Fournisseur' => [self::VOIR, self::CREER, self::MODIFIER], // Il fixe les prix spéciaux
+            'Operation' => [self::VOIR],
+            'Paiement' => [self::VOIR, self::PAYER],
+            'MouvementCaisse' => [self::VOIR],
+            'MouvementEpargne' => [self::VOIR],
+            'DemandeSolde' => [self::VOIR, self::CREER, self::MODIFIER], // Il corrige et annule la sienne ; « tant qu'elle n'est pas traitée » est vérifié par les processors
+            'DemandePrelevement' => [self::VOIR, self::CREER, self::MODIFIER], // Il a le planteur devant lui : c'est à lui qu'on demande d'épargner
+        ],
+    ];
+
+    /**
+     * Les actions que ce rôle porte sur cette ressource, désignée par son nom court d'entité.
+     *
+     * @return list<string>
+     */
+    public static function actions(?Role $role, string $ressource): array
+    {
+        return self::TABLE[$role?->value][$ressource] ?? [];
+    }
+
+    /*
+        - Tous les droits d'un rôle, à plat et DANS LE VOCABULAIRE DU FRONTEND :
+          'MouvementCaisse' + 'VOIR' donne 'MOUVEMENTCAISSE_VOIR'. C'est la forme sous laquelle il
+          les interroge, donc celle qu'on lui envoie — il n'a plus rien à transformer, donc plus
+          aucune occasion de se tromper.
+        - Un rôle hors table repart avec une liste vide, et le frontend n'affiche alors aucun
+          bouton : le refus par défaut vaut mieux qu'un écran qui s'ouvre pour échouer.
+    */
+    /** @return list<string> */
+    public static function aPlat(?Role $role): array
+    {
+        $droits = [];
+
+        foreach(self::TABLE[$role?->value] ?? [] as $ressource => $actions) {
+            foreach($actions as $action) {
+                $droits[] = strtoupper($ressource) . '_' . $action;
+            }
+        }
+
+        return $droits;
+    }
+}

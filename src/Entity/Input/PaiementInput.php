@@ -2,6 +2,7 @@
 
 namespace App\Entity\Input;
 
+use App\Domain\Enum\ModeReglement;
 use App\Domain\Enum\ReseauMobile;
 use App\Validator\NumeroMobileValide;
 use Symfony\Component\Serializer\Attribute\Groups;
@@ -22,6 +23,14 @@ final class PaiementInput
     #[Assert\Positive(message: 'Le montant doit être supérieur à zéro')]
     #[Groups(['write:Paiement'])]
     public ?int $montant = null;
+
+    /*
+        - Espèces ou mobile money. Obligatoire et sans défaut : c'est lui qui désigne la caisse qui se vide, et un défaut implicite aurait vidé le flotte pour des billets remis de la main à la main.
+        - Les deux champs qui suivent ne valent que pour le mobile money. On les laisse facultatifs plutôt que de les interdire en espèces : un formulaire qui garde ses champs cachés remplis ne doit pas faire échouer un versement, et le service les ignore hors du mobile.
+    */
+    #[Assert\NotNull(message: 'Le mode de règlement est obligatoire')]
+    #[Groups(['write:Paiement'])]
+    public ?ModeReglement $modeReglement = null;
 
     /*
         - La forme est vérifiée dès la saisie plutôt qu'au moment de l'appel à l'agrégateur : le

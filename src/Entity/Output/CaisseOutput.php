@@ -15,15 +15,43 @@ final class CaisseOutput
     #[Groups(['read:Statistique'])]
     public ?int $soldeEntreprise = null;
 
+    /*
+        - Le détail par caisse, sous la même règle de visibilité que le total. Les deux ne se
+          remplacent pas : une entreprise qui a de quoi payer ses planteurs en billets mais plus un
+          franc de flotte n'est pas « à l'aise », et seul le détail le dit.
+    */
+    #[Groups(['read:Statistique'])]
+    public ?int $soldeEntreprisePhysique = null;
+
+    #[Groups(['read:Statistique'])]
+    public ?int $soldeEntrepriseNumerique = null;
+
     #[Groups(['read:Statistique'])]
     public int $soldeSites = 0;
+
+    #[Groups(['read:Statistique'])]
+    public int $soldeSitesPhysique = 0;
+
+    #[Groups(['read:Statistique'])]
+    public int $soldeSitesNumerique = 0;
 
     /*
         - Montant sorti des caisses mais pas encore confirmé par l'agrégateur. Il explique
           l'écart entre ce que l'opérateur croit avoir et ce qu'il peut réellement engager.
+        - Il ne concerne que la caisse NUMÉRIQUE, et c'est dans la nature des choses : des espèces
+          remises en main propre sont confirmées à la seconde où elles changent de main, elles ne
+          restent jamais en vol.
     */
     #[Groups(['read:Statistique'])]
     public int $montantImmobilise = 0;
+
+    /*
+        - Ce que l'entreprise doit aux planteurs au titre de leur épargne. Il ne figure dans AUCUNE
+          caisse — pas un billet n'a bougé au moment du prélèvement — et sans retrait, ce total ne
+          fait que grossir. C'est donc le seul endroit où l'administrateur peut le voir.
+    */
+    #[Groups(['read:Statistique'])]
+    public int $epargneDue = 0;
 
     #[Groups(['read:Statistique'])]
     public int $demandesEnAttente = 0;
@@ -42,7 +70,7 @@ final class CaisseOutput
     #[Groups(['read:Statistique'])]
     public ?int $attenteMinutes = null;
 
-    /** @var list<array{siteId: int, site: string, solde: int, immobilise: int, operateur: string|null}> */
+    /** @var list<array{siteId: int, site: string, solde: int, soldePhysique: int, soldeNumerique: int, immobilise: int, operateur: string|null}> */
     #[Groups(['read:Statistique'])]
     public array $parSite = [];
 }

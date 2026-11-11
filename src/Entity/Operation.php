@@ -12,9 +12,11 @@ use ApiPlatform\Metadata\GetCollection;
 // Aliasé : 'Operation' est le nom de cette entité même
 use ApiPlatform\OpenApi\Model\Operation as OpenApiOperation;
 use App\Domain\Enum\StatutOperation;
+use App\Domain\Enum\StatutPaiement;
 use App\Domain\Enum\StatutReglement;
 use App\Entity\Interface\SiteOwnedInterface;
 use App\Repository\OperationRepository;
+use App\State\Provider\MontantEnVolProvider;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
@@ -48,6 +50,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
     operations: [ // Lecture seule : une pesée n'arrive que par la synchronisation du poste
         new GetCollection(
             security: "is_granted('VOIR', 'Operation')",
+            provider: MontantEnVolProvider::class, // Pose 'montantenvol' sur toute la page en une requête groupée
             openapi: new OpenApiOperation(
                 summary: 'Liste des pesées',
                 description: 'Alimente la page Bilan. Filtres calqués sur l\'écran « Bilan standard » du logiciel de pesée',
@@ -235,6 +238,21 @@ class Operation extends EntityBase implements SiteOwnedInterface
     #[Groups(['read:Operation'])]
     private StatutReglement $statutReglement = StatutReglement::NON_PAYE;
 
+    /*
+        - Ce qui est mis de côté sur l'épargne du planteur, et le taux au kilo qui l'a produit. Le taux est figé à côté du montant pour la même raison que 'prixunitaire' : une retenue de 7 500 F dont personne ne sait si c'était 15 F × 500 kg ou 5 F × 1 500 kg est un chiffre inexplicable devant un planteur qui conteste.
+
+        - NULLABLE, et c'est structurant : 'null' veut dire « jamais arbitrée », '0' veut dire « arbitrée à taux nul ». Avec un défaut à zéro on ne distingue plus les deux, et un lot rejoué par le poste créditerait deux fois — ou jamais. C'est la leçon déjà payée sur le prix d'un produit, rappelée plus bas.
+
+        - Écrites par 'EpargneService' SEUL, via 'figerLaRetenue()'. Il n'existe pas de setter, tout comme il n'existe ni 'setMontantdu()' ni 'setPrixunitaire()' : ces valeurs-là ne se posent pas à la main.
+    */
+    #[ORM\Column(nullable: true)]
+    #[Groups(['read:Operation'])]
+    private ?int $tauxRetenue = null;
+
+    #[ORM\Column(nullable: true)]
+    #[Groups(['read:Operation'])]
+    private ?int $retenue = null;
+
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
     #[Groups(['read:Operation', 'read:Operation:item'])]
     private ?\DateTimeImmutable $syncAt = null;
@@ -251,6 +269,20 @@ class Operation extends EntityBase implements SiteOwnedInterface
     public function __construct()
     {
         $this->paiements = new ArrayCollection();
+    }
+
+    /*
+        - Posé par 'MontantEnVolProvider' sur une LISTE : une seule requête groupée pour toute la
+          page, sur le modèle de 'Produit::$peseesCount'. Nul sur une fiche, où le repli de
+          'getMontantenvol()' additionne les versements déjà chargés pour l'échéancier.
+    */
+    private ?int $montantenvol = null;
+
+    public function setMontantenvol(int $montantenvol): static
+    {
+        $this->montantenvol = $montantenvol;
+
+        return $this;
     }
 
     public function getId(): ?int
@@ -634,18 +666,109 @@ class Operation extends EntityBase implements SiteOwnedInterface
 
         $this->prixunitaire = $prixunitaire;
         $this->montantdu = $montantdu;
-        $this->statutReglement = StatutReglement::depuis($montantdu, $this->montantpaye);
+        $this->statutReglement = StatutReglement::pour($montantdu, $this->getMontantpayable(), $this->montantpaye);
 
         return true;
     }
 
+    public function getTauxRetenue(): ?int
+    {
+        return $this->tauxRetenue;
+    }
+
+    public function getRetenue(): ?int
+    {
+        return $this->retenue;
+    }
+
+    /*
+        - Arbitre la part mise en compte, UNE FOIS POUR TOUTES. Appelée par 'EpargneService' seul, et après l'écriture de la ligne du livre d'épargne : ce champ n'est qu'une dénormalisation de cette ligne, comme 'montantpaye' l'est de la somme des versements.
+
+        - Elle LÈVE au second appel au lieu de revenir en silence. Un second appel signifie qu'on s'apprêtait à écrire une deuxième ligne sur la même pesée, donc à créditer deux fois le planteur : une exception ici donne un bien meilleur message que la violation d'index qui suivrait.
+
+        - Un taux nul est une réponse comme une autre : elle ferme la pesée. C'est ainsi que la règle « seulement les pesées à venir » tient sans la moindre comparaison de dates — une pesée arbitrée à zéro ne sera jamais reprise.
+    */
+    public function figerLaRetenue(?int $taux, int $retenue): static
+    {
+        if($this->retenue !== null) {
+            throw new \LogicException(sprintf('La retenue de la pesée #%d est déjà arbitrée : elle ne se réécrit pas.', (int) $this->id));
+        }
+
+        $this->tauxRetenue = $taux;
+        $this->retenue = max(0, $retenue);
+
+        return $this;
+    }
+
+    /*
+        - Vrai quand la pesée attend qu'on tranche sa retenue. Le prédicat vit ici, où toutes les données sont sous la main ; l'écriture vit dans le service, qui seul sait verrouiller et transacter.
+
+        - Il exige un montant dû : une pesée dont le produit n'est pas tarifé ne vaut rien, et on ne prélève pas sur rien. Elle restera non arbitrée jusqu'à ce qu'elle soit valorisée — et commencera alors à épargner, ce qui est bien ce qu'on veut.
+    */
+    public function attendUnArbitrage(): bool
+    {
+        return $this->retenue === null
+            && $this->estTerminee()
+            && $this->poidsnet !== null
+            && $this->fournisseur !== null
+            && $this->montantdu !== null
+            && $this->montantdu > 0;
+    }
+
+    /*
+        - Ce qu'on remettra au planteur au guichet : ce que vaut la pesée, moins ce qu'on lui garde. C'est le chiffre qui borne les versements.
+
+        - 'montantdu' ne bouge pas, et c'est voulu : il reste ce que le planteur a GAGNÉ, celui que montrent sa fiche, le bilan et son ticket de pesée. Le payable est un second chiffre à côté, pas un remplacement.
+    */
+    #[Groups(['read:Operation'])]
+    public function getMontantpayable(): int
+    {
+        return $this->montantdu === null ? 0 : max(0, $this->montantdu - ($this->retenue ?? 0));
+    }
+
     /*
         - Ce qu'il reste à verser au planteur. Jamais négatif : si un tarif a baissé après un versement, le trop-perçu ne doit pas se transformer en dette du planteur.
+        - Calculé sur le PAYABLE et non sur le montant dû : la part retenue sur l'épargne ne lui sera pas remise au guichet, elle ne peut donc pas rester dans ce qui reste à payer.
     */
     #[Groups(['read:Operation'])]
     public function getResteapayer(): int
     {
-        return $this->montantdu === null ? 0 : max(0, $this->montantdu - $this->montantpaye);
+        return max(0, $this->getMontantpayable() - $this->montantpaye);
+    }
+
+    /*
+        - Ce qui a quitté la caisse du poste sans que la passerelle ait encore répondu. 'montantpaye' ne compte que le CONFIRMÉ, et c'est juste : tant qu'un versement n'est pas confirmé, il n'est pas versé. Mais l'argent, lui, est déjà sorti — et sans ce chiffre la file du guichet affichait le même reste avant et après un versement, comme si le geste n'avait rien produit.
+
+        - Sur une liste, la valeur vient du provider, qui l'a obtenue en UNE requête groupée pour toute la page. Le repli ne sert qu'à la fiche, dont l'échéancier a de toute façon chargé les versements.
+    */
+    #[Groups(['read:Operation'])]
+    public function getMontantenvol(): int
+    {
+        if($this->montantenvol !== null) {
+            return $this->montantenvol;
+        }
+
+        $total = 0;
+
+        // La même définition du « en vol » que la requête groupée du dépôt : les deux doivent trancher pareil
+        foreach($this->paiements as $versement) {
+            if(in_array($versement->getStatut(), StatutPaiement::enCours(), true)) {
+                $total += $versement->getMontant();
+            }
+        }
+
+        return $total;
+    }
+
+    /*
+        - Ce qu'on peut ENCORE engager, c'est-à-dire ce que l'API acceptera. C'est le chiffre à montrer à l'opérateur : le reste comptable moins ce qui est déjà parti sans réponse.
+
+        - Distinct de 'getResteapayer()', qui reste la créance du planteur : une pesée dont tous les versements sont en vol ne doit rien montrer à engager, sans pour autant passer pour soldée — elle ne le sera que quand la passerelle aura confirmé.
+    */
+    #[Groups(['read:Operation'])]
+    public function getResteaengager(): int
+    {
+        return max(0, $this->getResteapayer() - $this->getMontantenvol());
     }
 
     /*
@@ -653,11 +776,69 @@ class Operation extends EntityBase implements SiteOwnedInterface
     */
     public function estPayable(): bool
     {
-        return $this->estTerminee()
-            && $this->deletedAt === null
-            && $this->getResteapayer() > 0
-            && $this->fournisseur !== null
-            && $this->fournisseur->estPayable();
+        return $this->getMotifNonPayable() === null;
+    }
+
+    /*
+        - La raison pour laquelle cette pesée ne peut pas être réglée, ou null si elle peut l'être. Un motif plutôt qu'un booléen, pour la même raison que sur 'Fournisseur' : l'opérateur a le planteur devant lui et doit savoir QUOI corriger, pas seulement que « ça ne marche pas ».
+
+        - UN MONTANT NUL N'EST PAS UNE PESÉE SOLDÉE, et les confondre était un piège : un produit créé à la volée par le peseur naît sans prix ('Produit::$prix' vaut 0), ses pesées valent donc zéro franc. Elles restent « non payées », s'affichent dans la file du guichet, et le versement était refusé d'un « Cette pesée est déjà soldée » — l'opérateur partait chercher un versement qui n'avait jamais eu lieu, alors qu'il suffisait d'aller tarifer le produit.
+
+        - L'ordre des cas va du plus structurel au plus réparable : ce qui ne se rattrape pas d'abord, ce qui se corrige au bureau ensuite.
+
+        - Le préfixe 'get' n'est pas un caprice : le sérialiseur ignore les groupes posés sur une méthode qui n'en porte pas.
+    */
+    #[Groups(['read:Operation'])]
+    public function getMotifNonPayable(): ?string
+    {
+        if($this->deletedAt !== null) {
+            return 'Cette pesée est à la corbeille.';
+        }
+
+        if(!$this->estTerminee()) {
+            return 'Cette pesée n\'est pas terminée : le camion n\'est pas encore ressorti.';
+        }
+
+        if($this->fournisseur === null) {
+            return 'Cette pesée n\'est rattachée à aucun planteur : personne à payer.';
+        }
+
+        // Ce qui interdit tout règlement, quel qu'en soit le mode — la suspension, et elle seule
+        if(($bloquant = $this->fournisseur->getMotifBloquant()) !== null) {
+            return $bloquant;
+        }
+
+        if($this->montantdu === null || $this->montantdu <= 0) {
+            return $this->produit === null
+                ? 'Cette pesée n\'est rattachée à aucun produit : son montant ne peut pas être calculé.'
+                : sprintf('Le produit « %s » n\'a pas de prix : cette pesée ne vaut rien tant qu\'il n\'est pas tarifé.', (string) $this->produit->getLibelle());
+        }
+
+        /*
+            - APRÈS le produit non tarifé, parce qu'un message qui nomme quelque chose à corriger doit gagner sur un message qui ne fait que constater. AVANT « déjà soldée », sans quoi le reste à payer valant zéro, la branche suivante avalerait le cas et annoncerait un versement qui n'a jamais eu lieu.
+        */
+        if($this->getMontantpayable() <= 0) {
+            return sprintf(
+                'Les %s F CFA de cette pesée sont intégralement retenus sur l\'épargne de %s : il n\'y a rien à lui verser au guichet.',
+                number_format((int) $this->montantdu, 0, ',', ' '),
+                $this->fournisseur->getNomComplet()
+            );
+        }
+
+        if($this->getResteapayer() <= 0) {
+            return 'Cette pesée est déjà soldée.';
+        }
+
+        // Mot pour mot le refus de 'PaiementService' : l'écran doit annoncer ce que le serveur répondra, pas le paraphraser
+        if($this->getResteaengager() <= 0) {
+            return 'Un versement est déjà en cours sur cette pesée pour le montant restant.';
+        }
+
+        /*
+            - Le motif MOBILE du planteur — numéro absent ou illisible — ne figure volontairement pas ici : il ferme un mode de règlement, pas le règlement. Un planteur sans téléphone se paie en espèces, et le déclarer non payable le laissait attendre sa récolte jusqu'à ce que quelqu'un lui trouve un numéro.
+            - L'écran continue de le montrer sur la ligne du planteur, et l'écran de versement ferme le mode mobile : l'information n'est pas perdue, elle a seulement cessé d'être un refus.
+        */
+        return null;
     }
 
     /**

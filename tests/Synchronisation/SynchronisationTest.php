@@ -180,6 +180,64 @@ final class SynchronisationTest extends InvariantTestCase
     }
 
     /*
+        - LE PREMIER PASSAGE EST UN FAIT DE BASCULE, pas une donnée que le second envoi rapporte. Le
+          poids d'entrée est relevé quand le camion monte sur le pont ; au second passage, le poste
+          le recopie de sa base locale, et rien ne l'a repesé.
+
+        - Ce qui arrive quand on laisse le second envoi l'écraser : une valeur corrigée à la main sur
+          le poste, ou un champ revenu vide, réécrit après coup un relevé de bascule — et il n'existe
+          aucune trace de ce qu'il valait. L'heure d'entrée suit la même règle, sans quoi on garderait
+          un poids relevé au premier passage avec une heure venue du second.
+    */
+    public function testLeSecondPassageNeReecritNiLePremierPoidsNiSonHeure(): void
+    {
+        $this->synchroniser([$this->ligne('101', [
+            'poids1' => 1_000,
+            'datepesee1' => '2026-08-09',
+            'temps1' => '08:00:00',
+            'poids2' => 0,
+            'poidsnet' => 0,
+        ])]);
+
+        // Le poste renvoie la ligne complétée, avec un premier poids et une heure d'entrée différents
+        $this->synchroniser([$this->ligne('101', [
+            'poids1' => 7_777,
+            'datepesee1' => '2026-08-09',
+            'temps1' => '23:59:00',
+            'poids2' => 1_500,
+            'poidsnet' => 500,
+        ])]);
+
+        $this->em->clear();
+        $pesee = $this->pesees()[0];
+
+        self::assertSame(1_000, $pesee->getPoids1(), 'Le poids d\'entrée a été réécrit par le second passage');
+        self::assertSame('08:00', $pesee->getPeseeAt1()?->format('H:i'), 'L\'heure d\'entrée a été réécrite par le second passage');
+
+        // Le second passage, lui, apporte bien ce qui lui appartient
+        self::assertSame(1_500, $pesee->getPoids2());
+        self::assertSame(500, $pesee->getPoidsnet());
+    }
+
+    /*
+        - Figer le premier passage ne doit pas refuser ce qu'on ignore encore : un premier envoi qui
+          n'apporte pas le poids d'entrée — champ absent, poste mal configuré — laisse la place, et le
+          passage suivant la remplit. On fige ce qui est acquis, pas ce qui manque.
+    */
+    public function testUnPremierPoidsAbsentPeutEncoreArriverAuPassageSuivant(): void
+    {
+        $this->synchroniser([$this->ligne('101', ['poids1' => null, 'poids2' => 0, 'poidsnet' => 0])]);
+
+        $this->em->clear();
+        self::assertNull($this->pesees()[0]->getPoids1());
+
+        $this->synchroniser([$this->ligne('101', ['poids1' => 1_000, 'poids2' => 1_500, 'poidsnet' => 500])]);
+
+        $this->em->clear();
+        self::assertSame(1_000, $this->pesees()[0]->getPoids1());
+    }
+
+    /*
         - Bloquer un poste coupe l'arrivée de ses pesées. Le poste continue d'enregistrer localement :
           elles remonteront au déblocage, et l'idempotence garantit qu'aucune ne sera perdue en double.
     */

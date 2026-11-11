@@ -2,6 +2,7 @@
 
 namespace App\Domain\Service\Caisse;
 
+use App\Domain\Enum\ModeReglement;
 use App\Domain\Enum\ReseauMobile;
 use App\Domain\Enum\StatutPaiement;
 use App\Domain\Enum\StatutReglement;
@@ -39,7 +40,7 @@ class PaiementService
     {
     }
 
-    public function initier(Operation $pesee, int $montant, User $initiePar, ?string $numeroDestinataire = null, ?ReseauMobile $reseau = null): Paiement
+    public function initier(Operation $pesee, int $montant, ModeReglement $mode, User $initiePar, ?string $numeroDestinataire = null, ?ReseauMobile $reseau = null): Paiement
     {
         $planteur = $pesee->getFournisseur();
         $site = $pesee->getSite();
@@ -56,35 +57,75 @@ class PaiementService
             throw new UnprocessableEntityHttpException('Ce pont bascule est bloqué : aucun paiement ne peut en partir.');
         }
 
-        // Le numéro transmis a priorité : il permet de payer sur un numéro de circonstance sans toucher à la fiche
-        $numero = $numeroDestinataire ?? $planteur->getContact1();
-
-        if($numero === null || $numero === '') {
-            throw new UnprocessableEntityHttpException($planteur->getMotifNonPayable() ?? 'Ce planteur n\'a pas de numéro de téléphone.');
+        /*
+            - Ce qui interdit TOUT règlement, avant même de regarder le mode : la suspension du planteur. Elle n'a rien à voir avec un numéro manquant — l'un dit qu'on ne peut pas le joindre, l'autre qu'on ne doit pas le payer. Ne contrôler que le second rouvrait en espèces la porte que la suspension venait de fermer.
+        */
+        if(($bloquant = $planteur->getMotifBloquant()) !== null) {
+            throw new UnprocessableEntityHttpException($bloquant);
         }
 
         /*
-            - LE dernier contrôle avant que l'argent ne quitte la caisse. Les setters du planteur
-              normalisent déjà, mais le numéro de circonstance n'y passe pas : il arrive du corps de la
-              requête et va droit à l'agrégateur. Le laisser filer, c'est réserver les fonds, appeler
-              la passerelle, essuyer un refus, puis rembourser — trois écritures pour une faute de
-              frappe.
-            - On normalise plutôt que de refuser une forme correcte mal écrite : « 07 01 02 03 04 »
-              est un numéro valable, tapé comme on le lit.
+            - TOUT CE QUI SUIT NE CONCERNE QUE LE MOBILE MONEY. Des espèces ne vont à aucun numéro : exiger un numéro de téléphone pour remettre des billets à quelqu'un qui est devant soi n'aurait servi qu'à rendre impayables les planteurs qui n'en ont pas — c'est-à-dire précisément ceux qu'on règle en liquide.
+            - Le numéro et le réseau transmis sont donc ignorés hors du mobile money, plutôt que refusés : un formulaire qui garde ses champs cachés remplis ne doit pas faire échouer un versement.
         */
-        $numero = NumeroMobile::normaliser($numero) ?? throw new UnprocessableEntityHttpException(
-            sprintf('Le numéro « %s » n\'est pas un numéro mobile reconnu.', $numero)
-        );
+        $numero = null;
 
-        if($planteur->getMotifNonPayable() !== null && $numeroDestinataire === null) {
-            throw new UnprocessableEntityHttpException($planteur->getMotifNonPayable());
+        if($mode->exigeUnNumero()) {
+            // Le numéro transmis a priorité : il permet de payer sur un numéro de circonstance sans toucher à la fiche
+            $numero = $numeroDestinataire ?? $planteur->getContact1();
+
+            if($numero === null || $numero === '') {
+                throw new UnprocessableEntityHttpException($planteur->getMotifNonPayable() ?? 'Ce planteur n\'a pas de numéro de téléphone.');
+            }
+
+            /*
+                - LE dernier contrôle avant que l'argent ne quitte la caisse. Les setters du planteur
+                  normalisent déjà, mais le numéro de circonstance n'y passe pas : il arrive du corps de la
+                  requête et va droit à l'agrégateur. Le laisser filer, c'est réserver les fonds, appeler
+                  la passerelle, essuyer un refus, puis rembourser — trois écritures pour une faute de
+                  frappe.
+                - On normalise plutôt que de refuser une forme correcte mal écrite : « 07 01 02 03 04 »
+                  est un numéro valable, tapé comme on le lit.
+            */
+            $numero = NumeroMobile::normaliser($numero) ?? throw new UnprocessableEntityHttpException(
+                sprintf('Le numéro « %s » n\'est pas un numéro mobile reconnu.', $numero)
+            );
+
+            if($planteur->getMotifNonPayable() !== null && $numeroDestinataire === null) {
+                throw new UnprocessableEntityHttpException($planteur->getMotifNonPayable());
+            }
+        }
+
+        /*
+            - Une pesée qui ne vaut rien se refuse AVANT d'être comparée à ce qui a déjà été engagé : sans montant dû, les deux termes de la soustraction ci-dessous tombent à zéro et la pesée était annoncée « déjà soldée » alors que pas un franc n'était parti. Le motif, lui, nomme ce qu'il faut corriger — le plus souvent un produit créé par le poste et jamais tarifé.
+        */
+        $du = (int) $pesee->getMontantdu();
+
+        if($du <= 0) {
+            throw new UnprocessableEntityHttpException(
+                $pesee->getMotifNonPayable() ?? 'Cette pesée n\'est pas valorisée : son montant est nul.'
+            );
+        }
+
+        /*
+            - Ce qu'on peut VERSER, et non ce que la pesée vaut : la part mise en compte sur l'épargne du planteur ne lui sera pas remise au guichet. Elle est déjà écrite à son nom dans le livre d'épargne — la verser une seconde fois au guichet reviendrait à la payer deux fois.
+            - Refusé AVANT la soustraction qui suit, pour la raison déjà donnée plus haut à propos d'un prix nul : sans cela les deux termes tombent à zéro et la pesée est annoncée « déjà soldée » alors que pas un franc n'est parti.
+        */
+        $payable = $pesee->getMontantpayable();
+
+        if($payable <= 0) {
+            throw new UnprocessableEntityHttpException(
+                $pesee->getMotifNonPayable() ?? 'Cette pesée est intégralement retenue sur l\'épargne du planteur.'
+            );
         }
 
         /*
             - On borne sur ce qui est ENGAGÉ et non sur ce qui est confirmé : un versement encore en vol chez l'agrégateur a déjà quitté la caisse, et rien ne dit qu'il échouera. Ne compter que le confirmé permettrait d'engager deux fois le même reste à payer, et de payer le planteur en double.
+            - C'EST LA SEULE LIGNE DE L'APPLICATION OÙ LA BORNE D'UN VERSEMENT SE DÉCIDE. Tout le reste peut être juste : si elle repartait du montant dû, le guichet verserait l'épargne avec le reste.
         */
-        $reste = max(0, ((int) $pesee->getMontantdu()) - $this->paiementRepository->sommeEngagee($pesee));
+        $reste = max(0, $payable - $this->paiementRepository->sommeEngagee($pesee));
 
+        // Passé le contrôle ci-dessus, un reste nul ne peut plus venir que de l'argent : soldée, ou déjà engagée
         if($reste <= 0) {
             throw new UnprocessableEntityHttpException(
                 $pesee->getResteapayer() <= 0
@@ -100,12 +141,14 @@ class PaiementService
         $paiement = (new Paiement())
             ->setReference(Paiement::genererReference())
             ->setMontant($montant)
+            ->setModeReglement($mode)
             ->setOperation($pesee)
             ->setFournisseur($planteur)
             ->setSite($site)
             ->setNumeroDestinataire($numero)
-            ->setReseau($reseau ?? $planteur->getReseau())
-            ->setGateway($this->passerelle->nom())
+            ->setReseau($mode->passeParLaPasserelle() ? ($reseau ?? $planteur->getReseau()) : null)
+            // Qui a traité le versement. Hors passerelle, c'est le guichet lui-même : une recherche a posteriori doit pouvoir distinguer les deux
+            ->setGateway($mode->passeParLaPasserelle() ? $this->passerelle->nom() : 'caisse')
             ->setStatut(StatutPaiement::EN_ATTENTE)
             ->setInitiePar($initiePar);
 
@@ -120,6 +163,17 @@ class PaiementService
 
             $this->caisse->debiterPourPaiement($paiement); // Au-delà de ce point, la somme est sortie de la caisse du site
         });
+
+        /*
+            - Les espèces s'arrêtent ici. Les billets ont changé de main pendant que l'opérateur saisissait l'écran : il n'y a personne à interroger, rien qui puisse échouer plus tard, et donc rien à réconcilier. Le versement est confirmé dans la foulée, et 'recalculerLeReglement()' fait tomber le reste à payer immédiatement.
+            - Le faire passer par 'appliquerResultat()' comme les autres n'est pas une coquetterie : c'est lui qui tient 'montantpaye' et le statut de règlement. Court-circuiter ce chemin aurait donné une seconde façon de solder une pesée, et deux façons finissent par diverger.
+        */
+        if(!$mode->passeParLaPasserelle()) {
+            return $this->appliquerResultat($paiement, ResultatVersement::confirmeSansPasserelle([
+                'mode' => $mode->value,
+                'guichet' => $initiePar->getUserIdentifier(),
+            ]));
+        }
 
         try {
             $resultat = $this->passerelle->verser($paiement);
@@ -215,7 +269,7 @@ class PaiementService
 
         $pesee
             ->setMontantpaye($verse)
-            ->setStatutReglement(StatutReglement::depuis($pesee->getMontantdu(), $verse));
+            ->setStatutReglement(StatutReglement::pour($pesee->getMontantdu(), $pesee->getMontantpayable(), $verse));
 
         $this->em->flush();
     }

@@ -3,6 +3,7 @@
 namespace App\Tests\Securite;
 
 use App\Domain\Enum\Role;
+use App\Domain\Enum\TypeCaisse;
 use App\Domain\Service\Caisse\CaisseService;
 use App\Entity\Entreprise;
 use App\Entity\Operation;
@@ -127,8 +128,8 @@ final class CloisonnementTest extends InvariantTestCase
     public function testUnOperateurNeVoitPasLaTresorerieDeLEntreprise(): void
     {
         $caisse = self::getContainer()->get(CaisseService::class);
-        $caisse->rechargerEntreprise($this->acme, 100_000);   // Sans site
-        $caisse->doterSite($this->siteAcme, 40_000);          // Une ligne sans site, une avec
+        $caisse->rechargerEntreprise($this->acme, TypeCaisse::NUMERIQUE, 100_000);   // Sans site
+        $caisse->doterSite($this->siteAcme, TypeCaisse::NUMERIQUE, 40_000);          // Une ligne sans site, une avec
 
         $this->appeler('GET', '/api/mouvement_caisses', $this->operateurAcme);
 

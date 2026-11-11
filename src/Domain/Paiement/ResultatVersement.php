@@ -41,4 +41,14 @@ final class ResultatVersement
     {
         return new self(StatutPaiement::ECHOUE, $transactionId, $message, $payload);
     }
+
+    /*
+        - Un règlement qui n'est passé par aucun agrégateur : les billets ont changé de main devant le poste. Confirmé d'emblée, et SANS identifiant de transaction — il n'y a aucune transaction à retrouver ailleurs, et en inventer un ferait croire à une pièce qu'on pourrait réclamer au service client.
+        - Une fabrique à part plutôt qu'un 'transactionId' rendu facultatif sur 'reussi()' : ce que répond une passerelle porte toujours une référence, et relâcher cette règle pour un cas qui ne la concerne pas l'aurait affaiblie pour tous les autres.
+    */
+    /** @param array<string, mixed>|null $payload */
+    public static function confirmeSansPasserelle(?array $payload = null): self
+    {
+        return new self(StatutPaiement::REUSSI, null, null, $payload);
+    }
 }

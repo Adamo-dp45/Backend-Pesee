@@ -3,6 +3,7 @@
 namespace App\Tests\Caisse;
 
 use App\Domain\Enum\Role;
+use App\Domain\Enum\TypeCaisse;
 use App\Domain\Enum\StatutDemande;
 use App\Domain\Enum\TypeMouvement;
 use App\Entity\DemandeSolde;
@@ -149,7 +150,7 @@ final class DemandeSoldeTest extends InvariantTestCase
     */
     public function testUneApprobationRefuseeParLaCaisseNeMarquePasLaDemande(): void
     {
-        $this->entreprise->setSolde(10_000);
+        $this->entreprise->setSoldeDe(TypeCaisse::NUMERIQUE, 10_000);
         $this->em->flush();
 
         $this->deposer(50_000);
@@ -175,6 +176,7 @@ final class DemandeSoldeTest extends InvariantTestCase
         $this->appeler('POST', '/api/demande_soldes', $this->operateur, [
             'site' => '/api/sites/' . $this->site->getId(),
             'montantDemande' => $montant,
+            'caisse' => 'NUMERIQUE',
             'motif' => 'Plus de quoi payer les planteurs.',
         ]);
     }

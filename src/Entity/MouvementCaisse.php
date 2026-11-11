@@ -12,6 +12,7 @@ use ApiPlatform\Metadata\GetCollection;
 use ApiPlatform\OpenApi\Model\Operation;
 use App\Domain\Enum\CompteMouvement;
 use App\Domain\Enum\SensMouvement;
+use App\Domain\Enum\TypeCaisse;
 use App\Domain\Enum\TypeMouvement;
 use App\Entity\Interface\EntrepriseOwnedInterface;
 use App\Entity\Interface\SiteOwnedInterface;
@@ -62,6 +63,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
 )]
 #[ApiFilter(SearchFilter::class, properties: [
     'compte' => 'exact',
+    'caisse' => 'exact', // Lire le journal d'une seule caisse : c'est ainsi qu'on vérifie que sa chaîne de soldes se tient
     'type' => 'exact',
     'sens' => 'exact',
     'site' => 'exact',
@@ -82,6 +84,14 @@ class MouvementCaisse extends EntityBase implements EntrepriseOwnedInterface, Si
     #[ORM\Column(enumType: CompteMouvement::class)]
     #[Groups(['read:MouvementCaisse'])]
     private ?CompteMouvement $compte = null;
+
+    /*
+        - 'compte' dit de QUI est la caisse — l'entreprise ou le poste — et celui-ci dit LAQUELLE de ses deux. Les deux ensemble désignent un solde, et un seul : c'est ce qui permet de rejouer le grand livre d'une caisse donnée et de retrouver exactement son solde.
+        - Sans ce champ, les lignes des deux caisses d'un même poste se suivaient dans le journal avec des 'soldeAvant'/'soldeApres' qui ne s'enchaînaient pas — la chaîne paraissait rompue à chaque alternance, et rien ne permettait de dire laquelle des deux avait bougé.
+    */
+    #[ORM\Column(enumType: TypeCaisse::class, options: ['default' => 'NUMERIQUE'])]
+    #[Groups(['read:MouvementCaisse'])]
+    private TypeCaisse $caisse = TypeCaisse::NUMERIQUE;
 
     /*
         - Toujours renseignée, y compris pour un mouvement de site : ça permet de sortir le journal complet d'une entreprise sans passer par une jointure sur les sites.
@@ -149,6 +159,24 @@ class MouvementCaisse extends EntityBase implements EntrepriseOwnedInterface, Si
         $this->compte = $compte;
 
         return $this;
+    }
+
+    public function getCaisse(): TypeCaisse
+    {
+        return $this->caisse;
+    }
+
+    public function setCaisse(TypeCaisse $caisse): static
+    {
+        $this->caisse = $caisse;
+
+        return $this;
+    }
+
+    #[Groups(['read:MouvementCaisse'])]
+    public function getCaisseLibelle(): string
+    {
+        return $this->caisse->libelle();
     }
 
     public function getEntreprise(): ?Entreprise

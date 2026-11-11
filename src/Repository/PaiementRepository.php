@@ -36,6 +36,44 @@ class PaiementRepository extends ServiceEntityRepository
     }
 
     /**
+     * Ce qui est parti de la caisse sur chaque pesée sans être encore confirmé, pour TOUTE une page
+     * de pesées en une requête.
+     *
+     * Le besoin vient de la file du guichet : 'montantpaye' ne compte que le confirmé, donc tant que
+     * la passerelle n'a pas répondu, une pesée qu'on vient de payer y affiche le même reste
+     * qu'avant. L'opérateur croit que son versement n'est pas parti et recommence — l'API refuse,
+     * mais il a fallu en arriver là pour le savoir.
+     *
+     * @param list<int> $operationIds
+     *
+     * @return array<int, int> 'id de la pesée' => 'montant en vol'
+     */
+    public function montantsEnVolParPesee(array $operationIds): array
+    {
+        if($operationIds === []) {
+            return [];
+        }
+
+        $lignes = $this->createQueryBuilder('p')
+            ->select('IDENTITY(p.operation) AS peseeId', 'COALESCE(SUM(p.montant), 0) AS montant')
+            ->andWhere('p.operation IN (:pesees)')
+            ->andWhere('p.statut IN (:statuts)')
+            ->setParameter('pesees', $operationIds)
+            ->setParameter('statuts', StatutPaiement::enCours())
+            ->groupBy('peseeId')
+            ->getQuery()
+            ->getArrayResult();
+
+        $parPesee = [];
+
+        foreach($lignes as $ligne) {
+            $parPesee[(int) $ligne['peseeId']] = (int) $ligne['montant'];
+        }
+
+        return $parPesee;
+    }
+
+    /**
      * Les versements restés en vol au-delà du délai, à réinterroger auprès de la passerelle.
      *
      * @return list<Paiement>

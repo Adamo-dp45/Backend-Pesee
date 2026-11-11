@@ -25,100 +25,60 @@
 - 
 
 - **Important !**
-    > Vu que `make` n'est pas disponible sur `windows` on.. ajouter les cibles en `scripts composer`
-    > !! qu'en `mysql` un index unique contenant une colonne `NULL` n'empêche pas les doublons et que l'auto création par libellé n'aurait rien garanti on a créer une clé normalisée `Cle.php`..
-    > Sur ApiExceptionSubscriber, je ne suis pas d'accord — et je l'ai vérifié plutôt que d'argumenter. Il ne fait pas double emploi avec ApiExceptionHandlerHelper : le helper est appelé dans un catch, là où le contrôleur sait quoi faire de l'erreur ; le subscriber rattrape les appels qui ne sont dans aucun catch. Or il y en a beaucoup — 64 appels API pour 23 catch, et BilanController, PeseeController, TableauDeBordController n'en ont aucun. Je l'ai donc remis, avec un commentaire qui dit précisément en quoi les deux diffèrent — c'est justement la confusion qui t'a fait penser qu'il était devenu inutile. Si tu veux vraiment t'en passer, il faut d'abord entourer chaque lecture d'un try/catch, ce qui ramène le bruit que le subscriber avait supprimé.
-    > L'alias @ est déclaré dans tsconfig mais pas dans Webpack — les composants shadcn l'utilisent. webpack.config.js
-    > Un défaut sérieux trouvé en testant, qui touchait tous les écrans. En rejetant sans motif, l'API répondait bien 422 — et rien ne s'affichait. Cause : ApiExceptionHandlerHelper traite tout 422 comme une erreur de validation et boucle sur getViolations(). Or un 422 métier (« une demande est déjà en attente », « solde insuffisant », « déjà traitée ») n'a pas de violations par champ, seulement un message. La boucle tournait à vide, la méthode rendait null, le formulaire se réaffichait muet : le geste semblait n'avoir aucun effet. J'ai ajouté le cas manquant — sans violations, le message devient une erreur globale du formulaire. C'est le helper que j'ai porté de Transport, donc le défaut y est probablement aussi.
-    > Tu répètes security: [['bearerAuth' => []]] sur chaque opération. Je l'ai déclaré une fois globalement dans OpenApiFactory, avec security: [] sur les routes publiques — vérifié : /api/register et /api/mot-de-passe/oubli sont bien marquées publiques, le reste hérite du bearer. Ça évite de le répéter 35 fois et surtout de l'oublier une fois. Si tu préfères ton écriture explicite par opération, c'est un ajout mécanique, dis-le moi.
-    > NotCompromisedPassword a exigé symfony/http-client (installé), et je l'ai réglé en skipOnError — sur une connexion de terrain coupée, la vérification ne doit pas empêcher de créer un compte.
-        #[Assert\NotCompromisedPassword(
-            message: 'Ce mot de passe figure dans des fuites de données connues : choisissez-en un autre',
-            skipOnError: true // La vérification interroge un service distant : sur une connexion de terrain coupée, elle ne doit pas empêcher de créer un compte
-        )]
+    > Vu que `make` n'est pas disponible sur `windows` on.. passer par les `scripts` de `composer`
+    > !! qu'en `mysql` un index unique contenant une colonne `NULL` n'empêche pas les doublons et que l'auto création par libellé n'aurait rien garanti on a crée une clé normalisée `Cle.php`..
+    > Le fuseau horaire en `UTC` vu qu'un hébergeur en `Europe/Paris` décale de 2 heures.. dans les `Kernel.php`, dans les `twig.yaml` pour que son `date_default_timezone_get()` soit à l'abri d'un `php.ini` et dans le `cellules.tsx` on a `timeZone: 'UTC'`
+    > Pour éviter de répéter `security: [['bearerAuth' => []]]` sur chaque opération, on.. déclarer globalement dans `OpenApiFactory` avec `security: []` sur les routes publiques
     > On.. `SynchronisationLot` en tant que journal d'un push pour diagnostiquer un pont bascule à distance
+
+- **L..**
+    > php bin/console app:super-admin:creer : Pour créer le super administrateur ou en mode interactif `.. --email=root@webpesee.com --nom=admin`
 - 
 
 - 
-- jspdf, jspdf-autotable, xlsx, xlsx-js-style à reprendre sur github
-Chatgpt : Génération d'images, créatif, tout en un
-Claude : Analyse approfondie, développement, rédaction professionnelle
+## Desktop
 
-- **Développement**
-    > composer install
-    > php bin/console lexik:jwt:generate-keypair
-    > php bin/console doctrine:migrations:migrate --no-interaction
-    > php bin/console doctrine:fixtures:load --no-interaction
-    > php -S localhost:8000 -t public
+**S'authentifier d'abord.** Le fichier de configuration déposé à l'installation porte `api.url`, `api.login`, `api.motdepasse`. Le poste fait `POST /api/login_check` (`{username, password}`), garde le `token` et le `refresh_token`, et met `Authorization: Bearer <token>` sur **tous** les appels suivants. Sur 401, `POST /api/token/refresh`. C'est la seule chose qui change par rapport à l'ancienne version.
 
-- **Vérification**
-    > vendor/bin/phpunit : dont les tests d'intégration sur base réelle
-    > vendor/bin/phpstan analyse : niveau 6, lancer `cache:warmup` d'abord si le conteneur manque
-    > php bin/console doctrine:schema:validate
+**Envoyer les pesées** : `POST /api/synchronisation`, corps `{"pesees": [ … ]}`.
 
-- **Git**
-    > git push -u origin main : .. `--force`
+| Champ | Obligatoire | Devient |
+|---|---|---|
+| `id` | **oui** | `refDesktop` — la clé primaire de la pesée dans la base locale du poste |
+| `code` | **oui** | vérification de cohérence avec le pont bascule du compte |
+| `codepesee` | **oui** | `codepesee` |
+| `numticket` | non | émis au second passage |
+| `poids1`, `datepesee1`, `temps1` | non | premier passage |
+| `poids2`, `poidsbrut`, `poidsnet`, `datepesee2`, `temps2` | non | second passage |
+| `libelleproduit`, `codeproduit`, `prix` | non | crée/complète le produit |
+| `libellefournisseur`, `codefournisseur`, `contactfournisseur`, `prixspeciale` | non | crée/complète le planteur |
+| `libellemouvement`, `libelleclient`, `libelledestination`, `libelleprovenance`, `libelletransporteur`, `chauffeur` | non | texte libre |
+| `immatriculation`, `remorque`, `peseur`, `contactpl`, `conteneur`, `plomb` | non | texte libre |
 
-- **Production**
-    > On peut désactiver la doc `ApiPlatform` dans `config/packages/api_platform.yaml`
-    > La 1ère
-        > git clone .. .
-        > Pour le `.env..` on peut `cp .env .env.local` ou `composer dump-env prod` qui génère un fichier `.env.local.php` qui est plus optimisé
-        > composer install --no-dev --optimize-autoloader
-        > composer require symfony/apache-pack
-        > php bin/console lexik:jwt:generate-keypair : Pour générer les clés jwt vu qu'ils ne sont pas versionné
-        > `MAILER_DSN` dans `.env.local` : le défaut versionné est `null://null` et n'envoie rien
-        > php bin/console doctrine:migrations:migrate --no-interaction
-        > php bin/console cache:clear --env=prod
-        > php bin/console cache:warmup --env=prod
-    > Les prochaines
-        > git pull origin main
-        > composer install --no-dev --optimize-autoloader
-        > php bin/console doctrine:migrations:migrate --no-interaction
-        > php bin/console cache:clear --env=prod
-        > php bin/console cache:warmup --env=prod
 
-    "scripts": {
-        "auto-scripts": {
-            "cache:clear": "symfony-cmd",
-            "assets:install %PUBLIC_DIR%": "symfony-cmd"
-        },
-        "post-install-cmd": [
-            "@auto-scripts"
-        ],
-        "post-update-cmd": [
-            "@auto-scripts"
-        ],
-        "db-reset": [
-            "php bin/console doctrine:database:drop --force --if-exists",
-            "php bin/console doctrine:database:create",
-            "php bin/console doctrine:migrations:migrate --no-interaction",
-            "php bin/console doctrine:schema:validate"
-        ],
-        "fixtures": "php bin/console doctrine:fixtures:load --no-interaction",
-        "test": [
-            "php bin/console doctrine:database:drop --force --if-exists --env=test",
-            "php bin/console doctrine:database:create --env=test",
-            "php bin/console doctrine:migrations:migrate --no-interaction --env=test",
-            "vendor/bin/phpunit"
-        ],
-        "stan": [
-            "php bin/console cache:warmup --env=dev",
-            "vendor/bin/phpstan analyse --memory-limit=1G"
-        ],
-        "lint": [
-            "php bin/console lint:container",
-            "php bin/console lint:yaml config --parse-tags",
-            "php bin/console doctrine:schema:validate --skip-sync"
-        ]
-    },
-    "scripts-descriptions": {
-        "db-reset": "Recrée la base de développement et rejoue toutes les migrations",
-        "fixtures": "Charge le jeu de démonstration",
-        "test": "Prépare la base de test et lance la suite PHPUnit",
-        "stan": "Analyse statique PHPStan",
-        "lint": "Vérifications rapides du conteneur, des YAML et du mapping Doctrine"
-    }
+# Webpesee
+
+Gestion de ponts bascules. Sur chaque site, un logiciel de pesée enregistre les passages de camions et pousse ses pesées vers une API centrale. Depuis le web, une entreprise exploite l'ensemble de son parc — consultation, statistiques, impression — et paie ses planteurs par mobile money.
+
+| | Super administrateur | Administrateur | Agent | Opérateur |
+|---|---|---|---|---|
+| Périmètre | Les clients | Son entreprise | Son entreprise | Ses ponts bascules |
+| Entreprises | créer, modifier, désactiver | modifier la sienne | consulter | — |
+| Ponts bascules | **mettre en service**, bloquer | affecter, doter, bloquer | consulter | consulter les siens |
+| Utilisateurs | tous | ceux de son entreprise | les opérateurs | — |
+| Pesées et statistiques | **aucun accès** | ✓ | ✓ | ses sites |
+| Caisse | **aucun accès** | recharger, doter | consulter | sa caisse |
+| Payer un planteur | — | ✓ | — | ✓ |
+| Tarifer produits et planteurs | — | ✓ | — | ✓ |
+
+Le super administrateur provisionne, il n'exploite pas : ni pesées, ni caisse, ni statistiques. Ce n'est pas son argent.
+
+Un **compte machine** `ROLE_SITE` par pont bascule sert au logiciel de pesée. Il n'a aucun accès web.
+
+- **L'entreprise vient du compte machine**, jamais du payload. Un code mal saisi à l'installation ne peut plus verser les pesées chez le mauvais client.
+- **Idempotence garantie par un index unique** sur `operation.codesecret`. Rejouer deux fois le même lot ne crée aucun doublon.
+
+
 
 
 root@webpesee.com
@@ -126,115 +86,202 @@ bakayoko
 adam@gmail.com
 Socafpesage10
 
-php bin/console app:super-admin:creer
-CreerSuperAdminCommand — saisie masquée avec confirmation, ou en non interactif :a
-php bin/console app:super-admin:creer --email=root@webpesee.com --nom=Admin --prenom=Super
-Elle refuse une adresse invalide, une adresse déjà prise, un mot de passe de moins de 8 caractères. J'avais ajouté une note comptant les super administrateurs existants : le findBy sur une colonne JSON ne matche pas, je l'ai retirée plutôt que de la rafistoler pour un message décoratif.
 
 
 
-## Le fuseau horaire en UTC
 
-Il n'y avait **aucun réglage** : le fuseau venait du `php.ini` de la machine. Sur ton poste il se trouve qu'aucun n'est déclaré, donc PHP retombait sur UTC — par chance, pas par décision. Un hébergeur en `Europe/Paris` aurait décalé les pesées de deux heures sans que rien ne le signale.
 
-Posé à trois endroits, un par couche :
+- Le cron `app:paiements:reconcilier`.. on l'a dans le `Makefile` donc reste à poser sur le serveur
 
-| Où | Quoi | Pourquoi là |
-|---|---|---|
-| `src/Kernel.php` (les deux projets) | `date_default_timezone_set('UTC')` dans le constructeur | le **seul** point que traversent les trois portes d'entrée : HTTP, console et tests |
-| `config/packages/twig.yaml` (les deux) | `date: timezone: UTC` | Twig suit sinon `date_default_timezone_get()` — l'écrire le met à l'abri d'un `php.ini` |
-| `assets/react/components/cellules.tsx` | `timeZone: 'UTC'` | PHP ne décide de rien dans le navigateur : c'est lui qui formatait avec le fuseau de la machine du lecteur |
+**La sécurité de la synchronisation a été corrigée à la racine.** Dans [SynchronisationService.php](Backend-Webpesee-V2/src/Domain/Service/SynchronisationService.php), le site vient du **compte machine**, plus du champ `code` de la charge utile — en V1, n'importe quel compte authentifié pouvait écrire chez n'importe quel client. S'y ajoutent la clé d'idempotence `codesecret` (index unique), une seule transaction et un seul `flush()` pour tout le lot, et un accusé de réception qui n'acquitte qu'après validation.
 
-Vérifié en simulant un hébergeur mal réglé :
+**L'unicité** passe par [UniqueParSite](Backend-Webpesee-V2/src/Validator/UniqueParSiteValidator.php), qui ne compare qu'aux lignes vivantes — jamais d'index unique en base, sinon un produit à la corbeille interdirait de le recréer.
 
+
+- Le principe du second envoi : Un camion passe deux fois sur le pont. À l'entrée, le peseur enregistre le poids 1 et le poste envoie la ligne : la pesée est `EN_COURS`, sans poids net donc sans créance. À la sortie, il enregistre le poids 2 et **renvoie la même ligne**, identifiée par la même clé (`code_id_codepesee`). Le serveur reconnaît cette clé, retrouve la ligne existante et la met à jour au lieu d'en créer une seconde :: **le second envoi porte la ligne entière**
+
+
+le produit n'existe pas → créé ; il existe → mis à jour
+Pour le cas suivant je ne comprend pas : . Le prix multiplie le poids net pour donner ce qui sera versé ; laisser celui qui tient la caisse fixer ce prix reviendrait à lui laisser décider combien il décaisse. En revanche il peut compléter le numéro d'un planteur (attribut dédié MODIFIER_CONTACT) — sans numéro la pesée n'est pas payable, et c'est lui qui a le planteur en face de lui.
+
+Journal de synchronisation (/synchronisations) : reçues / créées / complétées / refusées par poste, avec le motif du refus en clair sur la ligne
+
+Écran « à payer » en tête de la section Caisse pour qui encaisse : la file d'attente du guichet, bornée aux pesées terminées non soldées, bouton Verser en clair sur la ligne. Le motif de non-payabilité du planteur s'y lit avant de cliquer.
+
+Notifications : demande déposée → aux administrateurs, demande traitée → à son auteur, versement échoué → à l'opérateur. Une méthode par événement, pas de notifier() générique. Le point important : aucun envoi ne peut faire échouer le geste métier. Vérifié en pointant le mailer sur un SMTP mort — le journal enregistre Envoi de courriel impossible vers patron@socaf.ci, et le dépôt répond quand même 201.
+
+
+
+
+
+
+- L'opérateur ne voit que sa caisse, celle de ses sites
+
+DATES — le poste envoie la date et l'heure séparément ('datepesee1' + 'temps1'). On les recompose en un seul horodatage : l'écran « BILAN STANDARD » filtre sur une plage date + heure, ce qui serait pénible avec quatre colonnes distinctes
+    **`peseeAt1`** (`datetime_immutable`), **`peseeAt2`** (nullable) — recomposés au sync depuis `datepesee1 + temps1` / `datepesee2 + temps2`, ils remplacent `date1/date2/temps1/temps2/datesearch` (5 colonnes → 2, et le filtre date+heure du bilan desktop devient direct)
+
+- Le site sera crée sur le web et l'application génère dans la foulée le compte machine + un fichier de configuration téléchargeable (URL de l'API, code du site, identifiants) consommé à l'installation du logiciel de pesée.
+
+- **`statut`** (`EN_COURS` / `TERMINEE`) — le panneau « PESEE EN ATTENTE » du desktop prouve qu'une pesée peut n'avoir qu'un premier passage. Aujourd'hui `poids2`/`date2` sont NOT NULL : une pesée en cours ne peut tout simplement pas être synchronisée
+    - Pesée en cours : pousser une pesée sans `poids2` → enregistrée `EN_COURS`, aucune créance ; la repousser complétée → même ligne, `TERMINEE`, `montantDu` calculé
+    !!
+    - **`TarificationService::calculer(Operation)`** — `prixunitaire = fournisseur.prixspeciale ?? produit.prix`, `montantDu = poidsnet × prixunitaire`, **uniquement pour les pesées `TERMINEE`**. Recalculé quand un prix produit ou un prix spécial change sur le web, et **jamais sur une pesée déjà payée même partiellement** — sinon un changement de tarif réécrirait l'historique comptable.
+    - **Pesées en cours** — une pesée sans second passage est acceptée et stockée en `EN_COURS` ; la synchronisation suivante la complète via le même `codesecret` et la bascule en `TERMINEE`. C'est exactement ce que montre le panneau « PESEE EN ATTENTE ». Les statistiques et les créances ne portent que sur les pesées terminées.
+    - **Idempotence** : upsert sur `codesecret`, désormais garanti par l'index unique. Rejouer deux fois le même lot ne crée aucun doublon — c'est le test de non-régression principal.
+
+- La synchronisation **rejette toute pesée dont le `code` ≠ `siteMachine.codesite`** → plus d'injection inter-site (faille actuelle : le tenant vient du payload).
+    - Isolation : avec le JWT du site A, pousser une pesée portant le `code` du site B → 403
+- Si `site.statut === BLOQUE`, le sync répond 403 → c'est l'implémentation de « bloquer un pont bascule pour qu'il ne reçoive plus de données ».
+
+| **3** | Synchronisation : services, routes legacy, idempotence, pesées en cours, `SynchronisationLot` | Rejouer 2× un lot → 0 doublon |
+
+User `siteMachine` (`OneToOne Site`, nullable, renseigné uniquement pour les comptes `ROLE_SITE`)
+
+- **`SynchronisationService::traiter(User $compte, array $pesees): ResultatSync`** — une seule transaction par lot, `flush()` unique en fin de lot (aujourd'hui : 4 `flush()` par ligne), `SynchronisationLot` écrit à la fin. Erreur par ligne collectée sans interrompre le lot (comportement actuel conservé, c'est le bon). Le site et l'entreprise sont **résolus depuis `$compte`**, jamais depuis le payload : les 6 lignes de `substr($code, 0, 3)` + `findOneByCodePrefix()` disparaissent.
+
+
+
+
+
+
+
+
+
+- Concernant le reliquat fournisseur, il est géré à moitié :
+    ## Ce qui n'est PAS géré : le compte d'un planteur
+
+    Il n'existe **aucun cumul par planteur**. L'entité `Fournisseur` porte son identité, son contact, son réseau, son prix spécial, son statut — et rien qui ressemble à un solde. Aucun champ en base, aucun endpoint, aucun écran.
+
+    Concrètement, aujourd'hui, pour savoir ce que vous devez encore à Bamba Sekou **en tout** :
+
+    - sa fiche planteur affiche son identité et ses dernières pesées, sans un seul montant ;
+    - l'écran « À payer » ne totalise rien, et n'offre même pas de sélecteur de planteur — le filtre existe dans le code mais seulement par URL ;
+    - le bilan a bien un « Reste à payer » global, mais il ne se filtre pas par planteur.
+
+    Il faudrait lister ses pesées impayées et **additionner à la main**.
+
+    ## Un détail de conception qui vous intéressera
+
+    Dans [Operation.php:660](Backend-Webpesee-V2/src/Entity/Operation.php:660), le reste refuse d'être négatif, avec cette justification : *« si un tarif a baissé après un versement, le trop-perçu ne doit pas se transformer en dette du planteur »*. Autrement dit, le trop-versé est **oublié** par construction. Une vraie gestion de reliquats devrait trancher là-dessus : le reporter sur la pesée suivante, ou le passer en créance. Aujourd'hui, ni l'un ni l'autre.
+- Le reste à payer est géré par pesée — versements multiples, reste à payer, reste à engager, statut partiel — mais il n'existe aucun cumul par planteur : ni champ, ni écran, ni total :
+    Le reliquat dont on vous a parlé, c'est lequel des deux ?
+        Compte par planteur ou Reste par pesée
+
+
+
+
+Une conséquence demeure : l’entreprise porte une dette qui n’est provisionnée nulle part. Si le planteur vient retirer 10 000 et que le poste n’a que 5 000 en caisse, le retrait échoue faute de fonds — comme un versement. C’est cohérent, mais il faudra que le total des comptes se voie quelque part, sinon l’administrateur ne saura jamais combien il doit.
+
+
+## Hors de cette version, et une limite à connaître
+
+Le **retrait**, les taux **par produit**, le **plafond**, le rattachement d'un planteur à
+plusieurs postes.
+
+**Limite préexistante que la retenue aggrave** : `findRecalculables()` n'a qu'un appelant,
+déclenché uniquement par un prix venu du **poste**. Le `Patch` web de tarification ne
+retarife rien. Une pesée de produit créé à la volée reste donc à `montantdu = 0` — et
+désormais sans retenue — jusqu'au prochain changement de prix côté poste. Avant, personne
+n'était lésé ; après, l'épargne du planteur ne démarre jamais sur ces pesées. À traiter dans
+la foulée en branchant la même passe sur le `Patch` de `Produit` et de `Fournisseur`, mais
+c'est un ajout de périmètre à décider.
+
+
+
+
+
+
+Une pesée crédite l'épargne du planteur sans toucher aucune caisse -- Cette phrase me gène un peu
+
+
+
+
+
+
+
+Concernant l'agent..
+    A l'état actuelle est ce que l'agent peut valider ou refuser une demande de solde d'un opérateur (non actuelle) si oui il doit aussi pouvoir le faire pour les sorties d'argent (paiement planteur) -- Actuellement, l'agent ne peut pas verser au planteur aussi !
+
+La paie concerne les produits et le transport.
+    il y'a un transport de base et quand on dépasse ce seuil 
+
+
+3. **Échec mobile money** : un versement remboursé doit annuler sa mise en compte. Le chemin de remboursement existe, il faudra l'étendre.
+4. **Retrait** : qui l'autorise, peut-il être partiel, et passe-t-il par un mode de règlement — donc par l'une des deux caisses — comme un versement ?
+
+
+
+
+
+- **`PasserelleSimulee` est la passerelle active** — brancher un vrai agrégateur = une ligne dans `services.yaml`, et `PASSERELLE_SECRET` est encore celui de développement
+
+
+
+
+Quand j'effectue un paiement, dans la partie `À payer` le `Reste à payer` ne bouge pas !
+
+## Pourquoi il ne bougeait pas
+
+Le « Reste à payer » de la file se calculait ainsi :
+
+```tsx
+Math.max(0, (montantdu ?? 0) - (montantpaye ?? 0))
 ```
-php.ini simulé = Europe/Paris (11:56 CEST)  ->  noyau = UTC (09:56 UTC)
+
+Or `montantpaye` ne compte **que le confirmé** — `recalculerLeReglement()` l'alimente depuis `sommeVersee()`, c'est-à-dire les seuls versements `REUSSI`. Un versement qui vient de partir est en `ENVOYE` : la caisse du poste est débitée, l'API décomptera bien ce montant au prochain versement, mais la ligne affiche exactement le même chiffre qu'avant. Rien ne bouge.
+
+L'ancien commentaire du contrôleur l'assumait d'ailleurs : *« Ceux qui sont en vol n'y figurent pas… C'est voulu »*. Sauf que, vu du guichet, un geste sans effet visible est un geste raté : on recommence, et c'est l'API qui refuse — après le clic, planteur devant soi.
+
+## Deux restes, désormais distincts
+
+- **`resteapayer`** — la créance du planteur : dû moins **confirmé**. Elle ne tombe qu'à la réponse de la passerelle, et c'est juste : tant qu'elle n'a pas répondu, le planteur n'a rien reçu.
+- **`resteaengager`** — ce que la caisse peut encore sortir, donc ce que l'API acceptera. C'est exactement le `$reste` que calcule `PaiementService::initier()`.
+
+Côté backend :
+- `PaiementRepository::montantsEnVolParPesee()` — somme groupée des versements `EN_ATTENTE`/`ENVOYE` pour toute une page.
+- `MontantEnVolProvider` — nouveau provider sur `GetCollection`, calqué sur `CompteurPeseesProvider` : une requête pour la page entière, jamais une par ligne (les `paiements` restent réservés à la fiche).
+- `Operation::getMontantenvol()` et `getResteaengager()`, sérialisés dans `read:Operation`.
+- `getMotifNonPayable()` gagne le cas « un versement est déjà en cours », **mot pour mot** le refus du service : le bouton se désactive sur la phrase que le serveur renverrait.
+
+Côté écrans :
+- La file « À payer » affiche le reste à engager en gros, avec `X F en cours de confirmation` en dessous quand il y a du vol.
+- Le formulaire de versement se pré-remplit avec `resteaengager` au lieu de la créance entière — il proposait jusqu'ici un montant que l'API allait rejeter.
+
+## Deux choses à savoir pour tester
+
+**Videz le cache Symfony du backend**, sinon les nouveaux champs ne sortiront pas du sérialiseur (je m'y suis fait prendre sur l'environnement de test) :
+
+```bash
+php bin/console cache:clear
 ```
 
-Deux remarques :
+**Et sachez que `montantpaye` ne bougera toujours pas en local**, par construction : `PasserelleSimulee` laisse le versement en `ENVOYE` et attend une notification qui n'arrive jamais, puisque ni webhook ni cron ne tournent sur votre poste. Pour confirmer un versement en développement, deux chemins :
 
-- **Le fuseau de MySQL n'entre pas en jeu.** J'ai cherché `NOW()`, `CURDATE()`, `CURRENT_TIMESTAMP` dans tout `src/` : rien. Toutes les dates sont écrites et relues par PHP, y compris le journal de synchronisation qui passe pourtant en SQL direct — il formate la date côté PHP. Je n'ai donc pas ajouté de `SET time_zone` qui n'aurait rien changé.
-- **Au passage, une duplication retirée.** `TablePesees` et `TableAPayer` recopiaient le formatage de date au lieu d'utiliser `dateHeure`. Elles passent maintenant par les fonctions partagées (`dateHeure`, et une nouvelle `dateSeule` pour la date sans l'heure) — sans quoi il aurait fallu poser le fuseau à trois endroits, avec la certitude qu'un quatrième écran l'oublierait.
-
-
-
-
-
-
-Ce qui reste sur la corbeille et l'audit : rien de bloquant. La liste des types dans ActiviteController::TYPES recopie l'énumération de l'API — c'est signalé en commentaire, comme pour le dictionnaire des états, parce qu'une liste déroulante a besoin de ses valeurs avant d'avoir des données à afficher. :: Ici je me dis qu'on pourrait juste renvoyer celui de l'api via un endpoint
-
-Deux détails utiles : deletedBy est un entier illisible, la corbeille rend donc un nom (résolu en une requête pour toute la page), et chaque ligne porte d'où elle venait — sans quoi deux « Hévéa » de deux postes se confondent.
-Le cas qui compte le plus : la purge est journalisée avant l'effacement, et la trace survit. C'est possible parce que le journal ne pointe sa cible que par un type et un identifiant, sans clé étrangère — je l'avais conçu ainsi hier, et c'est ce qui permet aujourd'hui de garder le souvenir d'une ligne qui n'existe plus.
-
-J'ajouterai aussi un garde-fou que Transport n'a pas : **restaurer est refusé si un homonyme vivant existe**, parce que `UniqueParSite` ne compare qu'aux lignes vivantes — restaurer « HEVEA » alors qu'un « Hévéa » a été recréé entre-temps donnerait deux référentiels pour la même chose.
-
-Audit — le grand livre trace déjà l'argent. L'audit ne doit donc pas le doubler : il trace les décisions qui ne laissent aucune trace aujourd'hui.
-    - **La tarification a son propre processor.** [TarificationProcessor](Backend-Webpesee-V2/src/State/Processor/TarificationProcessor.php) remplace `AuditProcessor` sur le PATCH de `Produit` et `Fournisseur`, pour une seule raison : lire le prix **avant**. Il le prend dans l'instantané que Doctrine garde depuis le chargement — encore intact à ce moment-là, le calcul des changements n'ayant pas eu lieu. Une modification qui ne touche pas au prix n'écrit rien : journaliser chaque frappe noierait les décisions qui comptent.
-    - **L'entreprise vient de la cible, pas de l'acteur.** C'est l'écart avec Transport, imposé par le super administrateur : il n'appartient à aucune entreprise mais renouvelle des identifiants et désactive des clients. Prendre son entreprise ne donnerait rien, et le journal du client perdrait précisément les gestes venus de l'extérieur.
-    - **Une trace qui échoue ne fait jamais échouer le geste.** Un blocage de poste refusé parce que l'audit a eu un hoquet serait pire que l'absence de trace.
-    - Le journal est en **lecture seule** (405 sur un POST), cloisonné par entreprise, et réservé à l'administrateur et à l'agent — l'opérateur reçoit 403, c'est un écran de supervision.
-    - [JournalActiviteTest] — **10 cas**, dont trois qui fixent ce que le journal ne doit **pas** faire : ne pas doubler le grand livre, ne pas s'écrire par l'API, ne pas fuiter chez le voisin.
-
-
-
-- On.. normalisation du numéro de téléphone du planteur pour les agrégateurs
-
-## Point 2 — normalisation du numéro
-
-Une seule règle, dans [NumeroMobile.php](Backend-Webpesee-V2/src/Domain/Support/NumeroMobile.php) : tout ce qui entre devient `+2250701020304`. Elle est tirée par les trois portes du numéro, jamais recopiée.
-
-| Porte | Comportement |
-|---|---|
-| Formulaire web | `#[NumeroMobileValide]` sur `contact1`/`contact2` → **refus** avec un exemple dans le message |
-| Synchronisation du poste | **accepte** quand même (elle n'a pas de second essai : un refus perdrait la pesée), la valeur reste telle quelle et `getMotifNonPayable()` la dénonce |
-| Numéro de circonstance | normalisé dans `PaiementService::initier()` **avant** que les fonds ne soient réservés |
-
-Les fiches déjà en base ne se corrigent pas toutes seules — d'où `app:fournisseurs:normaliser-numeros` (`make numeros` pour le `--dry-run`). Passée sur ta base de dev, elle a réécrit 4 planteurs et signalé une saisie que personne ne peut deviner :
-
-```
-#6 sssjsjss — contact1 : 05410
+```bash
+php bin/console app:paiements:reconcilier --delai=1
 ```
 
-Elle ne corrige jamais un numéro incomplet : deviner le chiffre manquant enverrait l'argent chez quelqu'un d'autre.
-
-Effet de bord que j'ai dû réparer : le déclencheur d'échec de `PasserelleSimulee` testait le **début** du numéro (`00`) — depuis la normalisation ils commencent tous par `+225`, il ne se serait plus jamais déclenché. Il porte maintenant sur la fin.
-
-## Point 3 — signature du webhook
-
-Le défaut réel était de calculer l'empreinte sur le tableau **décodé** : réencoder change le texte (ordre des clés, espaces, accents échappés) donc l'empreinte, et le contrôle aurait refusé des notifications légitimes.
-
-- `notificationAuthentique(string $corpsBrut, …)` — le corps brut, vérifié **avant** tout décodage
-- HMAC-SHA256 + `hash_equals`, secret dans `PASSERELLE_SECRET`
-- **Secret vide ⇒ tout est refusé.** Une variable oubliée en production ouvrirait sinon un point d'entrée public capable de créditer n'importe quelle pesée
-- `enteteSignature()` sur l'interface : chaque agrégateur nomme le sien, le contrôleur n'est plus à rouvrir
-
-Trois tests, dont celui qui attrape précisément le piège : un corps aux clés dans un autre ordre, signé tel quel, doit passer.
-
-## Point 4 — réconciliation planifiée
-
-`make cron` sort la ligne à coller, avec `flock -n` : deux exécutions qui se chevauchent pourraient rembourser deux fois le même versement.
-
-Mais un cron s'arrête sans rien dire, et personne ne surveille le surveillant. `/api/stats/caisse` porte donc `versementsEnVol` et `attenteMinutes`, et l'écran Caisse lève une alerte au-delà de 30 minutes. Le message ne désigne pas de coupable — l'agrégateur peut tarder sans que rien ne soit cassé — il dit quoi regarder.
-
-## Au passage
-
-Les numéros stockés étant devenus illisibles à l'œil, le regroupement se fait à l'**affichage** seulement : filtre Twig `numero` et son pendant React dans `cellules.tsx`. J'ai supprimé `NumeroMobile::afficher()` du backend — une API JSON ne met pas en forme, et un helper inutilisé finit par être branché sur un champ sérialisé.
-
-## Ce qui reste, et qui dépend de l'agrégateur
-
-- écrire le vrai `PasserelleXxx` et changer l'alias dans `services.yaml` (une ligne)
-- décider si `ReseauMobile` se déduit du préfixe plutôt que d'être saisi
-- **modéliser les frais de transaction** — rien ne les représente aujourd'hui, et ils sortiront bien de quelque part
+ou bien verser un montant se terminant par `99`, que la passerelle simulée confirme immédiatement.
 
 
 
 
+## Paiement
 
-
-
-
+Feexpay.md : Transfert et collect : agrée par la BECAO
 * .. Api payment : Cinetpay, PawaPay, LigdiCach, PaiementPro, PayDunya, FedaPay, Hub2, Paystack, BUI
     > 
+
+- On.. normalisation du numéro de téléphone du planteur pour les agrégateurs via une règle dans `NumeroMobile` qui est tout ce qui entre devient `+225..` et la validation via `NumeroMobileValide`, `NumeroMobileValideValidator`
+    > La synchronisation du poste l'accepte vu qu'elle n'a pas de second essai et un refus perdrait la pesée, mais `getMotifNonPayable()` la dénonce
+    > Le numéro de circonstance normalisé dans `PaiementService::initier()` avant que les fonds ne soient réservés
+    > Si.. des données en base on.. la `NormaliserNumerosCommand` via `app:fournisseurs:normaliser-numero` mais ne corrige pas un numéro incomplet
+
+- !! la réconciliation planifiée on.. `make cron` qui contient la ligne à coller, avec `flock -n` vu que 2 exécutions qui se chevauchent pourraient rembourser deux fois le même versement.. mais un cron s'arrête sans rien dire et personne ne surveille le surveillant donc `/api/stats/caisse` porte `versementsEnVol`, `attenteMinutes`.. et l'écran de caisse lève une alerte au delà de `30min` mais ne désigne pas de coupable.. l'agrégateur peut tarder sans que rien ne soit cassé, il dit quoi regarder 
+
+
+- **modéliser les frais de transaction** — rien ne les représente aujourd'hui, et ils sortiront bien de quelque part
+
 
 - Le paiement
     > L..
@@ -274,11 +321,6 @@ Vos quatre méthodes couvrent exactement ça : `verser()`, `verifier()`, `notifi
 
 
 
-
-
-
-
-
 ### Ce qu'il reste à faire, concrètement
 
 | | Quoi | Pourquoi c'est bloquant |
@@ -296,11 +338,6 @@ Dis-moi par quoi on commence sur les paiements — le choix de l'agrégateur con
 
 
 les points 2, 3 et 4 de ma liste (format du numéro, signature du webhook, réconciliation planifiée) sont indépendants du choix de l'agrégateur
-
-
-
-- Lors de la dotation vers un pont bascule, je me dis que normalement l'argent devrait être versé sur le compte de l'opérateur en question, aussi pour le versement planteur :: On peut dire non aussi vu que l'argent peut sortir uniquement du compte de l'admin
-
 
 
 
@@ -450,6 +487,7 @@ App\Domain\Paiement\PasserellePaiementInterface: '@App\Domain\Paiement\Passerell
 Elle déroule tout le cycle sans agrégateur : un numéro commençant par `00` fait échouer, un montant finissant par `99` réussit immédiatement, le reste part en `ENVOYE` et attend le webhook. Passer en production, c'est **écrire une classe** — CinetPay, PayDunya — et **changer cette seule ligne**. Ni la caisse ni les paiements ne bougent.
 
 Deux points à traiter avant ce jour-là : `notificationAuthentique()` renvoie `true` sans rien vérifier dans la version simulée — c'est là que devra vivre le contrôle de signature — et `app:paiements:reconcilier` doit être planifié, sinon le filet n'existe pas.
+- 
 
 
 
@@ -458,20 +496,7 @@ Deux points à traiter avant ce jour-là : `notificationAuthentique()` renvoie `
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-- - 
+- 
 | Produit / Fournisseur | Résolution **par libellé dans le périmètre du site, avec auto-création** | Via clé unique..
 | Rôle Agent | **Superviseur global en lecture** sur toute l'entreprise + gestion des opérateurs |
 
@@ -480,124 +505,58 @@ Deux points à traiter avant ce jour-là : `notificationAuthentique()` renvoie `
 > | `Operation.codepesee` | inchangé | Compteur séquentiel de pesée du poste (`000002`) |
 > | `Operation.codesecret` | inchangé | Clé d'idempotence `code_refDesktop_codepesee` |
 
-## L'arbitrage des prix
+- **L'arbitrage des prix** : Le problème, 2 sources modifient le même chiffre. Le poste envoie son prix à chaque synchronisation, et le web peut le corriger. Sans arbitrage, la tarification faite en ligne est écrasée au premier envoi suivant : la bidirectionnalité ne marche que dans un sens
+    **Le principe : un témoin.** `Produit` porte deux colonnes.
+    | Colonne | Rôle |
+    |---|---|
+    | `prix` | Le prix **en vigueur**, celui qui valorise les pesées. Affiché, modifiable des deux côtés. |
+    | `prixPoste` | La **dernière valeur reçue du poste**. Jamais affichée, jamais modifiée par le web. |
 
-**Le problème.** Deux sources modifient le même chiffre. Le poste envoie son prix à chaque synchronisation, et le web peut le corriger. Sans arbitrage, la tarification faite en ligne est écrasée au premier envoi suivant : la bidirectionnalité ne marche que dans un sens.
+    L'arbitrage se fait par **détection de changement**, pas par priorité : on ne réapplique le prix du poste que s'il a bougé *de son côté*.
 
-**Le principe : un témoin.** `Produit` porte deux colonnes.
+    ```php
+    // Produit::appliquerPrixDuPoste()
+    if ($prix === $this->prixPoste) return false;  // le poste n'a rien changé → on ignore
+    $this->prixPoste = $prix;                      // on note ce qu'il dit maintenant
+    if ($prix === $this->prix)   return false;      // il rejoint la valeur en vigueur → rien à faire
+    $this->prix = $prix;                            // il a vraiment changé → il l'emporte
+    ```
+    Le point clé est ailleurs : **`setPrix()`, la tarification web, ne touche pas à `prixPoste`.** C'est cet écart délibéré entre les deux colonnes qui fait qu'on saura ignorer le prochain envoi.
 
-| Colonne | Rôle |
-|---|---|
-| `prix` | Le prix **en vigueur**, celui qui valorise les pesées. Affiché, modifiable des deux côtés. |
-| `prixPoste` | La **dernière valeur reçue du poste**. Jamais affichée, jamais modifiée par le web. |
+    **Chronologie.**
+    | Événement | `prix` | `prixPoste` | Effet |
+    |---|---|---|---|
+    | Le poste envoie 400 | 400 | 400 | appliqué |
+    | Le web passe à 500 | **500** | 400 | `prixPoste` inchangé — c'est le témoin |
+    | Le poste renvoie 400 | 500 | 400 | **ignoré**, le web est préservé |
+    | Le poste passe à 470 | **470** | 470 | appliqué, il a changé de son côté |
 
-L'arbitrage se fait par **détection de changement**, pas par priorité : on ne réapplique le prix du poste que s'il a bougé *de son côté*.
+    Résultat : le dernier qui modifie l'emporte, et rien à changer côté logiciel de pesée.
 
-```php
-// Produit::appliquerPrixDuPoste()
-if ($prix === $this->prixPoste) return false;  // le poste n'a rien changé → on ignore
-$this->prixPoste = $prix;                      // on note ce qu'il dit maintenant
-if ($prix === $this->prix)   return false;      // il rejoint la valeur en vigueur → rien à faire
-$this->prix = $prix;                            // il a vraiment changé → il l'emporte
-```
+    **Une garde en amont.** `SynchronisationService` teste `array_key_exists('prix', $brute)` avant d'appeler : le poste qui n'envoie pas la clé du tout n'entre jamais dans l'arbitrage. On distingue « absent » de « vide », ce qui n'est possible qu'avec `array_key_exists`, pas avec `??`.
 
-Le point clé est ailleurs : **`setPrix()`, la tarification web, ne touche pas à `prixPoste`.** C'est cet écart délibéré entre les deux colonnes qui fait qu'on saura ignorer le prochain envoi.
+    **Le planteur suit la même mécanique**, avec `prixspeciale` / `prixspecialePoste` — mais **une asymétrie assumée** : `Fournisseur::appliquerPrixSpecialDuPoste()` accepte `null` là où `Produit` le refuse. Un poste qui efface un prix négocié efface donc bien le prix négocié, y compris celui saisi en ligne. C'est cohérent avec « le dernier qui modifie l'emporte » — retirer, c'est modifier.
 
-**Chronologie.**
+- **Comment ce prix atteint une pesée.** `Operation::calculerMontant()` :
+    1. **Prix spécial du planteur d'abord, prix du produit ensuite** — `$fournisseur?->getPrixspeciale() ?? $produit?->getPrix()`. C'est la règle du patron.
+    2. Rien tant que la pesée n'est pas terminée : pas de second poids, pas de net, pas de montant.
+    3. Le prix retenu est **figé sur la pesée** (`prixunitaire`), pour que l'historique reste lisible quand les tarifs bougent.
+    4. **`montantpaye > 0` ⇒ on ne recalcule plus rien.** De l'argent est parti sur la base de ce montant ; un changement de tarif ne réécrit pas l'histoire.
 
-| Événement | `prix` | `prixPoste` | Effet |
-|---|---|---|---|
-| Le poste envoie 400 | 400 | 400 | appliqué |
-| Le web passe à 500 | **500** | 400 | `prixPoste` inchangé — c'est le témoin |
-| Le poste renvoie 400 | 500 | 400 | **ignoré**, le web est préservé |
-| Le poste passe à 470 | **470** | 470 | appliqué, il a changé de son côté |
-
-Résultat : le dernier qui modifie l'emporte, et rien à changer côté logiciel de pesée.
-
-**Une garde en amont.** `SynchronisationService` teste `array_key_exists('prix', $brute)` avant d'appeler : le poste qui n'envoie pas la clé du tout n'entre jamais dans l'arbitrage. On distingue « absent » de « vide », ce qui n'est possible qu'avec `array_key_exists`, pas avec `??`.
-
-**Le planteur suit la même mécanique**, avec `prixspeciale` / `prixspecialePoste` — mais **une asymétrie assumée** : `Fournisseur::appliquerPrixSpecialDuPoste()` accepte `null` là où `Produit` le refuse. Un poste qui efface un prix négocié efface donc bien le prix négocié, y compris celui saisi en ligne. C'est cohérent avec « le dernier qui modifie l'emporte » — retirer, c'est modifier.
-
-**Comment ce prix atteint une pesée.** `Operation::calculerMontant()` :
-
-1. **Prix spécial du planteur d'abord, prix du produit ensuite** — `$fournisseur?->getPrixspeciale() ?? $produit?->getPrix()`. C'est la règle du patron.
-2. Rien tant que la pesée n'est pas terminée : pas de second poids, pas de net, pas de montant.
-3. Le prix retenu est **figé sur la pesée** (`prixunitaire`), pour que l'historique reste lisible quand les tarifs bougent.
-4. **`montantpaye > 0` ⇒ on ne recalcule plus rien.** De l'argent est parti sur la base de ce montant ; un changement de tarif ne réécrit pas l'histoire.
-
-**La retarification.** Un prix qui bouge ne concerne pas que le lot courant : les pesées déjà reçues et non payées portent l'ancien montant. `SynchronisationService` les recalcule — mais **seulement si un prix a réellement changé**, ce que lui dit le booléen que renvoient les deux `appliquer…()`. Le cas est rare, la requête ne part donc presque jamais.
-
----
+    **La retarification.** Un prix qui bouge ne concerne pas que le lot courant : les pesées déjà reçues et non payées portent l'ancien montant. `SynchronisationService` les recalcule — mais **seulement si un prix a réellement changé**, ce que lui dit le booléen que renvoient les deux `appliquer…()`. Le cas est rare, la requête ne part donc presque jamais.
 
 **Un point à surveiller, que tu ne m'as pas demandé de corriger.** La retarification est déclenchée par la **synchronisation** uniquement. Modifier un prix depuis le web passe par `AuditProcessor`, qui ne fait qu'enregistrer l'auteur : **les pesées non payées déjà en base gardent leur ancien montant**. Elles ne seront recalculées qu'au prochain envoi du poste qui change un prix, quel qu'il soit — et à ce moment-là elles reprendront bien le prix web, puisque `findRecalculables` recalcule toutes les pesées non payées du site avec le prix en vigueur. Autrement dit la correction finit par s'appliquer, mais à un moment qu'on ne choisit pas. Si tu veux qu'une tarification en ligne s'applique immédiatement à l'existant, c'est un processor dédié sur le `PATCH` de `Produit` et de `Fournisseur` — dis-moi.
 
-- Pour les prix le dernier qui le modifie l'emporte
-
-Je pense que la notion de bidirectionnalité n'est pas logique dans notre  cas 
-
-Explique moi le principe actuel de la partie arbitrage des prix (prixPoste/prixspecialePoste) et lequel est le plus logique et cohérent
-    > Le premier cas : Est ce que :: Ce n'est pas le cas : /api/produit renvoie le prix au poste, donc le poste relit le référentiel du serveur avant de repousser ses pesées :: La boucle est fermée — ce qu'il renvoie est déjà la valeur du web
-    > Le deuxième cas : les deux côtés écrivaient en aveugle :: un champ absent n'est pas un champ vide, une charge utile sans prix ne doit pas remettre le tarif à zéro
-        - Le seul écart résiduel, écrit en commentaire : un poste qui pèse une journée hors ligne sans relire le référentiel renverra l'ancien prix. Les pesées déjà réglées ne bougent pas (leur montant est figé), les autres sont recalculées. Si un jour ça pose problème, ce sera au poste de relire avant de pousser, pas au serveur d'arbitrer
-        - Sur le prix « bidirectionnel » : aujourd'hui le poste renvoie son prix à chaque synchronisation. Si les deux côtés font autorité sans autre règle, une modification faite sur le web est écrasée au prochain envoi — la bidirectionnalité ne marche que dans un sens.
-    -- Ne pas oublié le fait qu'il peut avoir des pesées en cours de paiement donc le prix ne doit pas changer pour eux
-    -- Je ne veux pas le comportement suivant : Le desktop envoi le prix du produit(`prixModifieSurWeb` (bool), **il fait foi à la création**, puis dès qu'un prix est saisi sur le web (`prixModifieSurWeb = true`) c'est le web qui devient maître et le sync cesse de l'écraser, Sans ce drapeau, chaque synchronisation annulerait le travail de tarification fait en ligne) ?
-        - Prix : modifier un prix produit sur le web, resynchroniser → le prix web n'est pas écrasé, et les pesées déjà payées gardent leur `montantDu` d'origine
-    -- Sur ta préoccupation initiale, le contrepoids est la traçabilité plutôt que l'interdiction, et elle est déjà en place : `updatedBy` retient qui a modifié un prix, `Operation::prixunitaire` fige le tarif appliqué à chaque pesée, et `Paiement.initiePar` retient qui a déclenché le versement. Un écart se reconstitue donc après coup, ligne par ligne — c'est ce qui permettra plus tard un écran « historique des tarifs » si le besoin apparaît.
-    -- **L'arbitrage bidirectionnel des prix** est la trouvaille la mieux documentée : `prixPoste` mémorise la dernière valeur reçue du poste, et on ne réapplique celle-ci que si elle a bougé de son côté ([Produit.php:228](Backend-Webpesee-V2/src/Entity/Produit.php:228)). Le dernier qui modifie l'emporte, sans rien changer au logiciel de pesée.
+!! Je ne veux pas le comportement suivant : Le desktop envoi le prix du produit(`prixModifieSurWeb` (bool), **il fait foi à la création**, puis dès qu'un prix est saisi sur le web (`prixModifieSurWeb = true`) c'est le web qui devient maître et le sync cesse de l'écraser, Sans ce drapeau, chaque synchronisation annulerait le travail de tarification fait en ligne) ?
 
 
 
 
 
-
-
-
-- - 
-## Les messages d'erreur sous les champs
-
-Une seule cause, et elle explique bien plus que les champs :
-
-```css
---destructive: oklch(0.1908 0.0020 106.5859);   /* avant : un quasi-noir */
-```
-
-Cette valeur est **la même teinte que `--card-foreground`**, et uniquement dans `:root` — le thème sombre, lui, portait un vrai rouge. En thème clair, tout ce qui s'annonçait en rouge sortait donc en noir, sans que rien ne le signale : les messages d'erreur, la bordure d'un champ invalide, les entrées destructives des menus de ligne, les boutons destructifs, les cartes `border-destructive/40`, et les alertes `destructive`. Corrigé en [app.css:23](Frontend-Webpesee/assets/styles/app.css:23).
-
-## Les alertes
-
-Trois défauts, dont un que tu n'avais pas pu voir :
-
-1. **`variant="warning"` n'existait pas.** La page de connexion le passait au composant, qui ne connaissait que `default` et `destructive` : la variante ne produisait **rien**, et seules les classes ambre recopiées juste à côté donnaient l'effet attendu.
-2. **Les teintes étaient recopiées à la main** dans quatre fichiers — la même longue chaîne emerald/amber/sky.
-3. **Les alertes informatives restaient neutres** alors que le flash `info` était bleuté : la même notion n'avait pas la même apparence selon l'écran.
-
-[Alert.html.twig](Frontend-Webpesee/templates/components/Alert.html.twig) porte maintenant `success`, `warning` et `info`, et `destructive` reçoit son fond et sa bordure comme les autres au lieu du seul texte coloré. Les chaînes recopiées ont disparu de `flash.html.twig`, `login.html.twig` et `mot_de_passe_oublie.html.twig`. Les **26 alertes** du projet portent chacune sa variante : 14 `destructive`, 7 `info`, 3 `warning`, 2 `success`. `default` reste neutre — une note sans coloration doit rester possible, et une information se demande explicitement.
-
-
-
-## Desktop
-
-**S'authentifier d'abord.** Le fichier de configuration déposé à l'installation porte `api.url`, `api.login`, `api.motdepasse`. Le poste fait `POST /api/login_check` (`{username, password}`), garde le `token` et le `refresh_token`, et met `Authorization: Bearer <token>` sur **tous** les appels suivants. Sur 401, `POST /api/token/refresh`. C'est la seule chose qui change par rapport à l'ancienne version.
-
-**Envoyer les pesées** : `POST /api/synchronisation`, corps `{"pesees": [ … ]}`.
-
-| Champ | Obligatoire | Devient |
-|---|---|---|
-| `id` | **oui** | `refDesktop` — la clé primaire de la pesée dans la base locale du poste |
-| `code` | **oui** | vérification de cohérence avec le pont bascule du compte |
-| `codepesee` | **oui** | `codepesee` |
-| `numticket` | non | émis au second passage |
-| `poids1`, `datepesee1`, `temps1` | non | premier passage |
-| `poids2`, `poidsbrut`, `poidsnet`, `datepesee2`, `temps2` | non | second passage |
-| `libelleproduit`, `codeproduit`, `prix` | non | crée/complète le produit |
-| `libellefournisseur`, `codefournisseur`, `contactfournisseur`, `prixspeciale` | non | crée/complète le planteur |
-| `libellemouvement`, `libelleclient`, `libelledestination`, `libelleprovenance`, `libelletransporteur`, `chauffeur` | non | texte libre |
-| `immatriculation`, `remorque`, `peseur`, `contactpl`, `conteneur`, `plomb` | non | texte libre |
 
 Les six règles qui comptent :
 
-- **La ligne entière à chaque envoi**, pas seulement ce qui a changé — c'est ce que fait déjà le poste, et c'est ce qui autorise le serveur à tout réécrire.
+- **La ligne entière à chaque envoi**, pas seulement ce qui a changé — c'est ce que fait déjà le poste, et c'est ce qui autorise le serveur à tout réécrire. sauf poids1 et temps1 à la deuxième
 - **La clé d'idempotence est `code_id_codepesee`.** Rejouer un lot ne crée aucun doublon : renvoyer par défaut ce dont on n'est pas sûr est le bon réflexe.
 - **Le signal de fin est `poids2 > 0`**, jamais `datepesee2` — le poste la pré-remplit avec la date du premier passage. Tant que `poids2` vaut 0, le serveur ignore poids2/brut/net **et** la date de sortie.
 - **`prix` et `prixspeciale` ne sont réappliqués que s'ils ont changé** côté poste depuis le dernier envoi. Les envoyer à chaque fois est sans danger : c'est ce qui préserve une tarification faite en ligne.
@@ -625,324 +584,7 @@ Les trois premiers manquants font rejeter la ligne — pas le lot : les autres p
 
 
 
+**l'architecture**
 
-## 3. Les tests
-
-**Backend** — PHPUnit installé, `tests/InvariantTestCase.php` monte une vraie base MySQL (le verrouillage et les contraintes d'unicité sont précisément ce qu'un double en mémoire n'a pas), schéma une fois par processus puis troncature entre les cas.
-
-```bash
-php bin/console --env=test doctrine:database:create --if-not-exists
-```
-
-**35 tests, 216 assertions, tout au vert en 1 min 33.**
-
-- **[GrandLivreTest](Backend-Webpesee-V2/tests/Caisse/GrandLivreTest.php)** (6) — la chaîne `soldeAvant`/`soldeApres` relue compte par compte, la dotation qui déplace sans créer, le refus qui ne laisse aucune écriture orpheline, le journal fermé en écriture par l'API.
-- **[PaiementWebhookTest](Backend-Webpesee-V2/tests/Caisse/PaiementWebhookTest.php)** (6) — un échec rejoué trois fois ne rembourse qu'une, une confirmation rejouée ne crédite qu'une, une notification d'une autre passerelle est ignorée, un versement en vol interdit d'engager le même reste à payer.
-- **[DemandeSoldeTest](Backend-Webpesee-V2/tests/Caisse/DemandeSoldeTest.php)** (6) — une seule en attente par poste, libérée par l'annulation, le rejet et l'approbation ; une approbation refusée par la caisse ne marque pas la demande.
-- **[CloisonnementTest](Backend-Webpesee-V2/tests/Securite/CloisonnementTest.php)** (9) — deux entreprises complètes, l'opérateur borné à ses caisses, la trésorerie globale invisible pour lui, les comptes machine écartés, la corbeille.
-- **[SynchronisationTest](Backend-Webpesee-V2/tests/Synchronisation/SynchronisationTest.php)** (8) — rejeu sans doublon, un poste qui ne peut pas écrire chez le voisin, « HEVEA/Hévéa/hevea » = un produit, le camion encore sur le pont qui reste sans montant.
-
-**Frontend** — [AccesVoterTest](Frontend-Webpesee/tests/Security/AccesVoterTest.php), **49 tests**, qui figent la table recopiée ligne par ligne. C'est le filet de la seule vraie faiblesse de l'approche : quand la table de l'API changera, ce fichier tombera en premier.
-
-`npx tsc --noEmit` propre, `lint:twig` propre, assets reconstruits.
-
-
-
-## Backend V2 — l'architecture
-
-**Le cloisonnement tient en deux classes.** [Perimetre.php](Backend-Webpesee-V2/src/Security/Perimetre.php) calcule une fois par requête la liste des sites visibles (toute l'entreprise pour admin/agent, ses caisses pour un opérateur, son seul poste pour un compte machine), et [PerimetreExtension.php](Backend-Webpesee-V2/src/Doctrine/PerimetreExtension.php) l'applique à toutes les lectures API Platform — corbeille, puis entreprise, puis sites. Le soft-delete y est traité par simple héritage d'`EntityBase`, pas par une seconde extension comme en V1. [UserExtension.php](Backend-Webpesee-V2/src/Doctrine/UserExtension.php) écarte en plus les comptes machine de l'écran des utilisateurs, en filtrant sur `siteMachine` (relation) et non sur le rôle (colonne JSON).
-
-**Les droits sont une table, pas une hiérarchie.** [AccesVoter.php](Backend-Webpesee-V2/src/Security/Voter/AccesVoter.php) remplace à lui seul les onze voters de V1 : une constante `DROITS[rôle][ressource] = [actions]`, puis la vérification de périmètre. Les règles que la table ne sait pas dire (« on ne suspend pas un fondateur », « un agent ne gère que des opérateurs ») vivent dans [UserGuard.php](Backend-Webpesee-V2/src/Security/UserGuard.php), avec la double surface `peutGerer()` / `assertPeutGerer()`.
-
-**La sécurité de la synchronisation a été corrigée à la racine.** Dans [SynchronisationService.php](Backend-Webpesee-V2/src/Domain/Service/SynchronisationService.php), le site vient du **compte machine**, plus du champ `code` de la charge utile — en V1, n'importe quel compte authentifié pouvait écrire chez n'importe quel client. S'y ajoutent la clé d'idempotence `codesecret` (index unique), une seule transaction et un seul `flush()` pour tout le lot, et un accusé de réception qui n'acquitte qu'après validation.
-
-**L'unicité** passe par [UniqueParSite](Backend-Webpesee-V2/src/Validator/UniqueParSiteValidator.php), qui ne compare qu'aux lignes vivantes — jamais d'index unique en base, sinon un produit à la corbeille interdirait de le recréer.
-
----
-
-le produit n'existe pas → créé ; il existe → mis à jour
-Pour le cas suivant je ne comprend pas : . Le prix multiplie le poids net pour donner ce qui sera versé ; laisser celui qui tient la caisse fixer ce prix reviendrait à lui laisser décider combien il décaisse. En revanche il peut compléter le numéro d'un planteur (attribut dédié MODIFIER_CONTACT) — sans numéro la pesée n'est pas payable, et c'est lui qui a le planteur en face de lui.
-
-
-4. Aucune trace des actions sensibles. convention.md prévoit un ActiviteLogger ; le backend V2 n'en a pas. On sait qui a modifié une ligne (updatedBy) mais pas ce qui a changé. Pour une suspension de compte, une dotation ou une approbation, c'est ce qui manque le jour d'une contestation.
-7. Pas de corbeille. Le soft-delete est partout, mais rien ne permet de voir ni de restaurer un élément supprimé. Un produit supprimé par erreur ne se récupère qu'en base — alors que c'est précisément le scénario qui a produit un des bugs de V1.
-
-Journal de synchronisation (/synchronisations) : reçues / créées / complétées / refusées par poste, avec le motif du refus en clair sur la ligne
-
-Écran « à payer » en tête de la section Caisse pour qui encaisse : la file d'attente du guichet, bornée aux pesées terminées non soldées, bouton Verser en clair sur la ligne. Le motif de non-payabilité du planteur s'y lit avant de cliquer.
-
-Notifications : demande déposée → aux administrateurs, demande traitée → à son auteur, versement échoué → à l'opérateur. Une méthode par événement, pas de notifier() générique. Le point important : aucun envoi ne peut faire échouer le geste métier. Vérifié en pointant le mailer sur un SMTP mort — le journal enregistre Envoi de courriel impossible vers patron@socaf.ci, et le dépôt répond quand même 201.
-
-Un bug attrapé en vérifiant
-L'écran « à payer » listait aussi les pesées déjà soldées. J'avais écrit le filtre multi-valeurs 'statutReglement[]' => [...] : le client HTTP échappe les crochets de la clé puis ajoute ses propres indices, l'API ne reconnaît pas le paramètre et l'ignore en silence. La bonne forme est le tableau sous la clé simple. Corrigé, vérifié — 5 lignes puis 4, la soldée exclue. C'est noté en mémoire, le piège se reproduira.
-
-NotCompromisedPassword interroge un service distant — sur une connexion de terrain instable, ça bloquerait toute création de compte. J'ajoute le repli :
-
-Jointure agrégée. CompteurPeseesProvider décore le provider de collection natif (sécurité, périmètre, filtres et pagination inchangés) et pose peseesCount sur toute la page en une requête groupée. Un seul provider pour les trois référentiels — ils posent la même question à la même table. La fiche garde le calcul à la demande : une ligne seule ne justifie pas le détour. Mesuré sur 100 lignes : ~145 ms contre ~190 ms, et l'écart s'élargit avec une base distante où chaque requête coûte un aller-retour.
-
-Plus loin : la double authentification pour les administrateurs.
-
-- Le principe du second envoi : Un camion passe deux fois sur le pont. À l'entrée, le peseur enregistre le poids 1 et le poste envoie la ligne : la pesée est `EN_COURS`, sans poids net donc sans créance. À la sortie, il enregistre le poids 2 et **renvoie la même ligne**, identifiée par la même clé (`code_id_codepesee`). Le serveur reconnaît cette clé, retrouve la ligne existante et la met à jour au lieu d'en créer une seconde :: **le second envoi porte la ligne entière**
-
-
-
-## 2. Messenger sur mutualisé
-
-**Oui, ça marche** — le transport Doctrine est fait pour ça. Les messages vont dans une table, un cron consomme :
-
-```bash
-* * * * * cd /home/user/webpesee && php bin/console messenger:consume async --time-limit=55 --memory-limit=96M --quiet
-```
-
-`--time-limit` sous la minute du cron pour que les processus ne s'empilent pas ; même s'ils se chevauchent, le transport Doctrine verrouille en `SELECT … FOR UPDATE`, donc pas de double envoi. Trois pièges propres au mutualisé : le binaire PHP CLI diffère souvent du PHP web, certains hébergeurs limitent le cron à 5 ou 15 minutes, et il faut un `failure_transport` sinon un mail échoué disparaît sans bruit.
-
-**Mais je vous le déconseille ici.** Les 10 secondes venaient de ma machine, pas de votre code : `MAILER_DSN` pointait sur `localhost:1025` (Mailpit), qui ne tourne pas. Sur votre mutualisé le SMTP est local, un envoi prend quelques dizaines de millisecondes. Messenger ajouterait une table, un cron, un transport d'échec — et surtout un **délai** : si l'hébergeur plafonne le cron à 15 minutes, le lien de réinitialisation arrive un quart d'heure plus tard. Ce serait pire qu'aujourd'hui.
-
-J'ai corrigé la vraie cause : `MAILER_DSN=null://null` par défaut dans `.env`, le contenu des mails reste consultable dans le panneau « Mailer » du profiler, et Mailpit s'active dans `.env.local` pour qui le veut. La production renseigne son SMTP dans `.env.local`, comme `DATABASE_URL`.
-
-À rouvrir le jour où le SMTP est distant et lent, ou quand viendront les notifications de paiement aux planteurs — vous aurez de toute façon déjà un cron pour `app:paiements:reconcilier`, une ligne de plus ne coûtera rien.
-
-
-
-
-
-- L'opérateur ne voit que sa caisse, celle de ses sites
-
-DATES — le poste envoie la date et l'heure séparément ('datepesee1' + 'temps1'). On les recompose en un seul horodatage : l'écran « BILAN STANDARD » filtre sur une plage date + heure, ce qui serait pénible avec quatre colonnes distinctes
-    **`peseeAt1`** (`datetime_immutable`), **`peseeAt2`** (nullable) — recomposés au sync depuis `datepesee1 + temps1` / `datepesee2 + temps2`, ils remplacent `date1/date2/temps1/temps2/datesearch` (5 colonnes → 2, et le filtre date+heure du bilan desktop devient direct)
-
-- Le site sera crée sur le web et l'application génère dans la foulée le compte machine + un fichier de configuration téléchargeable (URL de l'API, code du site, identifiants) consommé à l'installation du logiciel de pesée.
-
-- **`statut`** (`EN_COURS` / `TERMINEE`) — le panneau « PESEE EN ATTENTE » du desktop prouve qu'une pesée peut n'avoir qu'un premier passage. Aujourd'hui `poids2`/`date2` sont NOT NULL : une pesée en cours ne peut tout simplement pas être synchronisée
-    - Pesée en cours : pousser une pesée sans `poids2` → enregistrée `EN_COURS`, aucune créance ; la repousser complétée → même ligne, `TERMINEE`, `montantDu` calculé
-    !!
-    - **`TarificationService::calculer(Operation)`** — `prixunitaire = fournisseur.prixspeciale ?? produit.prix`, `montantDu = poidsnet × prixunitaire`, **uniquement pour les pesées `TERMINEE`**. Recalculé quand un prix produit ou un prix spécial change sur le web, et **jamais sur une pesée déjà payée même partiellement** — sinon un changement de tarif réécrirait l'historique comptable.
-    - **Pesées en cours** — une pesée sans second passage est acceptée et stockée en `EN_COURS` ; la synchronisation suivante la complète via le même `codesecret` et la bascule en `TERMINEE`. C'est exactement ce que montre le panneau « PESEE EN ATTENTE ». Les statistiques et les créances ne portent que sur les pesées terminées.
-    - **Idempotence** : upsert sur `codesecret`, désormais garanti par l'index unique. Rejouer deux fois le même lot ne crée aucun doublon — c'est le test de non-régression principal.
-
-- La synchronisation **rejette toute pesée dont le `code` ≠ `siteMachine.codesite`** → plus d'injection inter-site (faille actuelle : le tenant vient du payload).
-    - Isolation : avec le JWT du site A, pousser une pesée portant le `code` du site B → 403
-- Si `site.statut === BLOQUE`, le sync répond 403 → c'est l'implémentation de « bloquer un pont bascule pour qu'il ne reçoive plus de données ».
-
-| **3** | Synchronisation : services, routes legacy, idempotence, pesées en cours, `SynchronisationLot` | Rejouer 2× un lot → 0 doublon |
-
-User `siteMachine` (`OneToOne Site`, nullable, renseigné uniquement pour les comptes `ROLE_SITE`)
-
-- **`SynchronisationService::traiter(User $compte, array $pesees): ResultatSync`** — une seule transaction par lot, `flush()` unique en fin de lot (aujourd'hui : 4 `flush()` par ligne), `SynchronisationLot` écrit à la fin. Erreur par ligne collectée sans interrompre le lot (comportement actuel conservé, c'est le bon). Le site et l'entreprise sont **résolus depuis `$compte`**, jamais depuis le payload : les 6 lignes de `substr($code, 0, 3)` + `findOneByCodePrefix()` disparaissent.
-
-
-- - 
-# Webpesee
-
-Gestion de ponts bascules. Sur chaque site, un logiciel de pesée enregistre les passages de camions et pousse ses pesées vers une API centrale. Depuis le web, une entreprise exploite l'ensemble de son parc — consultation, statistiques, impression — et paie ses planteurs par mobile money.
-
-| | Super administrateur | Administrateur | Agent | Opérateur |
-|---|---|---|---|---|
-| Périmètre | Les clients | Son entreprise | Son entreprise | Ses ponts bascules |
-| Entreprises | créer, modifier, désactiver | modifier la sienne | consulter | — |
-| Ponts bascules | **mettre en service**, bloquer | affecter, doter, bloquer | consulter | consulter les siens |
-| Utilisateurs | tous | ceux de son entreprise | les opérateurs | — |
-| Pesées et statistiques | **aucun accès** | ✓ | ✓ | ses sites |
-| Caisse | **aucun accès** | recharger, doter | consulter | sa caisse |
-| Payer un planteur | — | ✓ | — | ✓ |
-| Tarifer produits et planteurs | — | ✓ | — | ✓ |
-
-Le super administrateur provisionne, il n'exploite pas : ni pesées, ni caisse, ni statistiques. Ce n'est pas son argent.
-
-Un **compte machine** `ROLE_SITE` par pont bascule sert au logiciel de pesée. Il n'a aucun accès web.
-
-- **L'entreprise vient du compte machine**, jamais du payload. Un code mal saisi à l'installation ne peut plus verser les pesées chez le mauvais client.
-- **Idempotence garantie par un index unique** sur `operation.codesecret`. Rejouer deux fois le même lot ne crée aucun doublon.
-- **Turbo n'affiche pas une réponse 200 à un POST.** Un formulaire doit rediriger après succès, ou renvoyer un statut d'erreur (422) pour être réaffiché. Les deux écrans qui rendent directement leur réponse — mise en service d'un poste et renouvellement de ses identifiants — portent `data-turbo="false"`, parce que le mot de passe n'existe que dans cette réponse.
-
-```bash
-cd Backend-Webpesee && vendor/bin/phpunit && vendor/bin/phpstan analyse
-cd Frontend-Webpesee && vendor/bin/phpstan analyse && npx tsc --noEmit && php bin/console lint:twig templates
-```
-- - 
-
-when@test:
-    framework:
-        validation:
-            not_compromised_password: false
-validator.yaml
-
-#[Assert\NotBlank(message: 'Le nouveau mot de passe est obligatoire')]
-#[Assert\Length(min: 10, minMessage: 'Le mot de passe doit faire au moins {{ limit }} caractères')]
-#[Assert\NotCompromisedPassword(
-    message: 'Ce mot de passe figure dans des fuites de données connues : choisissez-en un autre',
-    skipOnError: true // La vérification interroge un service distant : sur une connexion de terrain coupée, elle ne doit pas empêcher de créer un compte
-)]
-#[Assert\Regex(
-    pattern: '/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/',
-    message: 'Le mot de passe doit contenir au moins une minuscule, une majuscule et un chiffre'
-)]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-On vas développer l'application en architecture séparé 
-    - Backend : Symfony, API..
-    - Frontend : Angular
-Ignore le fichier brl.md du projet, c'est juste un brouillon
-Donne moi le prompt à donner à Claude Code
-
-- - 
-Salut Claude Code, mon patron m'a demandé de développé une application web qui a pour objectif de générer un certifcat de vérification qui contient 2 pages mais il ne m'a pas donnée assez d'informations. Voici quelques notions que j'ai compris :
-
-- En réalité :
-    1. **Le technicien** se déplace chez un client pour intervenir sur un équipement de pesage (pont bascule, ou éventuellement un autre type d'appareil)
-    2. Il remplit une **fiche d'intervention** contenant les informations de l'intervention
-    3. Puis arrivée au bureau il donne la fiche d'intervention à mon patron qui rédige le certificat, la page 2 du certificat contient les résultats de **3 contrôles métrologiques** :
-        - Contrôle de fidélité
-        - Contrôle de justesse
-        - Contrôle d'excentration
-
-Mon patron m'a aussi dit que pour le contrôle d'excentration le pont bascule peut avoir entre 4,6,8 ou 12 capteurs ce qui fait l'objet des colonnes du tableau de contrôle d'excentration === Oui le pont bascule peut avoir plusieurs capteurs(dynamique) === il faudra générer dynamiquement N colonnes selon le nombre de capteurs choisi
-
-- Maintenant, Le patron veut dédier cette tâche à la sécrétaire via l'application
-
-J'envoi l'image de la fiche d'intervention du technicien et les images du certificat de vérification que l'application doit générer. ce que j'ai mis en bic sont de nouvelles variables qu'on vas rajouter
-
-- Y'a t'il un **calcul automatique** qui est fait dans les parties :
-    | Élément | Valeur observée | Origine probable |
-    |---|---|---|
-    | Limite contrôle fidélité | ± 30 000 kg | = Portée max ÷ 2 (60 000 ÷ 2) |
-
-        Si la valeur nominale saisi par l'utilisateur est supérieur à la moitié (ici le max /2) de la porté max alors Non
-
-    | Limite contrôle excentration | 20 000 kg | = Portée max ÷ 3 (60 000 ÷ 3) |
-
-        !! idème mais à demander de diminué à /2
-
-    | Tolérance EMT (±20 kg) | identique sur les 3 tableaux | = Échelon de vérification (20 kg) |
-    | Écart relevé | 0 sur toutes les lignes | = Valeur nominale − Indication lue |
-
-        Oui, pour contrôle de fidélité
-
-    | État final "CONFORME" | texte en vert | = calculé selon les 3 réponses Oui/Non |
-
-        Oui, caluclé selon les 3
-
-Pour ce que j'ai compris concernant les contrôles :
-
-- Contrôle de fidélité
-    > On peut avoir plusieurs points d'éssais
-    > La valeur nominale est saisi par l'utilisateur
-    > valeur nominale - indication lue = écart relevé, écart maximal relevé = le maximum des écarts relevés
-
-- Contrôle de justesse
-    > On peut avoir plusieurs points d'éssais générer de façon automatique
-    > La valeur nominale est saisi par l'utilisateur (et ne doit pas dépasser la moitié de la portée max (max/2)) et les points d'éssai généres doivent être multiple de l'EMT
-    > valeur lue en montée (simple à comprendre), valeur lue en descente (simple à comprendre), indication + surchage de sensibilité (l'utilisateur peut entrer une valeur (ex: 8kg) mais doit être en dessous de l'EMT, donc ex: s'il rente (ex: 8kg) et que la valeur nominale est 10 000 ça devient 10 008)
-    > L'écart relevé ici = indication.. sensibilité - valeur.. (je crois)
-
-- Pour le contrôle d'excentration, lui il a max/3 et je t'ai déjà dit qu'on peut avoir plusieurs capteurs.. , je pense que tu peux comprendre
-
-1. Le technicien ne saisi pas dans l'application il rend juste ça fiche d'intervention à la secrétaire
-2. Les formules ne dépendent pas de la classe de précision de la norme FD X 07‑016
-3. Le N° du certificat (CVSOC20) ne change pas, (02) incrémenté automatiquement en fonction du nombre de CV effectué dans le mois, (050625) Mois,Jour,Année en 2 caractères chacun
-    3. Le **N° de certificat** (CVSOC2002050625) — c'est quel format de génération ? Auto-incrémenté par année/mois ?
-4. Le nombre de "points d'essai" est variable 
-    4. Pour le **contrôle de justesse**, le nombre de "points d'essai" (0 à 4 ici) est-il toujours fixe à 5, ou variable aussi ?
-5. Oui, calculé automatiquement à partir des 4 cases
-    5. Le **verdict "CONFORME"** — calculé automatiquement à partir des 3 cases Oui/Non, ou saisi manuellement par la secrétaire ?
-6. Oui la sortie attendue est PDF téléchargeable/imprimable
-7. Oui
-    7. Faut-il stocker un **historique** des certificats (recherche par client/date/n° certificat) ?
-
-## Certificat
-
-**Fiche d'intervention** (terrain, remplie à la main par le technicien)
-Client, localisation, interlocuteur, contact, type d'équipement (Pont Bascule), marque, modèle, portée maxi/mini, échelon, date/heure, demande de travaux, détails travaux, matériel utilisé, visa technicien + visa client. → C'est le document source de terrain, **pas encore le certificat**.
-
-**Certificat page 1** (« CERTIFICAT DE VERIFICATION »)
-En-tête fixe (SOCAF, accréditation COFRAC N°2‑1376), N° de certificat, client destinataire, puis les caractéristiques officielles de l'instrument vérifié (désignation, marque, modèle, portée max/mini, classe de précision, échelon de vérification, conditions environnementales), dates de vérification/émission, mention "2 pages", signature du service métrologie.
-
-**Certificat page 2** (« RESULTAT D'ETALONNAGE »)
-Les **3 contrôles** que ton patron a mentionnés, chacun avec un tableau de mesures + une case Oui/Non de conformité, puis un verdict global "CONFORME" et la référence à la norme **FD X 07‑016**.
-
-
-
-
-
-
-
-
-
-
-Le calcule des écart, c'est `indication lue - valeur nominale` pour tous, mais pour la partie justesse il ne faut pas ténir conte de l'ordre
-
-1. Pour le contrôle de fidélité, si les écarts peuvent être positifs ou négatifs, "le maximum" veut dire la plus grande valeur en valeur absolue (peu importe le signe), ou littéralement la plus grande valeur signée ? Un écart de −25 kg est pire qu'un écart de +5 kg pour la conformité, donc si c'est un max signé classique, on perdrait le pire cas. Je pencherais pour la valeur absolue, à confirmer
-    > Avec les signes
-
-2. !! de justesse, Les deux contraintes de génération sont claires : VN max saisie par l'utilisateur ≤ Portée max ÷ 2, et les points intermédiaires doivent être multiples de l'EMT. Ça colle avec l'exemple réel (200, 2000, 5000, 10000 sont bien tous multiples de 20, l'EMT de ce certificat), ce qui manque : **l'algorithme exact de génération**, Avec un maximum de 10 000, les points générés sont 200 / 2 000 / 5 000 / 10 000 — soit environ 2% / 20% / 50% / 100% du maximum. Est-ce que c'est vraiment un jeu de pourcentages fixes comme ça (et si oui, lesquels exactement), ou une autre règle (nombre de points fixe, autre répartition) ? Une seule exemple ne suffit pas à déduire la formule avec certitude.
-
-**L'écart relevé ne colle pas à l'exemple réel.** J'ai testé ta formule (`indication+surcharge − valeur nominale`) sur la ligne 1 du vrai certificat : indication+surcharge = 10 000, valeur nominale = 200 → ça donnerait un écart de **9 800 kg**, alors que le certificat affiche **0**. Et 9 800 dépasserait largement la tolérance de ±20, donc ça changerait le verdict. ==> On a déjà une valeur min (Porté mini) et une valeur max (Saisi par l'utilisateur), les points intermédiaires doivent être entre eux.. ou points d'éssai
-
-En revanche, `Valeur lue en montée − Valeur nominale` colle exactement sur les 5 lignes du certificat (200−200=0, 2000−2000=0, etc.). Mon hypothèse : la colonne "indication + surcharge de sensibilité" sert plutôt à un calcul **séparé** pour la case "Sensibilité correcte" (vérifier que l'appareil détecte bien le petit poids ajouté), indépendant de l'écart de justesse lui-même. Mais je ne veux pas trancher à ta place là-dessus — peux-tu revérifier avec ton patron laquelle des deux formules est la bonne ?
-    == Si les 3 colônnes sont rempli alors les 2 cases sont Oui
-
-3. !! d'excentration, je pars sur le même principe que fidélité (`Écart relevé = VN − Indication lue`, limite = Portée max ÷ 3). Je te fais confiance là-dessus comme tu l'as dit — dis-moi si en fait la colonne "surcharge de sensibilité" y joue aussi un rôle particulier === Demander si le **surcharge de sensibilité** joue un rôle dans le calcul de l'écart
-    > `indication lue - valeur nominale` l'ordre ne compte pas ici ça a fait 10000 - 10000 etc...  c'est le patron même qui a renversé pour la cohérence, pour la **surcharge de sensibilité** je crois que non
-
-- N° certificat = CVSOC20 + compteur (2 chiffres) + date JJMMAA	🤔 date à revérifier un jour
-    > Oui, c'est JJMMAA
-- On doit avoir la possibilité de modifier les valeurs des colonnes
-
-
-
-
-
-
-
-Sur la **source des valeurs de mesure brutes** tu avais raison, ..
-
-- A quel moment sont saisi les valeurs nominale (ou la source des valeurs de mesure brutes) ?
-    > Pour le contrôle de justesse est générer automatiquement
-    > Pour les autres, On doit avoir la possibilité de saisir ou générer les points d'essai(le techinicien peut le faire sur terrain)
-
-**Sur le certificat que tu m'as envoyé**, la page 2 affiche des dizaines de valeurs précises : pour la fidélité, des points à 15 000 kg / 12 500 kg / 10 000 kg avec leur indication lue correspondante ; pour la justesse, des points à 200 / 2 000 / 5 000 / 10 000 kg avec les lectures en montée et en descente ; pour l'excentration, 3 000 kg sur chacun des 4 capteurs avec leurs indications lues.
-
-Aucun de ces chiffres n'apparaît sur la fiche d'intervention. Or ce sont de vraies mesures physiques : à un moment donné, quelqu'un a posé des poids étalons de 15 000 kg sur le pont bascule et a lu ce que l'écran affichait. Cette lecture a forcément été notée quelque part, sur le moment, pour ne pas être oubliée avant d'arriver au bureau.
-
-C'est cet endroit que je n'ai pas identifié. Trois pistes à vérifier avec ton patron :
-
-* Soite..
-
-1. Il existe un **document papier séparé** (une feuille de relevé de mesures, ou un procès-verbal d'étalonnage) que le technicien remplit sur place pendant les tests, en plus de la fiche d'intervention — et qu'il remet aussi à la secrétaire. Si c'est le cas, c'est ce document-là (pas la fiche que j'ai déjà vue) qui alimente vraiment la page 2, et j'aurais besoin de le voir.
-2. Le technicien **communique les chiffres oralement** à son retour (téléphone ou de vive voix), et la secrétaire les transcrit directement dans l'application.
-3. Le **logiciel installé sur le pont bascule** — mentionné sur ta fiche ("installation du logiciel, de MySQL et le serveur") — enregistre lui-même ces valeurs pendant l'étalonnage, quelque part récupérable par export ou connexion directe. ==> Non
+- **Le cloisonnement tient en deux classes.** [Perimetre.php](Backend-Webpesee-V2/src/Security/Perimetre.php) calcule une fois par requête la liste des sites visibles (toute l'entreprise pour admin/agent, ses caisses pour un opérateur, son seul poste pour un compte machine), et [PerimetreExtension.php](Backend-Webpesee-V2/src/Doctrine/PerimetreExtension.php) l'applique à toutes les lectures API Platform — corbeille, puis entreprise, puis sites. Le soft-delete y est traité par simple héritage d'`EntityBase`, pas par une seconde extension comme en V1. [UserExtension.php](Backend-Webpesee-V2/src/Doctrine/UserExtension.php) écarte en plus les comptes machine de l'écran des utilisateurs, en filtrant sur `siteMachine` (relation) et non sur le rôle (colonne JSON).
+- **Les droits sont une table, pas une hiérarchie.** [AccesVoter.php](Backend-Webpesee-V2/src/Security/Voter/AccesVoter.php) remplace à lui seul les onze voters de V1 : une constante `DROITS[rôle][ressource] = [actions]`, puis la vérification de périmètre. Les règles que la table ne sait pas dire (« on ne suspend pas un fondateur », « un agent ne gère que des opérateurs ») vivent dans [UserGuard.php](Backend-Webpesee-V2/src/Security/UserGuard.php), avec la double surface `peutGerer()` / `assertPeutGerer()`.

@@ -55,7 +55,8 @@ class ApprouverDemandeProcessor implements ProcessorInterface
 
         $accorde = $data->montantAccorde ?? $demande->getMontantDemande(); // Absent = on accorde ce qui a été demandé
 
-        $this->caisse->doterSite($site, $accorde, 'Demande de réapprovisionnement approuvée', $demande);
+        // La caisse vient de la DEMANDE, jamais du corps de la requête : l'opérateur sait laquelle est à sec, et l'approbation ne doit pas pouvoir remplir l'autre
+        $this->caisse->doterSite($site, $demande->getCaisse(), $accorde, 'Demande de réapprovisionnement approuvée', $demande);
 
         $auteur = $this->security->getUser();
         $auteur = $auteur instanceof User ? $auteur : null;

@@ -4,6 +4,7 @@ namespace App\Tests\Caisse;
 
 use App\Domain\Enum\CompteMouvement;
 use App\Domain\Enum\Role;
+use App\Domain\Enum\TypeCaisse;
 use App\Domain\Enum\TypeMouvement;
 use App\Domain\Service\Caisse\CaisseService;
 use App\Entity\MouvementCaisse;
@@ -36,7 +37,7 @@ final class GrandLivreTest extends InvariantTestCase
         $entreprise = $this->creerEntreprise('ACME', 100_000);
         $site = $this->creerSite($entreprise, 'SOF010');
 
-        $this->caisse->doterSite($site, 30_000);
+        $this->caisse->doterSite($site, TypeCaisse::NUMERIQUE, 30_000);
 
         self::assertSame(70_000, $entreprise->getSolde());
         self::assertSame(30_000, $site->getSolde());
@@ -69,13 +70,13 @@ final class GrandLivreTest extends InvariantTestCase
         $entreprise = $this->creerEntreprise('ACME');
         $site = $this->creerSite($entreprise, 'SOF010');
 
-        $this->caisse->rechargerEntreprise($entreprise, 500_000);
-        $this->caisse->doterSite($site, 200_000);
-        $this->caisse->doterSite($site, 50_000);
-        $this->caisse->rechargerEntreprise($entreprise, 10_000);
+        $this->caisse->rechargerEntreprise($entreprise, TypeCaisse::NUMERIQUE, 500_000);
+        $this->caisse->doterSite($site, TypeCaisse::NUMERIQUE, 200_000);
+        $this->caisse->doterSite($site, TypeCaisse::NUMERIQUE, 50_000);
+        $this->caisse->rechargerEntreprise($entreprise, TypeCaisse::NUMERIQUE, 10_000);
 
-        $this->assertChaineIntacte(CompteMouvement::ENTREPRISE, $entreprise->getSolde());
-        $this->assertChaineIntacte(CompteMouvement::SITE, $site->getSolde());
+        $this->assertChaineIntacte(CompteMouvement::ENTREPRISE, TypeCaisse::NUMERIQUE, $entreprise->getSolde());
+        $this->assertChaineIntacte(CompteMouvement::SITE, TypeCaisse::NUMERIQUE, $site->getSolde());
 
         self::assertSame(260_000, $entreprise->getSolde()); // 500 000 + 10 000 − 250 000
         self::assertSame(250_000, $site->getSolde());
@@ -91,7 +92,7 @@ final class GrandLivreTest extends InvariantTestCase
         $site = $this->creerSite($entreprise, 'SOF010');
 
         try {
-            $this->caisse->doterSite($site, 50_000);
+            $this->caisse->doterSite($site, TypeCaisse::NUMERIQUE, 50_000);
             self::fail('Doter au-delà du solde de l\'entreprise aurait dû être refusé');
         } catch(UnprocessableEntityHttpException $e) {
             // Le message s'adresse à qui est devant l'écran : il annonce ce qui manque
@@ -112,7 +113,7 @@ final class GrandLivreTest extends InvariantTestCase
 
         foreach([0, -1, -5_000] as $montant) {
             try {
-                $this->caisse->doterSite($site, $montant);
+                $this->caisse->doterSite($site, TypeCaisse::NUMERIQUE, $montant);
                 self::fail(sprintf('Une dotation de %d aurait dû être refusée', $montant));
             } catch(UnprocessableEntityHttpException) {
                 // Attendu : un mouvement de zéro ou négatif inverserait le sens de l'écriture
@@ -131,8 +132,8 @@ final class GrandLivreTest extends InvariantTestCase
         $entreprise = $this->creerEntreprise('ACME');
         $site = $this->creerSite($entreprise, 'SOF010');
 
-        $this->caisse->rechargerEntreprise($entreprise, 80_000, 'Apport du gérant');
-        $this->caisse->doterSite($site, 80_000);
+        $this->caisse->rechargerEntreprise($entreprise, TypeCaisse::NUMERIQUE, 80_000, 'Apport du gérant');
+        $this->caisse->doterSite($site, TypeCaisse::NUMERIQUE, 80_000);
 
         $entrees = array_filter($this->ecritures(), static fn(MouvementCaisse $m) => $m->getType() === TypeMouvement::RECHARGE);
 
@@ -164,11 +165,11 @@ final class GrandLivreTest extends InvariantTestCase
      * Relit le journal d'un compte dans l'ordre d'écriture et vérifie qu'il se chaîne, puis que la
      * dernière ligne annonce bien le solde que porte l'entité.
      */
-    private function assertChaineIntacte(CompteMouvement $compte, int $soldeAttendu): void
+    private function assertChaineIntacte(CompteMouvement $compte, TypeCaisse $caisse, int $soldeAttendu): void
     {
-        $ecritures = array_values(array_filter($this->ecritures(), static fn(MouvementCaisse $m) => $m->getCompte() === $compte));
+        $ecritures = array_values(array_filter($this->ecritures(), static fn(MouvementCaisse $m) => $m->getCompte() === $compte && $m->getCaisse() === $caisse));
 
-        self::assertNotEmpty($ecritures, 'Aucune écriture pour le compte ' . $compte->value);
+        self::assertNotEmpty($ecritures, 'Aucune écriture pour ' . $caisse->value . ' sur le compte ' . $compte->value);
 
         $precedent = 0;
 

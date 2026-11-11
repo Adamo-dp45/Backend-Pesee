@@ -9,6 +9,7 @@ use App\Entity\Input\MontantInput;
 use App\Entity\Site;
 use App\Repository\SiteRepository;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
 // Transfère de l'argent de l'entreprise vers la caisse d'un pont bascule
 
@@ -32,7 +33,11 @@ class DoterSiteProcessor implements ProcessorInterface
             throw new NotFoundHttpException('Ce pont bascule est introuvable.');
         }
 
-        $this->caisse->doterSite($site, (int) $data->montant, $data->motif);
+        if($data->caisse === null) {
+            throw new UnprocessableEntityHttpException('Précisez la caisse à doter.');
+        }
+
+        $this->caisse->doterSite($site, $data->caisse, (int) $data->montant, $data->motif);
 
         return $site;
     }

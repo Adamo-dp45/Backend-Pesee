@@ -12,8 +12,10 @@ use ApiPlatform\Metadata\Patch;
 use ApiPlatform\Metadata\Post;
 use ApiPlatform\OpenApi\Model\Operation;
 use App\Domain\Enum\StatutSite;
+use App\Domain\Enum\TypeCaisse;
 use App\Entity\Input\AssignerOperateurInput;
 use App\Entity\Input\MontantInput;
+use App\Entity\Interface\CompteInterface;
 use App\Entity\Interface\EntrepriseOwnedInterface;
 use App\Repository\SiteRepository;
 use App\State\Provider\CompteurPeseesProvider;
@@ -158,25 +160,26 @@ use Symfony\Component\Validator\Constraints as Assert;
     'entreprise' => 'exact',
     'operateur' => 'exact',
 ])]
-#[ApiFilter(OrderFilter::class, properties: ['code', 'libellesite', 'solde', 'createdAt'])]
-class Site extends EntityBase implements EntrepriseOwnedInterface
+// Le tri porte sur les colonnes, donc sur chaque caisse : 'solde' est un cumul calculé, que SQL ne sait pas classer
+#[ApiFilter(OrderFilter::class, properties: ['code', 'libellesite', 'soldePhysique', 'soldeNumerique', 'createdAt'])]
+class Site extends EntityBase implements EntrepriseOwnedInterface, CompteInterface
 {
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    #[Groups(['read:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:Paiement'])]
+    #[Groups(['read:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 50)]
     #[Assert\NotBlank(message: 'Le code du pont bascule est obligatoire')]
     #[Assert\Length(min: 2, max: 50)]
-    #[Groups(['read:Site', 'write:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:Paiement'])]
+    #[Groups(['read:Site', 'write:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement'])]
     private ?string $code = null; // Modifiable à la création seulement : c'est la clé de rapprochement avec le poste
 
     #[ORM\Column(length: 255)]
     #[Assert\NotBlank(message: 'Le libellé du pont bascule est obligatoire')]
     #[Assert\Length(min: 2, max: 255)]
-    #[Groups(['read:Site', 'write:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:Paiement'])]
+    #[Groups(['read:Site', 'write:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement'])]
     private ?string $libellesite = null;
 
     #[ORM\Column(length: 255, nullable: true)]
@@ -228,9 +231,17 @@ class Site extends EntityBase implements EntrepriseOwnedInterface
     #[ORM\OneToOne(mappedBy: 'siteMachine')]
     private ?User $compteMachine = null;
 
+    /*
+        - Les DEUX caisses du poste : les billets dans le tiroir de l'opérateur, et le flotte mobile money. Elles ne communiquent pas — voir 'TypeCaisse'. Un seul solde obligeait à payer un planteur en espèces sur l'argent du flotte, et l'écart ne se voyait qu'en ouvrant le tiroir.
+        - Les deux sont montrées à l'écran de traitement d'une demande : on décide en voyant ce que le poste a déjà, caisse par caisse.
+    */
     #[ORM\Column(type: Types::BIGINT, options: ['default' => 0])]
-    #[Groups(['read:Site', 'read:DemandeSolde'])] // L'écran de traitement l'affiche : on décide en voyant ce que le poste a déjà
-    private int $solde = 0;
+    #[Groups(['read:Site', 'read:DemandeSolde'])]
+    private int $soldePhysique = 0;
+
+    #[ORM\Column(type: Types::BIGINT, options: ['default' => 0])]
+    #[Groups(['read:Site', 'read:DemandeSolde'])]
+    private int $soldeNumerique = 0;
 
     #[ORM\Column(enumType: StatutSite::class, options: ['default' => 'ACTIF'])]
     #[Groups(['read:Site'])]
@@ -334,16 +345,46 @@ class Site extends EntityBase implements EntrepriseOwnedInterface
         return $this;
     }
 
-    public function getSolde(): int
+    public function getSoldePhysique(): int
     {
-        return (int) $this->solde;
+        return (int) $this->soldePhysique;
     }
 
-    public function setSolde(int $solde): static
+    public function getSoldeNumerique(): int
     {
-        $this->solde = $solde;
+        return (int) $this->soldeNumerique;
+    }
+
+    public function getSoldeDe(TypeCaisse $caisse): int
+    {
+        return match($caisse) {
+            TypeCaisse::PHYSIQUE => $this->getSoldePhysique(),
+            TypeCaisse::NUMERIQUE => $this->getSoldeNumerique(),
+        };
+    }
+
+    public function setSoldeDe(TypeCaisse $caisse, int $montant): static
+    {
+        match($caisse) {
+            TypeCaisse::PHYSIQUE => $this->soldePhysique = $montant,
+            TypeCaisse::NUMERIQUE => $this->soldeNumerique = $montant,
+        };
 
         return $this;
+    }
+
+    /*
+        - Ce que tient le poste, toutes caisses confondues. Il se lit, il ne se dépense pas : un versement va chercher la caisse de son mode de règlement, jamais ce total. Pas de setter, pour la même raison.
+    */
+    #[Groups(['read:Site', 'read:DemandeSolde'])]
+    public function getSolde(): int
+    {
+        return $this->getSoldePhysique() + $this->getSoldeNumerique();
+    }
+
+    public function getLibelleCompte(): string
+    {
+        return (string) $this->libellesite;
     }
 
     public function getStatut(): StatutSite

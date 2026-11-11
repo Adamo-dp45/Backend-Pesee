@@ -8,6 +8,7 @@ use App\Entity\Interface\EntrepriseOwnedInterface;
 use App\Entity\Interface\SiteOwnedInterface;
 use App\Entity\Site;
 use App\Entity\User;
+use App\Security\Droits;
 use App\Security\Perimetre;
 use App\Security\UserGuard;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
@@ -19,9 +20,14 @@ use Symfony\Component\Security\Core\Authorization\Voter\Voter;
       classes : V1 avait un voter abstrait et onze sous-classes qui répétaient la même mécanique,
       et répondre à « qui peut faire quoi » demandait d'ouvrir douze fichiers.
 
-    - Deux questions, dans cet ordre :
-        1. le rôle porte-t-il cette action sur cette ressource ?      → la table 'DROITS'
-        2. l'objet visé est-il dans le périmètre de l'utilisateur ?   → 'Perimetre'
+    - La table elle-même vit dans 'Droits', pas ici : le frontend a besoin de la LIRE pour savoir
+      quels boutons afficher, et une table enfermée dans un voter ne se lit pas — c'est ce qui
+      l'avait fait recopier à la main de l'autre côté.
+
+    - Trois questions, dans cet ordre :
+        1. le rôle porte-t-il cette action sur cette ressource ?      → 'Droits'
+        2. la hiérarchie de gestion des comptes l'autorise-t-elle ?   → 'UserGuard'
+        3. l'objet visé est-il dans le périmètre de l'utilisateur ?   → 'Perimetre'
 
     - Les règles fines (on ne suspend pas un fondateur, un agent ne gère que des opérateurs…) vivent dans des GARDES, pas ici. Le voter leur demande simplement leur avis : la garde expose un booléen pour lui — donc pour l'affichage des boutons — et un 'assert' pour le processor, qui lui doit un motif lisible. Un voter ne sait répondre que oui ou non, et un « non » muet n'aide personne.
 
@@ -31,76 +37,6 @@ use Symfony\Component\Security\Core\Authorization\Voter\Voter;
 */
 final class AccesVoter extends Voter
 {
-    public const VOIR = 'VOIR';
-    public const CREER = 'CREER';
-    public const MODIFIER = 'MODIFIER';
-    public const SUPPRIMER = 'SUPPRIMER';
-    public const BLOQUER = 'BLOQUER';
-    public const ATTRIBUER = 'ATTRIBUER';
-    public const RECHARGER = 'RECHARGER';
-    public const TRAITER = 'TRAITER';
-    public const PAYER = 'PAYER';
-    public const PROMOUVOIR = 'PROMOUVOIR';
-
-    /*
-        - Qui peut quoi, par rôle et par ressource. C'est la SEULE source de vérité des droits
-          grossiers : une ressource absente de la ligne d'un rôle lui est fermée, et un rôle absent
-          de la table n'a aucun droit — c'est ce qui écarte le compte machine ('ROLE_SITE'), qui ne
-          sait que déposer des pesées.
-
-        - Les ressources des étapes suivantes sont déjà listées : la table se lit d'un bloc, et
-          l'oubli d'une ligne se voit tout de suite.
-    */
-    private const DROITS = [
-        Role::SUPER_ADMIN->value => [
-            'Entreprise' => [self::VOIR, self::CREER, self::MODIFIER, self::BLOQUER],
-            'User' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER, self::BLOQUER, self::PROMOUVOIR],
-            /*
-                - 'BLOQUER' lui revient au même titre qu'à l'administrateur du client : c'est lui qui
-                  met les postes en service, donc lui qu'on appelle quand l'un d'eux déraille — et il
-                  peut avoir à le couper sans attendre que le client s'en aperçoive.
-                - Il n'a en revanche ni 'ATTRIBUER' ni les ressources d'exploitation : couper un poste
-                  n'est pas toucher à la caisse qu'il tient.
-            */
-            'Site' => [self::VOIR, self::CREER, self::MODIFIER, self::BLOQUER],
-        ],
-        Role::ADMIN->value => [
-            'Entreprise' => [self::VOIR, self::MODIFIER, self::RECHARGER],
-            'User' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER, self::BLOQUER, self::PROMOUVOIR],
-            'Site' => [self::VOIR, self::MODIFIER, self::BLOQUER, self::ATTRIBUER],
-            'Produit' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER],
-            'Fournisseur' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER],
-            'Operation' => [self::VOIR],
-            'Paiement' => [self::VOIR, self::PAYER],
-            'MouvementCaisse' => [self::VOIR],
-            'DemandeSolde' => [self::VOIR, self::TRAITER],
-            'SynchronisationLot' => [self::VOIR],
-            'Activite' => [self::VOIR], // Le journal des decisions : une lecture de supervision
-        ],
-        Role::AGENT->value => [
-            'Entreprise' => [self::VOIR],
-            'User' => [self::VOIR, self::CREER, self::MODIFIER, self::BLOQUER, self::PROMOUVOIR], // Sur des opérateurs seulement : c'est 'UserGuard' qui borne la cible
-            'Site' => [self::VOIR],
-            'Produit' => [self::VOIR],
-            'Fournisseur' => [self::VOIR],
-            'Operation' => [self::VOIR],
-            'Paiement' => [self::VOIR],
-            'MouvementCaisse' => [self::VOIR],
-            'DemandeSolde' => [self::VOIR],
-            'SynchronisationLot' => [self::VOIR],
-            'Activite' => [self::VOIR],
-        ],
-        Role::OPERATEUR->value => [
-            'Site' => [self::VOIR],
-            'Produit' => [self::VOIR, self::MODIFIER],                  // Il tarifie
-            'Fournisseur' => [self::VOIR, self::CREER, self::MODIFIER], // Il fixe les prix spéciaux
-            'Operation' => [self::VOIR],
-            'Paiement' => [self::VOIR, self::PAYER],
-            'MouvementCaisse' => [self::VOIR],
-            'DemandeSolde' => [self::VOIR, self::CREER, self::MODIFIER], // Il corrige et annule la sienne ; « tant qu'elle n'est pas traitée » est vérifié par les processors
-        ],
-    ];
-
     public function __construct(
         private Perimetre $perimetre,
         private UserGuard $userGuard
@@ -110,10 +46,7 @@ final class AccesVoter extends Voter
 
     protected function supports(string $attribute, mixed $subject): bool
     {
-        return in_array($attribute, [
-            self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER, self::BLOQUER,
-            self::ATTRIBUER, self::RECHARGER, self::TRAITER, self::PAYER, self::PROMOUVOIR,
-        ], true) && (is_string($subject) || is_object($subject));
+        return in_array($attribute, Droits::ACTIONS, true) && (is_string($subject) || is_object($subject));
     }
 
     protected function voteOnAttribute(
@@ -129,9 +62,8 @@ final class AccesVoter extends Voter
             return false;
         }
 
-        $droits = self::DROITS[$this->role($user)][$this->ressource($subject)] ?? [];
-
-        if(!in_array($attribute, $droits, true)) {
+        /* Chaque compte porte exactement un rôle métier : il n'y a pas de 'role_hierarchy'. */
+        if(!in_array($attribute, Droits::actions($user->getRolePrincipal(), $this->ressource($subject)), true)) {
             return false;
         }
 
@@ -140,18 +72,6 @@ final class AccesVoter extends Voter
         }
 
         return is_string($subject) || $this->dansMonPerimetre($user, $subject);
-    }
-
-    /** Chaque compte porte exactement un rôle métier : il n'y a pas de 'role_hierarchy'. */
-    private function role(User $user): string
-    {
-        foreach($user->getRoles() as $role) {
-            if(isset(self::DROITS[$role])) {
-                return $role;
-            }
-        }
-
-        return '';
     }
 
     private function ressource(mixed $subject): string

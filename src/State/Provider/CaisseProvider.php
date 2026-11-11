@@ -7,6 +7,7 @@ use ApiPlatform\State\ProviderInterface;
 use App\Domain\Enum\Role;
 use App\Domain\Enum\StatutDemande;
 use App\Entity\Output\CaisseOutput;
+use App\Repository\CompteEpargneRepository;
 use App\Repository\DemandeSoldeRepository;
 use App\Repository\PaiementRepository;
 use App\Repository\SiteRepository;
@@ -27,7 +28,8 @@ final class CaisseProvider implements ProviderInterface
         private readonly Perimetre $perimetre,
         private readonly SiteRepository $sites,
         private readonly PaiementRepository $paiements,
-        private readonly DemandeSoldeRepository $demandes
+        private readonly DemandeSoldeRepository $demandes,
+        private readonly CompteEpargneRepository $epargnes
     )
     {
     }
@@ -41,7 +43,14 @@ final class CaisseProvider implements ProviderInterface
             - Le solde de l'entreprise n'est montré qu'à ceux qui la pilotent : un opérateur tient la caisse d'un poste, la trésorerie globale ne le regarde pas. Il reste à 'null' et non à zéro, qui se lirait « l'entreprise n'a plus rien ».
         */
         if(!$this->perimetre->utilisateur()?->aLeRole(Role::OPERATEUR)) {
-            $sortie->soldeEntreprise = $this->perimetre->entreprise()?->getSolde() ?? 0;
+            $entreprise = $this->perimetre->entreprise();
+
+            $sortie->soldeEntreprise = $entreprise?->getSolde() ?? 0;
+            $sortie->soldeEntreprisePhysique = $entreprise?->getSoldePhysique() ?? 0;
+            $sortie->soldeEntrepriseNumerique = $entreprise?->getSoldeNumerique() ?? 0;
+
+            // L'épargne des planteurs est une dette de l'entreprise, pas une caisse : elle se lit à côté des soldes, jamais dedans
+            $sortie->epargneDue = $entreprise !== null ? $this->epargnes->totalDu($entreprise) : 0;
         }
 
         if($siteIds === []) {
@@ -55,13 +64,17 @@ final class CaisseProvider implements ProviderInterface
             $immobilise = $immobiliseParSite[$id] ?? 0;
 
             $sortie->soldeSites += $site->getSolde();
+            $sortie->soldeSitesPhysique += $site->getSoldePhysique();
+            $sortie->soldeSitesNumerique += $site->getSoldeNumerique();
             $sortie->montantImmobilise += $immobilise;
 
             $sortie->parSite[] = [
                 'siteId' => $id,
                 'site' => (string) $site->getLibellesite(),
                 'solde' => $site->getSolde(),
-                'immobilise' => $immobilise,
+                'soldePhysique' => $site->getSoldePhysique(),
+                'soldeNumerique' => $site->getSoldeNumerique(),
+                'immobilise' => $immobilise, // Toujours sur le numérique : les espèces ne restent pas en vol
                 'operateur' => $site->getOperateur()?->getNomComplet(),
             ];
         }

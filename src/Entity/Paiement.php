@@ -12,8 +12,10 @@ use ApiPlatform\Metadata\GetCollection;
 use ApiPlatform\Metadata\Post;
 // Aliasé : 'Operation' désigne déjà une entité du domaine, la pesée
 use ApiPlatform\OpenApi\Model\Operation as OpenApiOperation;
+use App\Domain\Enum\ModeReglement;
 use App\Domain\Enum\ReseauMobile;
 use App\Domain\Enum\StatutPaiement;
+use App\Domain\Enum\TypeCaisse;
 use App\Entity\Input\PaiementInput;
 use App\Entity\Interface\SiteOwnedInterface;
 use App\Repository\PaiementRepository;
@@ -78,6 +80,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
 #[ApiFilter(SearchFilter::class, properties: [
     'reference' => 'partial',
     'statut' => 'exact',
+    'modeReglement' => 'exact',
     'site' => 'exact',
     'fournisseur' => 'exact',
     'operation' => 'exact',
@@ -120,9 +123,18 @@ class Paiement extends EntityBase implements SiteOwnedInterface
     private ?Site $site = null;
 
     /*
-        - Copiés du planteur au moment du versement plutôt que lus à travers la relation : si son numéro change plus tard, la pièce comptable doit continuer de dire où l'argent est parti.
+        - COMMENT le planteur a été réglé, et par là même quelle caisse s'est vidée : espèces pour la caisse physique, mobile money pour le flotte. Voir 'ModeReglement', qui porte la correspondance.
+        - Figé sur la pièce comptable : il décide du cycle de vie du versement, et le relire plus tard doit donner la même histoire. Un versement en espèces est confirmé sur-le-champ, un versement mobile attend l'agrégateur.
     */
-    #[ORM\Column(length: 30)]
+    #[ORM\Column(enumType: ModeReglement::class, options: ['default' => 'MOBILE_MONEY'])]
+    #[Groups(['read:Paiement', 'read:Operation:item'])]
+    private ModeReglement $modeReglement = ModeReglement::MOBILE_MONEY;
+
+    /*
+        - Copiés du planteur au moment du versement plutôt que lus à travers la relation : si son numéro change plus tard, la pièce comptable doit continuer de dire où l'argent est parti.
+        - NULLABLE depuis les espèces : des billets ne vont à aucun numéro. Exiger quand même un numéro aurait obligé à en inventer un sur les versements de la main à la main, et la pièce comptable aurait menti.
+    */
+    #[ORM\Column(length: 30, nullable: true)]
     #[Groups(['read:Paiement'])]
     private ?string $numeroDestinataire = null;
 
@@ -240,11 +252,35 @@ class Paiement extends EntityBase implements SiteOwnedInterface
         return $this->numeroDestinataire;
     }
 
-    public function setNumeroDestinataire(string $numeroDestinataire): static
+    public function setNumeroDestinataire(?string $numeroDestinataire): static
     {
         $this->numeroDestinataire = $numeroDestinataire;
 
         return $this;
+    }
+
+    public function getModeReglement(): ModeReglement
+    {
+        return $this->modeReglement;
+    }
+
+    public function setModeReglement(ModeReglement $modeReglement): static
+    {
+        $this->modeReglement = $modeReglement;
+
+        return $this;
+    }
+
+    #[Groups(['read:Paiement', 'read:Operation:item'])]
+    public function getModeReglementLibelle(): string
+    {
+        return $this->modeReglement->libelle();
+    }
+
+    /** La caisse d'où l'argent est sorti. Déduite du mode, jamais stockée à part : deux sources finiraient par diverger. */
+    public function getCaisse(): TypeCaisse
+    {
+        return $this->modeReglement->caisse();
     }
 
     public function getReseau(): ?ReseauMobile

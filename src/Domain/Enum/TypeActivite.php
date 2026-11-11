@@ -23,6 +23,15 @@ enum TypeActivite: string
     case PRODUIT_TARIFE = 'PRODUIT_TARIFE';         // Prix au kilo d'un produit
     case FOURNISSEUR_TARIFE = 'FOURNISSEUR_TARIFE'; // Prix spécial négocié avec un planteur
 
+    /*
+        - La mise en compte. Elle décide de ce qu'un planteur touche au guichet, exactement comme un
+          prix — mais contrairement à l'argent qui bouge, elle n'écrit RIEN dans le grand livre des
+          caisses, puisqu'aucun billet ne change de main. Sans ces deux cas, ouvrir ou fermer le
+          robinet de l'épargne de quelqu'un ne laisserait aucune trace.
+    */
+    case FOURNISSEUR_PRELEVEMENT = 'FOURNISSEUR_PRELEVEMENT'; // Ouverture ou changement du taux
+    case FOURNISSEUR_PRELEVEMENT_ARRET = 'FOURNISSEUR_PRELEVEMENT_ARRET';
+
     // Ce qui coupe ou rouvre un accès
     case SITE_BLOQUE = 'SITE_BLOQUE';
     case SITE_DEBLOQUE = 'SITE_DEBLOQUE';
@@ -48,6 +57,8 @@ enum TypeActivite: string
         return match($this) {
             self::PRODUIT_TARIFE => 'Tarification d\'un produit',
             self::FOURNISSEUR_TARIFE => 'Prix spécial d\'un planteur',
+            self::FOURNISSEUR_PRELEVEMENT => 'Ouverture d\'une mise en compte',
+            self::FOURNISSEUR_PRELEVEMENT_ARRET => 'Arrêt d\'une mise en compte',
             self::SITE_BLOQUE => 'Blocage d\'un pont bascule',
             self::SITE_DEBLOQUE => 'Déblocage d\'un pont bascule',
             self::SITE_OPERATEUR => 'Affectation de l\'opérateur',

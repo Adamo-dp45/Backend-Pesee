@@ -3,6 +3,7 @@
 namespace App\DataFixtures;
 
 use App\Domain\Enum\CompteMouvement;
+use App\Domain\Enum\ModeReglement;
 use App\Domain\Enum\ReseauMobile;
 use App\Domain\Enum\Role;
 use App\Domain\Enum\StatutActivation;
@@ -12,12 +13,17 @@ use App\Domain\Enum\StatutDemande;
 use App\Domain\Enum\StatutPaiement;
 use App\Domain\Enum\StatutReglement;
 use App\Domain\Enum\StatutSite;
+use App\Domain\Enum\TypeCaisse;
 use App\Domain\Enum\TypeMouvement;
+use App\Domain\Enum\TypeMouvementEpargne;
 use App\Domain\Service\CompteMachineService;
+use App\Entity\CompteEpargne;
+use App\Entity\DemandePrelevement;
 use App\Entity\DemandeSolde;
 use App\Entity\Entreprise;
 use App\Entity\Fournisseur;
 use App\Entity\MouvementCaisse;
+use App\Entity\MouvementEpargne;
 use App\Entity\Operation;
 use App\Entity\Paiement;
 use App\Entity\Produit;
@@ -40,6 +46,9 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 class AppFixtures extends Fixture
 {
     private const MOT_DE_PASSE = 'motdepasse123';
+
+    /** @var array<int, CompteEpargne> Les comptes d'épargne du jeu, indexés par planteur : rien n'est encore en base pendant la construction */
+    private array $comptesEpargne = [];
 
     public function __construct(
         private UserPasswordHasherInterface $hasher,
@@ -66,10 +75,20 @@ class AppFixtures extends Fixture
         $gagnoa = $this->creerSite($manager, $socaf, 'SOF020', 'Pont de Gagnoa', 'Gagnoa', $ali);
         $bloque = $this->creerSite($manager, $socaf, 'SOF030', 'Pont de Daloa', 'Daloa', null, StatutSite::BLOQUE);
 
-        // La caisse : l'entreprise se recharge, puis dote ses ponts bascules
-        $this->ecrire($manager, $socaf, null, TypeMouvement::RECHARGE, 40_000_000, 'Dépôt bancaire d\'ouverture');
-        $this->doter($manager, $socaf, $soubre, 15_000_000);
-        $this->doter($manager, $socaf, $gagnoa, 8_000_000);
+        /*
+            - Les caisses : l'entreprise recharge CHACUNE des deux, puis dote ses ponts bascules. Les
+              deux natures d'argent ne se croisent jamais — on retrouve donc deux chaînes de grand
+              livre distinctes sur chaque compte.
+            - Soubré est volontairement mieux doté en numérique qu'en physique : c'est ce déséquilibre
+              qui rend l'écran de trésorerie utile, et qui justifie sa demande d'espèces plus bas.
+        */
+        $this->ecrire($manager, $socaf, null, TypeCaisse::NUMERIQUE, TypeMouvement::RECHARGE, 40_000_000, 'Achat de flotte mobile money');
+        $this->ecrire($manager, $socaf, null, TypeCaisse::PHYSIQUE, TypeMouvement::RECHARGE, 12_000_000, 'Retrait bancaire d\'ouverture');
+
+        $this->doter($manager, $socaf, $soubre, TypeCaisse::NUMERIQUE, 15_000_000);
+        $this->doter($manager, $socaf, $soubre, TypeCaisse::PHYSIQUE, 2_000_000);
+        $this->doter($manager, $socaf, $gagnoa, TypeCaisse::NUMERIQUE, 8_000_000);
+        $this->doter($manager, $socaf, $gagnoa, TypeCaisse::PHYSIQUE, 3_000_000);
 
         /* ---- Référentiels, tels que le poste les créerait -------------------------------- */
 
@@ -79,7 +98,7 @@ class AppFixtures extends Fixture
         $cafe = $this->creerProduit($manager, $gagnoa, 'Café', 'CAF', 950);
 
         $nguessan = $this->creerPlanteur($manager, $soubre, 'N\'Guessan', 'Kouamé', '0701020304', ReseauMobile::ORANGE);
-        $yao = $this->creerPlanteur($manager, $soubre, 'Kouame', 'Yao', '0505060708', ReseauMobile::WAVE, prixspeciale: 520);
+        $yao = $this->creerPlanteur($manager, $soubre, 'Kouame', 'Yao', '0505060708', ReseauMobile::WAVE, prixspeciale: 520, tauxEpargne: 25); // Il met de côté 25 F par kilo
         $sansNumero = $this->creerPlanteur($manager, $soubre, 'Bamba', 'Sekou'); // Non payable : pas de numéro
         $koffi = $this->creerPlanteur($manager, $gagnoa, 'Koffi', 'Jean', '0102030405', ReseauMobile::MTN);
 
@@ -92,16 +111,23 @@ class AppFixtures extends Fixture
 
         // Terminée, un versement en vol : c'est la pesée qui exerce la réconciliation
         $enVol = $this->creerPesee($manager, $soubre, $palme, $yao, '1002', 'T-4502', 9_000, 25_000, '-2 days');
+        $this->mettreEnCompte($manager, $enVol, $yao); // Il épargne : une part part sur son compte avant tout versement
         $this->verser($manager, $enVol, 3_000_000, StatutPaiement::ENVOYE);
 
-        // Terminée mais non payable : le planteur n'a pas de numéro
-        $this->creerPesee($manager, $soubre, $hevea, $sansNumero, '1003', 'T-4503', 10_000, 28_000, '-1 day');
+        /*
+            - Le planteur n'a pas de numéro : impayable par mobile money, mais réglable en ESPÈCES. C'est
+              le cas qui justifie à lui seul les deux caisses — avant, cette pesée attendait qu'on trouve
+              un téléphone à quelqu'un qui n'en a pas.
+        */
+        $enEspeces = $this->creerPesee($manager, $soubre, $hevea, $sansNumero, '1003', 'T-4503', 10_000, 28_000, '-1 day');
+        $this->verser($manager, $enEspeces, 1_500_000, StatutPaiement::REUSSI, ModeReglement::ESPECES);
 
         // En cours : le camion est entré, pas encore ressorti
         $this->creerPesee($manager, $soubre, $palme, $nguessan, '1004', null, 11_000, null, '-2 hours');
 
         // Un versement échoué, remboursé : la caisse doit être revenue à son niveau
         $echouee = $this->creerPesee($manager, $soubre, $hevea, $yao, '1005', 'T-4505', 8_000, 22_000, '-1 day');
+        $this->mettreEnCompte($manager, $echouee, $yao);
         $this->verser($manager, $echouee, 1_000_000, StatutPaiement::ECHOUE);
 
         $this->creerPesee($manager, $gagnoa, $cafe, $koffi, '2001', 'T-9001', 7_000, 19_000, '-1 day');
@@ -112,10 +138,18 @@ class AppFixtures extends Fixture
 
         /* ---- Demandes de réapprovisionnement, une par issue ------------------------------- */
 
-        $this->creerDemande($manager, $soubre, $awa, 500_000, 'La caisse ne tiendra pas la journée');            // En attente : c'est elle qui bloque une nouvelle demande sur Soubré
-        $this->creerDemande($manager, $gagnoa, $ali, 300_000, 'Fin de semaine chargée', StatutDemande::APPROUVEE, $patron, 250_000);
-        $this->creerDemande($manager, $gagnoa, $ali, 900_000, 'Prévision de récolte', StatutDemande::REJETEE, $patron, motifRejet: 'Montant hors de proportion avec les pesées du mois.');
-        $this->creerDemande($manager, $gagnoa, $ali, 100_000, 'Erreur de poste', StatutDemande::ANNULEE);            // Retirée par son auteur
+        $this->creerDemande($manager, $soubre, $awa, 500_000, 'Plus de billets, et trois planteurs sans téléphone', TypeCaisse::PHYSIQUE); // En attente : c'est elle qui bloque une nouvelle demande sur Soubré
+        $this->creerDemande($manager, $gagnoa, $ali, 300_000, 'Fin de semaine chargée', TypeCaisse::NUMERIQUE, StatutDemande::APPROUVEE, $patron, 250_000);
+        $this->creerDemande($manager, $gagnoa, $ali, 900_000, 'Prévision de récolte', TypeCaisse::NUMERIQUE, StatutDemande::REJETEE, $patron, motifRejet: 'Montant hors de proportion avec les pesées du mois.');
+        $this->creerDemande($manager, $gagnoa, $ali, 100_000, 'Erreur de poste', TypeCaisse::PHYSIQUE, StatutDemande::ANNULEE);            // Retirée par son auteur
+
+        /* ---- Demandes de mise en compte, une par issue ------------------------------------ */
+
+        // Approuvée : c'est elle qui explique le taux de 25 F/kg que porte Yao
+        $this->creerDemandePrelevement($manager, $yao, $awa, 25, 'Il veut mettre de côté pour la rentrée', StatutDemande::APPROUVEE, $patron);
+        $this->creerDemandePrelevement($manager, $sansNumero, $awa, 15, 'Demande faite au guichet'); // En attente : elle bloque une nouvelle demande sur ce planteur
+        $this->creerDemandePrelevement($manager, $koffi, $ali, 400, 'Épargne forcée', StatutDemande::REJETEE, $patron, 'Taux hors de proportion : il ne lui resterait presque rien au guichet.');
+        $this->creerDemandePrelevement($manager, $nguessan, $awa, 30, 'Erreur de planteur', StatutDemande::ANNULEE);
 
         /* ---- AgriPese : le voisin, pour éprouver le cloisonnement ------------------------- */
 
@@ -126,8 +160,10 @@ class AppFixtures extends Fixture
 
         $bouake = $this->creerSite($manager, $agri, 'AGR010', 'Pont de Bouaké', 'Bouaké', $bakayoko);
 
-        $this->ecrire($manager, $agri, null, TypeMouvement::RECHARGE, 5_000_000, 'Dépôt bancaire d\'ouverture');
-        $this->doter($manager, $agri, $bouake, 2_000_000);
+        $this->ecrire($manager, $agri, null, TypeCaisse::NUMERIQUE, TypeMouvement::RECHARGE, 5_000_000, 'Achat de flotte mobile money');
+        $this->ecrire($manager, $agri, null, TypeCaisse::PHYSIQUE, TypeMouvement::RECHARGE, 1_000_000, 'Retrait bancaire d\'ouverture');
+        $this->doter($manager, $agri, $bouake, TypeCaisse::NUMERIQUE, 2_000_000);
+        $this->doter($manager, $agri, $bouake, TypeCaisse::PHYSIQUE, 500_000);
 
         $anacarde = $this->creerProduit($manager, $bouake, 'Anacarde', 'ANA', 310);
         $sanogo = $this->creerPlanteur($manager, $bouake, 'Sanogo', 'Fanta', '0708091011', ReseauMobile::MOOV);
@@ -234,7 +270,8 @@ class AppFixtures extends Fixture
         string $prenom,
         ?string $contact = null,
         ?ReseauMobile $reseau = null,
-        ?int $prixspeciale = null
+        ?int $prixspeciale = null,
+        ?int $tauxEpargne = null
     ): Fournisseur {
         $planteur = (new Fournisseur())
             ->setNom($nom)
@@ -242,6 +279,7 @@ class AppFixtures extends Fixture
             ->setContact1($contact)
             ->setReseau($reseau)
             ->setPrixspeciale($prixspeciale)
+            ->setTauxEpargne($tauxEpargne)
             ->setSite($site);
 
         $manager->persist($planteur);
@@ -301,20 +339,22 @@ class AppFixtures extends Fixture
     /*
         - Un versement, avec les écritures de caisse qu'il entraîne : le débit à la réservation, et le remboursement si la passerelle a refusé.
     */
-    private function verser(ObjectManager $manager, Operation $pesee, int $montant, StatutPaiement $statut): void
+    private function verser(ObjectManager $manager, Operation $pesee, int $montant, StatutPaiement $statut, ModeReglement $mode = ModeReglement::MOBILE_MONEY): void
     {
         $site = $pesee->getSite();
         $planteur = $pesee->getFournisseur();
+        $mobile = $mode->passeParLaPasserelle();
 
         $paiement = (new Paiement())
             ->setReference(Paiement::genererReference())
             ->setMontant($montant)
+            ->setModeReglement($mode)
             ->setOperation($pesee)
             ->setFournisseur($planteur)
             ->setSite($site)
-            ->setNumeroDestinataire((string) $planteur?->getContact1())
-            ->setReseau($planteur?->getReseau())
-            ->setGateway('fake')
+            ->setNumeroDestinataire($mobile ? $planteur?->getContact1() : null)
+            ->setReseau($mobile ? $planteur?->getReseau() : null)
+            ->setGateway($mobile ? 'fake' : 'caisse')
             ->setStatut($statut);
 
         if($statut === StatutPaiement::REUSSI) {
@@ -331,42 +371,121 @@ class AppFixtures extends Fixture
 
         $manager->persist($paiement);
 
-        // Les fonds quittent la caisse dès la création, quel que soit le sort du versement
-        $this->ecrire($manager, $site->getEntreprise(), $site, TypeMouvement::PAIEMENT, $montant, 'Paiement ' . $paiement->getReference(), $paiement);
+        // Les fonds quittent la caisse du MODE dès la création, quel que soit le sort du versement
+        $caisse = $mode->caisse();
+
+        $this->ecrire($manager, $site->getEntreprise(), $site, $caisse, TypeMouvement::PAIEMENT, $montant, 'Paiement ' . $paiement->getReference(), $paiement);
 
         if($statut === StatutPaiement::ECHOUE) {
-            $this->ecrire($manager, $site->getEntreprise(), $site, TypeMouvement::REMBOURSEMENT, $montant, 'Remboursement du paiement ' . $paiement->getReference(), $paiement);
+            $this->ecrire($manager, $site->getEntreprise(), $site, $caisse, TypeMouvement::REMBOURSEMENT, $montant, 'Remboursement du paiement ' . $paiement->getReference(), $paiement);
         }
 
         // Seul le confirmé compte dans ce qui a été versé
         if($statut === StatutPaiement::REUSSI) {
             $verse = $pesee->getMontantpaye() + $montant;
 
-            $pesee->setMontantpaye($verse)->setStatutReglement(StatutReglement::depuis($pesee->getMontantdu(), $verse));
+            $pesee->setMontantpaye($verse)->setStatutReglement(StatutReglement::pour($pesee->getMontantdu(), $pesee->getMontantpayable(), $verse));
         }
     }
 
-    /** Doter un site produit DEUX écritures : l'argent sort de l'entreprise et entre dans le site. */
-    private function doter(ObjectManager $manager, Entreprise $entreprise, Site $site, int $montant): void
+    /** Doter un site produit DEUX écritures : l'argent sort de l'entreprise et entre dans le site, dans la MÊME caisse. */
+    private function doter(ObjectManager $manager, Entreprise $entreprise, Site $site, TypeCaisse $caisse, int $montant): void
     {
-        $this->ecrire($manager, $entreprise, null, TypeMouvement::ATTRIBUTION, $montant, 'Attribution au pont bascule ' . $site->getCode(), null);
-        $this->ecrire($manager, $entreprise, $site, TypeMouvement::DOTATION, $montant, 'Dotation reçue de l\'entreprise');
+        $this->ecrire($manager, $entreprise, null, $caisse, TypeMouvement::ATTRIBUTION, $montant, 'Attribution au pont bascule ' . $site->getCode(), null);
+        $this->ecrire($manager, $entreprise, $site, $caisse, TypeMouvement::DOTATION, $montant, 'Dotation reçue de l\'entreprise');
     }
 
     /*
         - Une écriture de grand livre, et la mise à jour du solde qu'elle entraîne. Le sens vient du TYPE, jamais de l'appelant : c'est la même garantie que dans 'CaisseService'.
     */
-    private function ecrire(ObjectManager $manager, Entreprise $entreprise, ?Site $site, TypeMouvement $type, int $montant, string $motif, ?Paiement $paiement = null): void
+    /*
+        - La mise en compte d'une pesée, écrite à la main comme les mouvements de caisse plus haut :
+          le service d'épargne verrouille et transacte, ce qui n'a pas de sens dans un jeu de
+          démonstration qui construit tout puis écrit d'un bloc.
+        - Le plafond est le même qu'en production : jamais plus que ce que vaut la pesée.
+    */
+    private function creerDemandePrelevement(
+        ObjectManager $manager,
+        Fournisseur $planteur,
+        User $demandeur,
+        int $taux,
+        string $motif,
+        StatutDemande $statut = StatutDemande::EN_ATTENTE,
+        ?User $traitePar = null,
+        ?string $motifRejet = null
+    ): void {
+        $demande = (new DemandePrelevement())
+            ->setFournisseur($planteur)
+            ->setSite($planteur->getSite())
+            ->setTauxDemande($taux)
+            ->setMotif($motif)
+            ->setStatut($statut)
+            ->setDemandePar($demandeur)
+            ->setMotifRejet($motifRejet);
+
+        if($statut->estTraitee()) {
+            $demande->setTraitePar($traitePar)->setTraiteAt(new \DateTimeImmutable('-1 day'));
+        }
+
+        $manager->persist($demande);
+    }
+
+    private function mettreEnCompte(ObjectManager $manager, Operation $pesee, Fournisseur $planteur): void
+    {
+        $taux = (int) $planteur->getTauxEpargne();
+        $retenue = min($taux * (int) $pesee->getPoidsnet(), (int) $pesee->getMontantdu());
+
+        if($retenue <= 0) {
+            return;
+        }
+
+        $compte = $this->comptesEpargne[spl_object_id($planteur)] ?? null;
+
+        if($compte === null) {
+            $compte = (new CompteEpargne())
+                ->setFournisseur($planteur)
+                ->setSite($planteur->getSite())
+                ->setEntreprise($planteur->getSite()?->getEntreprise());
+
+            $manager->persist($compte);
+            $this->comptesEpargne[spl_object_id($planteur)] = $compte;
+        }
+
+        $avant = $compte->getSolde();
+        $apres = $avant + $retenue;
+
+        $compte->setSolde($apres);
+        $pesee->figerLaRetenue($taux, $retenue);
+        $pesee->setStatutReglement(StatutReglement::pour($pesee->getMontantdu(), $pesee->getMontantpayable(), $pesee->getMontantpaye()));
+
+        $manager->persist(
+            (new MouvementEpargne())
+                ->setCompte($compte)
+                ->setOperation($pesee)
+                ->setType(TypeMouvementEpargne::PRELEVEMENT)
+                ->setSens(TypeMouvementEpargne::PRELEVEMENT->sens())
+                ->setMontant($retenue)
+                ->setSoldeAvant($avant)
+                ->setSoldeApres($apres)
+                ->setMotif(sprintf('Mise en compte sur la pesée %s', (string) $pesee->getNumticket()))
+                ->setEntreprise($compte->getEntreprise())
+                ->setSite($compte->getSite())
+        );
+    }
+
+    private function ecrire(ObjectManager $manager, Entreprise $entreprise, ?Site $site, TypeCaisse $caisse, TypeMouvement $type, int $montant, string $motif, ?Paiement $paiement = null): void
     {
         $surLeSite = $type->compte() === CompteMouvement::SITE;
-        $avant = $surLeSite ? $site->getSolde() : $entreprise->getSolde();
+        $compte = $surLeSite ? $site : $entreprise;
+        $avant = $compte->getSoldeDe($caisse);
         $apres = $avant + ($type->sens()->signe() * $montant);
 
-        $surLeSite ? $site->setSolde($apres) : $entreprise->setSolde($apres);
+        $compte->setSoldeDe($caisse, $apres);
 
         $manager->persist(
             (new MouvementCaisse())
                 ->setCompte($type->compte())
+                ->setCaisse($caisse)
                 ->setEntreprise($entreprise)
                 ->setSite($surLeSite ? $site : null)
                 ->setSens($type->sens())
@@ -388,6 +507,7 @@ class AppFixtures extends Fixture
         User $demandeur,
         int $montant,
         string $motif,
+        TypeCaisse $caisse = TypeCaisse::NUMERIQUE,
         StatutDemande $statut = StatutDemande::EN_ATTENTE,
         ?User $traitePar = null,
         ?int $montantAccorde = null,
@@ -396,6 +516,7 @@ class AppFixtures extends Fixture
     {
         $demande = (new DemandeSolde())
             ->setSite($site)
+            ->setCaisse($caisse)
             ->setDemandePar($demandeur)
             ->setMontantDemande($montant)
             ->setMotif($motif)

@@ -223,6 +223,12 @@ final class SynchronisationController extends AbstractController
             // Alimente l'état « Imprimer avec gain » du poste
             'prixunitaire' => $operation->getPrixunitaire(),
             'montant' => $operation->getMontantdu(),
+            /*
+                - Ce que le planteur touchera réellement, et ce qu'on lui garde. Ajoutés sans rien changer à 'montant', qui reste ce que vaut la pesée : le logiciel du poste est un outil tiers, il n'imprimera ces clés que le jour où il saura les lire.
+                - Tant qu'il ne les imprime pas, le ticket annonce le montant plein et c'est l'opérateur qui explique la retenue au guichet.
+            */
+            'retenue' => $operation->getRetenue(),
+            'montantpayable' => $operation->getMontantpayable(),
         ];
     }
 

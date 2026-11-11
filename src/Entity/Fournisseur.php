@@ -19,6 +19,8 @@ use App\Entity\Interface\SiteOwnedInterface;
 use App\Entity\Operation as Pesee; // Aliasé : 'Operation' désigne déjà celle d'OpenAPI dans ce fichier
 use App\Repository\FournisseurRepository;
 use App\State\Provider\CompteurPeseesProvider;
+use App\Entity\Input\PrelevementInput;
+use App\State\Processor\BasculerPrelevementProcessor;
 use App\State\Processor\AuditProcessor;
 use App\State\Processor\TarificationProcessor;
 use App\State\Processor\SuppressionLogiqueProcessor;
@@ -88,6 +90,22 @@ use Symfony\Component\Validator\Constraints as Assert;
             openapi: new Operation(
                 summary: 'Modification d\'un planteur',
                 description: 'C\'est ici qu\'on renseigne le numéro mobile money, sans lequel aucun versement n\'est possible, et le prix spécial',
+                security: [['bearerAuth' => []]]
+            )
+        ),
+        new Patch( /*
+            - L'ouverture et l'arrêt de la mise en compte, réservés à l'administrateur. Un verbe à part plutôt qu'un champ du formulaire de modification : décider qu'un planteur touchera moins au guichet n'est pas du même ordre que corriger son numéro de téléphone, et ne se donne pas aux mêmes personnes.
+            - Un taux absent ou nul arrête le prélèvement. Ce qui est déjà mis de côté reste au planteur.
+        */
+            uriTemplate: '/fournisseurs/{id}/epargne',
+            security: "is_granted('PRELEVER', object)",
+            requirements: ['id' => '\d+'],
+            input: PrelevementInput::class,
+            denormalizationContext: ['groups' => ['write:Fournisseur:epargne']],
+            processor: BasculerPrelevementProcessor::class,
+            openapi: new Operation(
+                summary: 'Ouverture ou arrêt d\'une mise en compte',
+                description: 'Fixe le taux prélevé sur chaque pesée du planteur, en francs par kilo. Un taux absent arrête le prélèvement',
                 security: [['bearerAuth' => []]]
             )
         ),
@@ -176,6 +194,20 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
     #[ORM\Column(nullable: true)]
     private ?int $prixspecialePoste = null; // Arbitre entre les deux sources, voir 'Produit::prixPoste'
 
+    /*
+        - Le taux de la mise en compte, en francs par kilo : à chaque pesée, cette part de ce qu'on lui doit part sur son épargne au lieu de lui être remise au guichet. 'null' veut dire qu'aucun prélèvement n'est en cours, et c'est le cas de l'immense majorité des planteurs.
+
+        - Il ne s'écrit pas au fil de l'eau : l'administrateur l'ouvre et l'arrête, sur demande de l'opérateur qui a le planteur devant lui. Le poste de pesée ne le connaît pas et n'a aucun moyen de le poser — c'est pour cela qu'il a son propre groupe d'écriture, hors de 'write:Fournisseur'.
+    */
+    #[ORM\Column(nullable: true)]
+    #[Assert\Positive(message: 'Le taux de prélèvement doit être supérieur à zéro')]
+    #[Groups(['read:Fournisseur', 'write:Fournisseur:epargne', 'read:DemandePrelevement'])]
+    private ?int $tauxEpargne = null;
+
+    /* Jamais sérialisé : c'est le solde qui est publié, pas le compte. Nul tant que rien n'a été prélevé. */
+    #[ORM\OneToOne(mappedBy: 'fournisseur', targetEntity: CompteEpargne::class)]
+    private ?CompteEpargne $compteEpargne = null;
+
     #[ORM\Column(enumType: StatutActivation::class, options: ['default' => 'ACTIF'])]
     #[Groups(['read:Fournisseur', 'write:Fournisseur'])]
     private StatutActivation $statut = StatutActivation::ACTIF;
@@ -204,6 +236,16 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
     public function setPeseesCount(int $peseesCount): static
     {
         $this->peseesCount = $peseesCount;
+
+        return $this;
+    }
+
+    /* Même mécanique que ci-dessus, pour le solde d'épargne : sans elle, la liste des planteurs tirerait une requête par ligne pour traverser la relation. */
+    private ?int $soldeEpargne = null;
+
+    public function setSoldeEpargne(int $soldeEpargne): static
+    {
+        $this->soldeEpargne = $soldeEpargne;
 
         return $this;
     }
@@ -254,7 +296,7 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
         return $this->cle;
     }
 
-    #[Groups(['read:Fournisseur', 'read:Operation', 'read:Paiement'])]
+    #[Groups(['read:Fournisseur', 'read:Operation', 'read:Paiement', 'read:DemandePrelevement', 'read:MouvementEpargne'])]
     public function getNomComplet(): string
     {
         return trim(($this->nom ?? '') . ' ' . ($this->prenom ?? ''));
@@ -364,20 +406,32 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
         return $this;
     }
 
+    /** Payable PAR MOBILE MONEY. Depuis que les espèces existent, ce n'est plus la même question que « peut-on le régler ». */
     public function estPayable(): bool
     {
         return $this->getMotifNonPayable() === null;
     }
 
     /*
-        - La raison pour laquelle ce planteur ne peut pas être réglé, ou null s'il peut l'être. Un motif plutôt qu'un booléen : l'opérateur a le planteur en face de lui et doit savoir quoi corriger, pas seulement que « ça ne marche pas ». C'est aussi pour ça qu'il est sérialisé.
+        - Ce qui interdit TOUT règlement, quel qu'en soit le mode. La suspension est de cette nature : on ne paie pas un planteur suspendu, pas plus en billets qu'en mobile money.
+        - Séparé du motif ci-dessous depuis l'arrivée des espèces : un planteur sans téléphone n'est pas un planteur qu'on refuse de payer, c'est un planteur qu'on paie autrement. Confondre les deux le rendait impayable tout court — et c'était précisément celui qu'on règle en liquide.
+    */
+    #[Groups(['read:Fournisseur', 'read:Operation', 'read:Paiement'])]
+    public function getMotifBloquant(): ?string
+    {
+        return $this->statut->estActif() ? null : 'Ce planteur est suspendu.';
+    }
+
+    /*
+        - La raison pour laquelle ce planteur ne peut pas être réglé PAR MOBILE MONEY, ou null s'il peut l'être. Un motif plutôt qu'un booléen : l'opérateur a le planteur en face de lui et doit savoir quoi corriger, pas seulement que « ça ne marche pas ». C'est aussi pour ça qu'il est sérialisé.
+        - Il n'empêche plus de verser : il empêche de verser SUR UN TÉLÉPHONE. L'écran de versement s'en sert pour fermer le mode mobile, pas pour fermer le versement.
         - Le préfixe 'get' n'est pas un caprice : le sérialiseur ignore les groupes posés sur une méthode qui n'en porte pas.
     */
     #[Groups(['read:Fournisseur', 'read:Operation', 'read:Paiement'])]
     public function getMotifNonPayable(): ?string
     {
-        if(!$this->statut->estActif()) {
-            return 'Ce planteur est suspendu.';
+        if(($bloquant = $this->getMotifBloquant()) !== null) {
+            return $bloquant;
         }
 
         if($this->contact1 === null || $this->contact1 === '') {
@@ -425,6 +479,46 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
     {
         return $this->peseesCount
             ?? $this->pesees->matching(Criteria::create()->where(Criteria::expr()->isNull('deletedAt')))->count();
+    }
+
+    public function getTauxEpargne(): ?int
+    {
+        return $this->tauxEpargne;
+    }
+
+    public function setTauxEpargne(?int $tauxEpargne): static
+    {
+        $this->tauxEpargne = $tauxEpargne;
+
+        return $this;
+    }
+
+    /* Un prélèvement est en cours, donc chaque nouvelle pesée mettra une part de côté. */
+    public function epargneEnCours(): bool
+    {
+        return $this->tauxEpargne !== null && $this->tauxEpargne > 0;
+    }
+
+    public function getCompteEpargne(): ?CompteEpargne
+    {
+        return $this->compteEpargne;
+    }
+
+    public function setCompteEpargne(?CompteEpargne $compteEpargne): static
+    {
+        $this->compteEpargne = $compteEpargne;
+
+        return $this;
+    }
+
+    /*
+        - Ce que l'entreprise garde pour ce planteur. Sur une liste, la valeur vient du provider, qui l'a obtenue en une requête groupée ; le repli ne sert qu'à la fiche.
+        - Zéro pour un planteur sans compte, et c'est juste : n'avoir jamais épargné et avoir tout retiré reviennent au même pour celui qui regarde.
+    */
+    #[Groups(['read:Fournisseur', 'read:DemandePrelevement'])]
+    public function getSoldeEpargne(): int
+    {
+        return $this->soldeEpargne ?? $this->compteEpargne?->getSolde() ?? 0;
     }
 
     public function __toString(): string

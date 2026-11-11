@@ -4,6 +4,3 @@ framework:
         # For instance, basic validation constraints will be inferred from Doctrine's metadata.
         #auto_mapping:
         #    App\Entity\: []
-
-# Le bloc 'when@test' désactivait 'not_compromised_password', qui interrogeait un service distant
-# pendant les tests. La contrainte n'est plus posée nulle part : le réglage n'avait donc plus d'objet.

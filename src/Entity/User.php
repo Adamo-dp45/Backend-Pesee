@@ -27,6 +27,7 @@ use App\State\Processor\MotDePasseOublieProcessor;
 use App\State\Processor\RegisterProcessor;
 use App\State\Processor\ReinitialiserMotDePasseProcessor;
 use App\State\Processor\UserProcessor;
+use App\State\Provider\GestionCompteProvider;
 use App\State\Provider\MeProvider;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
@@ -72,6 +73,9 @@ use Symfony\Component\Validator\Constraints as Assert;
         ),
         new GetCollection(
             security: "is_granted('VOIR', 'User')",
+            // 'gestion' : ce que le compte connecté peut faire sur chaque ligne, croisé par le provider
+            normalizationContext: ['groups' => ['read:User', 'read:Base', 'read:User:gestion'], 'skip_null_values' => false],
+            provider: GestionCompteProvider::class,
             openapi: new Operation(
                 summary: 'Liste des utilisateurs',
                 description: 'Les comptes de son entreprise. Les comptes machine des ponts bascules n\'y figurent pas',
@@ -81,6 +85,8 @@ use Symfony\Component\Validator\Constraints as Assert;
         new Get(
             security: "is_granted('VOIR', object)",
             requirements: ['id' => '\d+'],
+            normalizationContext: ['groups' => ['read:User', 'read:Base', 'read:User:gestion'], 'skip_null_values' => false],
+            provider: GestionCompteProvider::class,
             openapi: new Operation(
                 summary: 'L\'utilisateur',
                 description: 'Permet de voir un compte',
@@ -138,6 +144,8 @@ use Symfony\Component\Validator\Constraints as Assert;
             uriTemplate: '/me',
             security: "is_granted('ROLE_USER')",
             provider: MeProvider::class,
+            // Le seul endroit qui publie 'droits' : c'est le compte connecté qui les demande pour lui-même
+            normalizationContext: ['groups' => ['read:User', 'read:Base', 'read:User:me'], 'skip_null_values' => false],
             openapi: new Operation(
                 summary: 'Mon compte',
                 description: 'Permet de voir le compte connecté, son rôle et son entreprise',
@@ -321,6 +329,35 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface, Entrepr
     #[Groups(['write:User'])]
     private ?string $plainPassword = null; // Non persisté : transporte le mot de passe en clair jusqu'au hachage
 
+    /*
+        - Les droits du rôle de ce compte, À PLAT ('SITE_VOIR', 'PRODUIT_MODIFIER'…), posés par
+          'MeProvider' et renvoyés par '/me' seulement. Non persisté : 'Droits' en est la source,
+          la base n'en sait rien.
+        - C'est ce qui remplace la copie manuscrite que le frontend tenait de son côté : il demande
+          désormais ce qu'il a le droit d'afficher au lieu de le déduire du rôle.
+    */
+    /** @var list<string>|null */
+    private ?array $droits = null;
+
+    /*
+        - Ce que le compte CONNECTÉ peut faire sur CELUI-CI, et pourquoi il ne peut rien quand c'est
+          le cas. Posé par 'GestionCompteProvider', qui seul connaît l'acteur.
+        - La question « a-t-il le droit d'agir sur des comptes ? » se répond avec la table ; « sur
+          CELUI-LÀ ? » demande la hiérarchie de 'UserGuard'. Le frontend recopiait cette seconde
+          règle ; il reçoit désormais le verdict, motif compris.
+    */
+    /** @var list<string> */
+    private array $droitsSurCeCompte = [];
+
+    private ?string $motifNonGerable = null;
+
+    /*
+        - Les rôles que CE compte peut attribuer, avec leur libellé, pour la liste déroulante du
+          frontend. Posé par 'MeProvider' : la règle vit dans 'UserGuard', pas dans deux endroits.
+    */
+    /** @var array<string, string> */
+    private array $rolesAttribuables = [];
+
     public function __construct()
     {
         $this->sites = new ArrayCollection();
@@ -448,7 +485,7 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface, Entrepr
         return $this;
     }
 
-    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde'])]
+    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne'])]
     public function getNomComplet(): string
     {
         return trim(($this->prenom ?? '') . ' ' . ($this->nom ?? ''));
@@ -461,6 +498,80 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface, Entrepr
     public function getRoleLibelle(): ?string
     {
         return $this->getRolePrincipal()?->libelle();
+    }
+
+    /*
+        - Ce que ce compte a le droit de faire, sous la forme que le frontend interroge. Il ne
+          figure QUE dans '/me' : la liste des utilisateurs n'a pas à publier les droits de chacun,
+          et personne d'autre que l'intéressé n'en a l'usage.
+        - Ce n'est pas une autorisation, c'est une plausibilité : l'API refait le calcul complet,
+          périmètre compris, à chaque appel.
+    */
+    /** @return list<string> */
+    #[Groups(['read:User:me'])]
+    public function getDroits(): array
+    {
+        return $this->droits ?? [];
+    }
+
+    /** @param list<string> $droits */
+    public function setDroits(array $droits): static
+    {
+        $this->droits = $droits;
+
+        return $this;
+    }
+
+    /*
+        - Les actions que l'utilisateur connecté peut exercer sur ce compte : la table et la
+          hiérarchie déjà croisées. Le frontend n'a plus qu'à chercher 'MODIFIER' dans la liste.
+    */
+    /** @return list<string> */
+    #[Groups(['read:User:gestion'])]
+    public function getDroitsSurCeCompte(): array
+    {
+        return $this->droitsSurCeCompte;
+    }
+
+    /** @param list<string> $actions */
+    public function setDroitsSurCeCompte(array $actions): static
+    {
+        $this->droitsSurCeCompte = $actions;
+
+        return $this;
+    }
+
+    /*
+        - Pourquoi ce compte ne se gère pas d'ici. Une fiche sans le moindre bouton ressemble à une
+          panne : il faut pouvoir dire « c'est le vôtre », « c'est le fondateur », « c'est un
+          compte de pont bascule ».
+    */
+    #[Groups(['read:User:gestion'])]
+    public function getMotifNonGerable(): ?string
+    {
+        return $this->motifNonGerable;
+    }
+
+    public function setMotifNonGerable(?string $motif): static
+    {
+        $this->motifNonGerable = $motif;
+
+        return $this;
+    }
+
+    /** @return array<string, string> */
+    #[Groups(['read:User:me'])]
+    public function getRolesAttribuables(): array
+    {
+        return $this->rolesAttribuables;
+    }
+
+    /** @param array<string, string> $roles */
+    public function setRolesAttribuables(array $roles): static
+    {
+        $this->rolesAttribuables = $roles;
+
+        return $this;
     }
 
     /*

@@ -4,7 +4,7 @@ namespace App\Security;
 
 use App\Domain\Enum\Role;
 use App\Entity\User;
-use App\Security\Voter\AccesVoter;
+use App\Security\Droits;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
 /*
@@ -34,14 +34,32 @@ final class UserGuard
     */
     public function assertPeutAttribuerRole(User $acteur, string $role): void
     {
-        if($acteur->aLeRole(Role::AGENT) && $role !== Role::OPERATEUR->value) {
+        if(!in_array($role, array_map(static fn(Role $cas) => $cas->value, $this->rolesAttribuablesPar($acteur)), true)) {
             throw new UnprocessableEntityHttpException('Un agent ne peut attribuer que le rôle opérateur.');
         }
     }
 
-    private function motifRefus(User $acteur, ?User $cible, string $action): ?string
+    /*
+        - Les rôles que cet acteur peut donner. La même liste sert à REFUSER côté API et à REMPLIR
+          la liste déroulante côté web : le frontend la recevait en recopiant la règle de l'agent,
+          et une liste trop large n'échoue qu'à l'enregistrement, le formulaire déjà rempli.
+    */
+    /** @return list<Role> */
+    public function rolesAttribuablesPar(User $acteur): array
     {
-        if($cible === null || $action === AccesVoter::VOIR) {
+        // L'agent encadre des opérateurs : lui laisser fabriquer un administrateur reviendrait à lui donner les clés de l'entreprise par un détour
+        return $acteur->aLeRole(Role::AGENT) ? [Role::OPERATEUR] : Role::attribuables();
+    }
+
+    /*
+        - Public, parce que le frontend en a besoin MOT POUR MOT : il affiche ce motif quand une
+          fiche n'offre aucun bouton. Il en tenait sa propre copie, qui avait déjà perdu une règle
+          en route — celle du compte machine, sans dommage puisque 'UserExtension' écarte ces
+          comptes. Une copie ne diverge pas d'un coup, elle prend du retard.
+    */
+    public function motifRefus(User $acteur, ?User $cible, string $action): ?string
+    {
+        if($cible === null || $action === Droits::VOIR) {
             return null; // Voir un compte de son périmètre est toujours permis, le reste se protège
         }
 
@@ -60,7 +78,7 @@ final class UserGuard
         /*
             - Le fondateur — celui qui a inscrit l'entreprise — n'est ni suspendable, ni supprimable, ni rétrogradable par un pair. Sans ce garde-fou, deux administrateurs se neutralisent et l'entreprise se verrouille hors de son propre outil, sans autre issue qu'une intervention en base.
         */
-        $retire = in_array($action, [AccesVoter::BLOQUER, AccesVoter::SUPPRIMER, AccesVoter::PROMOUVOIR], true);
+        $retire = in_array($action, [Droits::BLOQUER, Droits::SUPPRIMER, Droits::PROMOUVOIR], true);
 
         if($cible->isFondateur() && $retire && !$acteur->aLeRole(Role::SUPER_ADMIN)) {
             return 'Le compte fondateur ne peut être ni suspendu, ni supprimé, ni rétrogradé par un autre administrateur.';

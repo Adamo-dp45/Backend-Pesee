@@ -9,6 +9,7 @@ use App\Entity\Operation;
 use App\Entity\Produit;
 use App\Entity\Site;
 use App\Entity\User;
+use App\Domain\Service\Epargne\EpargneService;
 use App\Repository\FournisseurRepository;
 use App\Repository\OperationRepository;
 use App\Repository\ProduitRepository;
@@ -34,6 +35,7 @@ class SynchronisationService
         private OperationRepository $operationRepository,
         private ProduitRepository $produitRepository,
         private FournisseurRepository $fournisseurRepository,
+        private EpargneService $epargne,
         private LoggerInterface $logger
     )
     {
@@ -103,6 +105,13 @@ class SynchronisationService
         $acquittees = [];
         $retarife = false;
 
+        /*
+            - Les pesées qui attendent qu'on tranche leur mise en compte. On les met de côté au lieu
+              d'écrire tout de suite : une ligne du livre d'épargne pointe sur une pesée, et une
+              pesée neuve n'a pas encore d'identifiant avant le premier 'flush()'.
+        */
+        $aArbitrer = [];
+
         foreach($lignes as $ligne) {
             try {
                 $existante = $existantes[$ligne['codesecret']] ?? null;
@@ -116,6 +125,10 @@ class SynchronisationService
                 }
 
                 $acquittees[] = [$ligne['refDesktop'], $existante === null];
+
+                if($operation->attendUnArbitrage()) {
+                    $aArbitrer[] = $operation;
+                }
             } catch(\Throwable $e) {
                 $erreurs[] = ['id' => $ligne['refDesktop'], 'message' => $e->getMessage()];
             }
@@ -127,12 +140,30 @@ class SynchronisationService
         if($retarife) {
             foreach($this->operationRepository->findRecalculables($site) as $ancienne) {
                 $ancienne->calculerMontant();
+
+                // Une pesée qui vient d'être valorisée devient arbitrable dans le même lot : son épargne ne doit pas attendre le prochain envoi
+                if($ancienne->attendUnArbitrage()) {
+                    $aArbitrer[] = $ancienne;
+                }
             }
         }
 
-        /* 4. Écriture, tout ou rien. */
+        /*
+            4. Écriture, tout ou rien.
+
+            - Le premier 'flush()' n'est pas cosmétique : il donne leur identifiant aux pesées
+              neuves, et le livre d'épargne pointe sur elles.
+            - Les mises en compte sont dans LA MÊME transaction que le lot, et c'est délibéré. Si
+              l'une échoue, rien n'est acquitté et le poste renverra — l'idempotence absorbe. Créditer
+              en différé ouvrirait une fenêtre pendant laquelle la pesée est payable en totalité : le
+              guichet verserait tout, la retenue arriverait après, et l'entreprise paierait deux fois.
+        */
         try {
-            $this->em->wrapInTransaction(function(): void {
+            $this->em->wrapInTransaction(function() use ($aArbitrer): void {
+                $this->em->flush();
+
+                $this->epargne->preleverSurLot($aArbitrer);
+
                 $this->em->flush();
             });
         } catch(\Throwable $e) {
@@ -210,19 +241,38 @@ class SynchronisationService
             ->setContactPl($this->texte($brute, 'contactpl') ?? $this->texte($brute, 'contactPl'))
             ->setConteneur($this->texte($brute, 'conteneur'))
             ->setPlomb($this->texte($brute, 'plomb'))
-            ->setPoids1($this->entier($brute, 'poids1'))
-            ->setPeseeAt1($this->horodatage($brute, 'datepesee1', 'temps1'))
-            ->setStatut($statut)
             ->setSyncAt(new \DateTimeImmutable());
 
         /*
-            - Tant que la pesée n'est pas terminée on ignore le second poids, le brut, le net ET la date de second passage : le poste pré-remplit cette date avec celle du premier passage, la stocker donnerait une heure de sortie inventée.
+            - LE PREMIER PASSAGE NE S'ÉCRIT QU'UNE FOIS. Le poids d'entrée est relevé par la bascule quand le camion monte dessus ; le second envoi le rapporte encore, mais ce n'est plus qu'une recopie de sa base locale — rien ne l'a repesé. Le laisser écraser la valeur acquise, c'est accepter qu'une saisie corrigée sur le poste, ou un champ revenu vide, réécrive après coup un fait de bascule.
+
+            - L'heure d'entrée suit le même sort, et pour la même raison : un poids relevé au premier passage avec une heure venue du second ne décrit aucun moment réel.
+
+            - La condition porte sur ce qui est DÉJÀ EN BASE, pas sur le statut : une pesée dont le premier envoi n'aurait rien apporté — champ absent, poste mal configuré — peut encore se compléter au passage suivant. On fige ce qu'on sait, on ne refuse pas ce qu'on ignore.
         */
-        $operation
-            ->setPoids2($terminee ? $poids2 : null)
-            ->setPoidsbrut($terminee ? $this->entier($brute, 'poidsbrut') : null)
-            ->setPoidsnet($terminee ? $this->entier($brute, 'poidsnet') : null)
-            ->setPeseeAt2($terminee ? $this->horodatage($brute, 'datepesee2', 'temps2') : null);
+        if($operation->getPoids1() === null) {
+            $operation->setPoids1($this->entier($brute, 'poids1'));
+        }
+
+        if($operation->getPeseeAt1() === null) {
+            $operation->setPeseeAt1($this->horodatage($brute, 'datepesee1', 'temps1'));
+        }
+
+        /*
+            - Tant que la pesée n'est pas terminée on ignore le second poids, le brut, le net ET la date de second passage : le poste pré-remplit cette date avec celle du premier passage, la stocker donnerait une heure de sortie inventée.
+
+            - LE SECOND PASSAGE NE S'ÉCRIT QU'UNE FOIS, lui aussi, et le statut avec lui. Même raison que pour le premier, plus une qui lui est propre : le poids net est l'assiette de la mise en compte. Une pesée déjà créditée sur l'épargne d'un planteur, dont un renvoi ultérieur réécrirait le net, verrait sa retenue reposer sur un poids qui n'est plus celui qui l'a produite.
+
+            - Le statut est dans le même bloc à dessein. L'en sortir laisserait un envoi tardif à poids2 nul renvoyer en « en cours » une pesée déjà créditée, et effacer son montant dû : il resterait une ligne d'épargne en face d'une pesée officiellement jamais terminée.
+        */
+        if(!$operation->estTerminee()) {
+            $operation
+                ->setStatut($statut)
+                ->setPoids2($terminee ? $poids2 : null)
+                ->setPoidsbrut($terminee ? $this->entier($brute, 'poidsbrut') : null)
+                ->setPoidsnet($terminee ? $this->entier($brute, 'poidsnet') : null)
+                ->setPeseeAt2($terminee ? $this->horodatage($brute, 'datepesee2', 'temps2') : null);
+        }
 
         $retarife = $this->resoudreProduit($brute, $site, $produits, $produit);
         $retarife = $this->resoudreFournisseur($brute, $site, $fournisseurs, $fournisseur) || $retarife;

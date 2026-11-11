@@ -73,6 +73,8 @@ class OperationRepository extends ServiceEntityRepository
             ->andWhere('o.site = :site')
             ->andWhere('o.deletedAt IS NULL')
             ->andWhere('o.montantpaye = 0')
+            // Une pesée dont la retenue est arbitrée est dans le même état qu'une pesée déjà payée : une promesse a été écrite au planteur sur la base de ce montant, et aucun retrait n'existe pour la défaire
+            ->andWhere('o.retenue IS NULL')
             ->setParameter('site', $site)
             ->getQuery()
             ->getResult();

@@ -4,6 +4,7 @@ namespace App\State\Processor;
 
 use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
+use App\Domain\Enum\ModeReglement;
 use App\Domain\Service\Caisse\PaiementService;
 use App\Entity\Input\PaiementInput;
 use App\Entity\Paiement;
@@ -46,6 +47,13 @@ class PaiementProcessor implements ProcessorInterface
             throw new NotFoundHttpException('Cette pesée est introuvable.');
         }
 
-        return $this->paiements->initier($pesee, (int) $data->montant, $auteur, $data->numeroDestinataire, $data->reseau);
+        return $this->paiements->initier(
+            $pesee,
+            (int) $data->montant,
+            $data->modeReglement ?? ModeReglement::MOBILE_MONEY, // La validation l'exige déjà ; ce repli n'est là que pour le typage
+            $auteur,
+            $data->numeroDestinataire,
+            $data->reseau
+        );
     }
 }

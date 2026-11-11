@@ -4,7 +4,9 @@ namespace App\Tests;
 
 use App\Domain\Enum\Role;
 use App\Domain\Enum\StatutOperation;
+use App\Domain\Enum\TypeCaisse;
 use App\Domain\Service\CompteMachineService;
+use App\Domain\Service\Epargne\EpargneService;
 use App\Entity\Entreprise;
 use App\Entity\Fournisseur;
 use App\Entity\Operation;
@@ -102,13 +104,19 @@ abstract class InvariantTestCase extends WebTestCase
 
     /* ---- Montage du décor ------------------------------------------------------------------- */
 
-    protected function creerEntreprise(string $code = 'ACME', int $solde = 0): Entreprise
+    /*
+        - Le solde posé sans argument de caisse va dans la NUMÉRIQUE, parce que c'est elle que la
+          plupart des cas éprouvent : le mobile money est le chemin qui a une passerelle, un webhook
+          et une réconciliation. Un cas qui veut des espèces le dit, et renseigne l'autre.
+    */
+    protected function creerEntreprise(string $code = 'ACME', int $solde = 0, int $soldePhysique = 0): Entreprise
     {
         $entreprise = (new Entreprise())
             ->setNom('Entreprise ' . $code)
             ->setCodeentreprise($code)
             ->setContact1('0700000000')
-            ->setSolde($solde);
+            ->setSoldeDe(TypeCaisse::NUMERIQUE, $solde)
+            ->setSoldeDe(TypeCaisse::PHYSIQUE, $soldePhysique);
 
         $this->em->persist($entreprise);
         $this->em->flush();
@@ -116,13 +124,14 @@ abstract class InvariantTestCase extends WebTestCase
         return $entreprise;
     }
 
-    protected function creerSite(Entreprise $entreprise, string $code = 'SOF010', int $solde = 0): Site
+    protected function creerSite(Entreprise $entreprise, string $code = 'SOF010', int $solde = 0, int $soldePhysique = 0): Site
     {
         $site = (new Site())
             ->setCode($code)
             ->setLibellesite('Pont bascule ' . $code)
             ->setEntreprise($entreprise)
-            ->setSolde($solde);
+            ->setSoldeDe(TypeCaisse::NUMERIQUE, $solde)
+            ->setSoldeDe(TypeCaisse::PHYSIQUE, $soldePhysique);
 
         $this->em->persist($site);
         $this->em->flush();
@@ -217,6 +226,23 @@ abstract class InvariantTestCase extends WebTestCase
         $pesee->calculerMontant();
 
         $this->em->persist($pesee);
+        $this->em->flush();
+
+        return $pesee;
+    }
+
+    /*
+        - Une pesée passée par l'arbitrage de la mise en compte, telle que la synchronisation
+          l'aurait laissée. Volontairement DISTINCTE de 'creerPesee()' plutôt qu'un paramètre de
+          plus : les cas existants doivent continuer de produire des pesées jamais arbitrées, sinon
+          ils changeraient tous de sens d'un coup.
+    */
+    protected function creerPeseeArbitree(Site $site, Produit $produit, Fournisseur $planteur, int $poidsnet = 500, string $ref = '1'): Operation
+    {
+        $pesee = $this->creerPesee($site, $produit, $planteur, $poidsnet, $ref);
+
+        self::getContainer()->get(EpargneService::class)->preleverSur($pesee);
+
         $this->em->flush();
 
         return $pesee;

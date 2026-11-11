@@ -78,7 +78,11 @@
         ],
         "post-update-cmd": [
             "@auto-scripts"
-        ]
+        ],
+        "fixtures": "php bin/console doctrine:fixtures:load --no-interaction"
+    },
+    "scripts-descriptions": {
+        "fixtures": "Permet de charger le jeu de démonstration"
     },
     "conflict": {
         "symfony/symfony": "*"

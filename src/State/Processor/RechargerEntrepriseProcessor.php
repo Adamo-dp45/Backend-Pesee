@@ -36,7 +36,11 @@ class RechargerEntrepriseProcessor implements ProcessorInterface
             throw new UnprocessableEntityHttpException('Vous n\'êtes rattaché à aucune entreprise.');
         }
 
-        $this->caisse->rechargerEntreprise($entreprise, (int) $data->montant, $data->motif);
+        if($data->caisse === null) {
+            throw new UnprocessableEntityHttpException('Précisez la caisse à alimenter.');
+        }
+
+        $this->caisse->rechargerEntreprise($entreprise, $data->caisse, (int) $data->montant, $data->motif);
 
         return $entreprise;
     }

@@ -5,11 +5,13 @@ namespace App\State\Processor;
 use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use App\Entity\EntityBase;
+use App\Entity\Fournisseur;
 use App\Entity\User;
 use App\Domain\Enum\TypeActivite;
 use App\Domain\Service\ActiviteLogger;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
 /*
     - Suppression logique : on marque, on n'efface pas. Les pesées référencent leurs produits et leurs planteurs, et justifient des paiements — une suppression physique casserait l'historique. 'PerimetreExtension' masque la ligne, la base la garde.
@@ -33,6 +35,16 @@ class SuppressionLogiqueProcessor implements ProcessorInterface
     {
         if(!$data instanceof EntityBase) {
             return $data; // 'User' n'en hérite pas : un compte se suspend, il ne se met pas à la corbeille
+        }
+
+        /*
+            - Un planteur dont l'épargne n'est pas vide ne se met pas à la corbeille : le cloisonnement le ferait disparaître de tous les écrans, et son argent avec lui. Tant qu'il n'existe pas de retrait, il n'y a aucun moyen de le lui rendre après coup.
+        */
+        if($data instanceof Fournisseur && $data->getSoldeEpargne() > 0) {
+            throw new UnprocessableEntityHttpException(sprintf(
+                'Ce planteur a %s F CFA sur son compte d\'épargne : il ne peut pas être mis à la corbeille tant que cette somme ne lui a pas été rendue.',
+                number_format($data->getSoldeEpargne(), 0, ',', ' ')
+            ));
         }
 
         $auteur = $this->security->getUser();

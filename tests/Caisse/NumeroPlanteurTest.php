@@ -117,6 +117,7 @@ final class NumeroPlanteurTest extends InvariantTestCase
 
         $this->appeler('POST', '/api/paiements', $operateur, [
             'operationId' => $pesee->getId(),
+            'modeReglement' => 'MOBILE_MONEY',
             'montant' => 20_000,
             'numeroDestinataire' => '070102',
         ]);
@@ -134,6 +135,7 @@ final class NumeroPlanteurTest extends InvariantTestCase
 
         $this->appeler('POST', '/api/paiements', $operateur, [
             'operationId' => $pesee->getId(),
+            'modeReglement' => 'MOBILE_MONEY',
             'montant' => 20_000,
             'numeroDestinataire' => '07 09 08 07 06',
         ]);
