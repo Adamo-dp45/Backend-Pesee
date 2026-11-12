@@ -54,9 +54,9 @@ class SiteProcessor implements ProcessorInterface
 
         $motDePasse = $this->compteMachine->creer($data);
 
-        // L'identifiant ET le mot de passe : l'un sans l'autre ne permet pas de mettre le poste en service
+        // L'identifiant ET le mot de passe : l'un sans l'autre ne permet pas de mettre le poste en service. L'identifiant est celui que le compte PORTE, pas celui qu'on recomposerait depuis le code — les deux peuvent différer, voir 'CompteMachineService'
         $data
-            ->setIdentifiantMachine($this->compteMachine->identifiant($data))
+            ->setIdentifiantMachine($this->compteMachine->identifiantDe($data))
             ->setMotDePasseMachine($motDePasse)
             ->setConfiguration($this->compteMachine->configuration($data, $motDePasse));
 

@@ -99,7 +99,46 @@ La valeur du poste est **mémorisée à part**, pour que seul un vrai changement
 
 Concernant `prixspeciale`, sache qu'il sera lié à un produit
 
-- Si l'admin modifie le prix/kg de prélèvement on log
+
+
+- Dans la partie darkMode du frontend on vas ajouter le choix du `système` en plus du mode `dark` et `light` !
+- Changer la couleur de la sidebar et navbar
+
+
+
+
+
+
+
+dans la regénération 
+
+Adama Bakayoko a arrêté la mise en compte de FF sur HEVEA 2 - le prix aussi
+Fiche fournisseur : Dernières pesées affiché plus d'infos comme le prix du transport et montanttransport
+
+lorsque le desktop envoi et qu'il y'a des modifications sur fourniseur et produit on doit loge
+
+
+
+
+
+
+
+
+
+
+
+Lorsque les peseés arrive, si il n'y a de problème du genre le prixtransport ou le prix du produit est 0 et que côté web ça match directement, la syncrone se fait sinon on affiche la liste des syncro qui ont un soucis à l'opérateur et adminstrateur pour qu'il fasse des choix et sync les différents pesées
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -207,7 +246,6 @@ c'est un ajout de périmètre à décider.
 
 
 
-- Dans la partie darkMode du frontend on vas ajouter le choix du `système` en plus du mode `dark` et `light` !
 
 Une pesée crédite l'épargne du planteur sans toucher aucune caisse -- Cette phrase me gène un peu
 

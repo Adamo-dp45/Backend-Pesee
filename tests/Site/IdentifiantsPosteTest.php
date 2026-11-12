@@ -74,9 +74,78 @@ final class IdentifiantsPosteTest extends InvariantTestCase
         self::assertArrayHasKey('identifiantMachine', $second);
         self::assertNotEmpty($second['motDePasseMachine']);
 
-        // L'identifiant ne bouge pas — il suit le code du poste — mais le mot de passe, si
+        // L'identifiant ne bouge pas — il appartient au compte, pas au code — mais le mot de passe, si
         self::assertSame($premier['identifiantMachine'], $second['identifiantMachine']);
         self::assertNotSame($premier['motDePasseMachine'], $second['motDePasseMachine']);
+    }
+
+    /*
+        - LE défaut qui rendait 500 la création d'un pont bascule, et que personne ne pouvait
+          diagnostiquer depuis l'écran : « Une erreur est survenue », rien de plus.
+
+        - L'adresse du compte machine se dérive du code À LA CRÉATION et ne le suit plus ensuite.
+          Renommer un poste libère donc son code en apparence seulement : l'ancien compte garde
+          l'adresse. Le poste suivant qui reprenait ce code butait sur l'index unique de
+          'user.email', et la requête mourait sur une violation d'intégrité.
+    */
+    public function testUnCodeRenduParUnPosteRenommeNEmpechePlusDEnCreerUnAutre(): void
+    {
+        $this->mettreEnService('SOF010');
+        $premier = $this->reponse();
+
+        $site = $this->em->getRepository(Site::class)->findOneBy(['code' => 'SOF010']);
+        $this->appeler('PATCH', '/api/sites/' . $site->getId(), $this->patron, ['code' => 'SOF999']);
+        self::assertSame(200, $this->client->getResponse()->getStatusCode());
+
+        // Le code a l'air libre : un nouveau poste doit pouvoir le prendre
+        $this->mettreEnService('SOF010');
+        self::assertSame(201, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
+
+        $second = $this->reponse();
+
+        self::assertNotSame(
+            $premier['identifiantMachine'],
+            $second['identifiantMachine'],
+            'Deux postes ne peuvent pas porter la même adresse : la base l\'interdit'
+        );
+        self::assertSame($second['identifiantMachine'], $second['configuration']['api']['login'] ?? null);
+
+        // Et il ouvre vraiment : une adresse de repli qui ne connecte pas ne vaut rien
+        $this->connecter($second['identifiantMachine'], $second['motDePasseMachine']);
+        self::assertSame(200, $this->client->getResponse()->getStatusCode());
+    }
+
+    /*
+        - Le même défaut par l'autre porte : le renouvellement recomposait l'adresse à partir du
+          code, et la déplaçait donc à chaque fois sur un poste renommé. Si un autre compte occupait
+          l'adresse visée, c'était une 500 ; sinon, le poste en service perdait son login sans que
+          rien ne l'annonce.
+
+        - Ce que le cas fixe : renouveler ne touche QUE le mot de passe, et l'ancien poste continue
+          d'ouvrir avec l'adresse qu'il a toujours eue.
+    */
+    public function testLeRenouvellementNeDeplacePasLAdresseDUnPosteRenomme(): void
+    {
+        $this->mettreEnService('SOF010');
+        $avant = $this->reponse();
+
+        $site = $this->em->getRepository(Site::class)->findOneBy(['code' => 'SOF010']);
+        $this->appeler('PATCH', '/api/sites/' . $site->getId(), $this->patron, ['code' => 'SOF999']);
+
+        // Un second poste reprend le code rendu : l'adresse 'sof010@' reste donc occupée
+        $this->mettreEnService('SOF010');
+        self::assertSame(201, $this->client->getResponse()->getStatusCode());
+
+        $this->appeler('PATCH', '/api/sites/' . $site->getId() . '/identifiants', $this->patron, []);
+        self::assertSame(200, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
+
+        $apres = $this->reponse();
+
+        self::assertSame($avant['identifiantMachine'], $apres['identifiantMachine'], 'Le renouvellement a déplacé le login du poste');
+        self::assertNotSame($avant['motDePasseMachine'], $apres['motDePasseMachine']);
+
+        $this->connecter($apres['identifiantMachine'], $apres['motDePasseMachine']);
+        self::assertSame(200, $this->client->getResponse()->getStatusCode());
     }
 
     /*

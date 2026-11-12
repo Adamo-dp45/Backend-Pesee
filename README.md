@@ -313,6 +313,7 @@ Si l'un d'eux saute, c'est de l'argent qui se perd ou qui se crée.
 | **`$processor` est réservé** | `services.yaml` lie ce **nom d'argument** à la persistance native. Un processor qui décore autre chose doit nommer son argument autrement (`$audit`). |
 | **`deletedAt` dans un processor** | Les extensions Doctrine ne s'appliquent qu'aux requêtes d'API Platform. Dans un repository appelé par un processor, filtrer `deletedAt IS NULL` à la main. |
 | **Fins de ligne** | Le dépôt est en **LF**. Un éditeur qui réécrit en CRLF produit un diff de fichier entier. |
+| **L'adresse du compte machine ne suit pas le code** | Elle est dérivée du code **à la création** puis figée : un poste renommé garde la sienne, et son ancien code reste occupé. Recomposer l'adresse depuis le code — à l'affichage ou au renouvellement — rendait un identifiant faux, ou tuait la requête sur l'unicité de `user.email` (500 à la création d'un site **et** au renouvellement). Toujours lire `identifiantDe()`, jamais `identifiant()`. |
 
 ---
 
@@ -357,6 +358,7 @@ tests/Caisse/PrixTransportTest     le transport s'ajoute au payable, jamais au m
 tests/Caisse/DemandeSoldeTest      une seule demande en attente par poste
 tests/Epargne/MiseEnCompteTest     le prélèvement ne touche aucune caisse, ne crédite qu'une fois
 tests/Epargne/DemandePrelevementTest  l'ouverture, le rejet, l'arrêt, le taux sous le prix
+tests/Site/IdentifiantsPosteTest   le poste reçoit un identifiant qui ouvre vraiment, et qui ne bouge pas
 tests/Securite/CloisonnementTest   deux clients dans la même base, aucun ne voit l'autre
 tests/Securite/DroitsTest          ce que /me annonce est ce que l'API accorde
 tests/Synchronisation/…            le gel des passages, l'idempotence d'un lot
