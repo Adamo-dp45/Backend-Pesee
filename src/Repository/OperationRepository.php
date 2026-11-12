@@ -3,7 +3,9 @@
 namespace App\Repository;
 
 use App\Domain\Enum\StatutOperation;
+use App\Entity\Fournisseur;
 use App\Entity\Operation;
+use App\Entity\Produit;
 use App\Entity\Site;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\ORM\QueryBuilder;
@@ -60,6 +62,28 @@ class OperationRepository extends ServiceEntityRepository
         }
 
         return $indexees;
+    }
+
+    /*
+        - Les pesées qu'un changement de tarif sur le web doit revaloriser : celles d'un produit qu'on vient de tarifer, ou d'un planteur dont on vient de changer le transport.
+
+        - Mêmes garde-fous que 'findRecalculables()', pour les mêmes raisons, et volontairement SANS filtre de site : un produit vaut la même chose sur tous les ponts bascules de l'entreprise, et un planteur n'appartient de toute façon qu'à un seul poste.
+
+        - La portée est étroite exprès. Tarifer un produit ne touche que SES pesées, pas tout le poste : ce que fait la synchronisation, qui ne sait pas quel tarif a bougé et balaie donc large.
+
+        @return list<Operation>
+    */
+    public function findARevaloriser(Produit|Fournisseur $cause): array
+    {
+        $qb = $this->createQueryBuilder('o')
+            ->andWhere('o.deletedAt IS NULL')
+            ->andWhere('o.montantpaye = 0')
+            ->andWhere('o.retenue IS NULL')
+            ->setParameter('cause', $cause);
+
+        $qb->andWhere($cause instanceof Produit ? 'o.produit = :cause' : 'o.fournisseur = :cause');
+
+        return $qb->getQuery()->getResult();
     }
 
     /**
@@ -174,11 +198,11 @@ class OperationRepository extends ServiceEntityRepository
      *
      * @param list<int> $siteIds
      *
-     * @return array{nbPesees: int, nbEnCours: int, tonnageNet: int, montantDu: int, montantPaye: int}
+     * @return array{nbPesees: int, nbEnCours: int, tonnageNet: int, montantDu: int, montantTransport: int, retenue: int, montantPaye: int}
      */
     public function totaux(array $siteIds, ?\DateTimeImmutable $du, ?\DateTimeImmutable $au): array
     {
-        $vide = ['nbPesees' => 0, 'nbEnCours' => 0, 'tonnageNet' => 0, 'montantDu' => 0, 'montantPaye' => 0];
+        $vide = ['nbPesees' => 0, 'nbEnCours' => 0, 'tonnageNet' => 0, 'montantDu' => 0, 'montantTransport' => 0, 'retenue' => 0, 'montantPaye' => 0];
 
         if($siteIds === []) {
             return $vide;
@@ -189,6 +213,9 @@ class OperationRepository extends ServiceEntityRepository
                 'COUNT(o.id) AS nbPesees',
                 'COALESCE(SUM(o.poidsnet), 0) AS tonnageNet',
                 'COALESCE(SUM(o.montantdu), 0) AS montantDu',
+                /* Les deux écarts entre ce que vaut la récolte et ce que le guichet versera. Sans eux, « reste à payer » se trompe dans les deux sens : trop bas du transport, trop haut de la retenue — et c'est sur ce chiffre qu'un opérateur dimensionne sa demande de fonds. */
+                'COALESCE(SUM(o.montanttransport), 0) AS montantTransport',
+                'COALESCE(SUM(o.retenue), 0) AS retenue',
                 'COALESCE(SUM(o.montantpaye), 0) AS montantPaye'
             )
             ->getQuery()
@@ -207,6 +234,8 @@ class OperationRepository extends ServiceEntityRepository
             'nbEnCours' => $enCours,
             'tonnageNet' => (int) $ligne['tonnageNet'],
             'montantDu' => (int) $ligne['montantDu'],
+            'montantTransport' => (int) $ligne['montantTransport'],
+            'retenue' => (int) $ligne['retenue'],
             'montantPaye' => (int) $ligne['montantPaye'],
         ];
     }
@@ -319,7 +348,7 @@ class OperationRepository extends ServiceEntityRepository
      *
      * @param list<int> $siteIds
      *
-     * @return list<array{site: string, produit: string, tonnageNet: int, montantDu: int, montantPaye: int, nbPesees: int}>
+     * @return list<array{site: string, produit: string, tonnageNet: int, montantDu: int, montantTransport: int, retenue: int, montantPaye: int, nbPesees: int}>
      */
     public function parSiteEtProduit(array $siteIds, ?\DateTimeImmutable $du, ?\DateTimeImmutable $au): array
     {
@@ -335,6 +364,9 @@ class OperationRepository extends ServiceEntityRepository
                 "COALESCE(p.libelle, 'Sans produit') AS produit",
                 'COALESCE(SUM(o.poidsnet), 0) AS tonnageNet',
                 'COALESCE(SUM(o.montantdu), 0) AS montantDu',
+                // Groupés par PRODUIT, alors que le transport se négocie par planteur : la colonne ne dit donc rien du transport d'un produit, elle sert au total de l'écran, qui lui doit tomber juste
+                'COALESCE(SUM(o.montanttransport), 0) AS montantTransport',
+                'COALESCE(SUM(o.retenue), 0) AS retenue',
                 'COALESCE(SUM(o.montantpaye), 0) AS montantPaye',
                 'COUNT(o.id) AS nbPesees'
             )
@@ -349,6 +381,8 @@ class OperationRepository extends ServiceEntityRepository
             'produit' => (string) $l['produit'],
             'tonnageNet' => (int) $l['tonnageNet'],
             'montantDu' => (int) $l['montantDu'],
+            'montantTransport' => (int) $l['montantTransport'],
+            'retenue' => (int) $l['retenue'],
             'montantPaye' => (int) $l['montantPaye'],
             'nbPesees' => (int) $l['nbPesees'],
         ], $lignes);

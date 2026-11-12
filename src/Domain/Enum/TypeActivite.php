@@ -21,7 +21,7 @@ enum TypeActivite: string
           change la valeur des pesées non encore payées. Rien ne conservait l'ancien.
     */
     case PRODUIT_TARIFE = 'PRODUIT_TARIFE';         // Prix au kilo d'un produit
-    case FOURNISSEUR_TARIFE = 'FOURNISSEUR_TARIFE'; // Prix spécial négocié avec un planteur
+    case FOURNISSEUR_TARIFE = 'FOURNISSEUR_TARIFE'; // Prix du transport payé à un planteur
 
     /*
         - La mise en compte. Elle décide de ce qu'un planteur touche au guichet, exactement comme un
@@ -56,7 +56,7 @@ enum TypeActivite: string
     {
         return match($this) {
             self::PRODUIT_TARIFE => 'Tarification d\'un produit',
-            self::FOURNISSEUR_TARIFE => 'Prix spécial d\'un planteur',
+            self::FOURNISSEUR_TARIFE => 'Prix du transport d\'un planteur',
             self::FOURNISSEUR_PRELEVEMENT => 'Ouverture d\'une mise en compte',
             self::FOURNISSEUR_PRELEVEMENT_ARRET => 'Arrêt d\'une mise en compte',
             self::SITE_BLOQUE => 'Blocage d\'un pont bascule',

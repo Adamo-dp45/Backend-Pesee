@@ -31,9 +31,14 @@ use Symfony\Component\Validator\Constraints as Assert;
       aussi ouvrir directement depuis la fiche du planteur, comme il peut doter une caisse sans
       demande — mais alors personne ne garde trace de qui a demandé quoi.
 
-    - UNE SEULE demande en attente par planteur. Sans cette règle, un opérateur en dépose trois,
-      l'administrateur les approuve toutes, et le dernier taux approuvé écrase les autres sans que
-      personne ne sache lequel s'applique.
+    - UNE SEULE demande en attente par planteur ET PAR PRODUIT. Sans cette règle, un opérateur en
+      dépose trois sur le cacao, l'administrateur les approuve toutes, et le dernier taux approuvé
+      écrase les autres sans que personne ne sache lequel s'applique. Rien n'empêche en revanche une
+      demande sur le cacao et une autre sur l'hévéa : ce sont deux décisions sans rapport.
+
+    - Le taux demandé doit rester STRICTEMENT INFÉRIEUR au prix du produit, sinon le planteur
+      repartirait les mains vides de chaque livraison. Vérifié au dépôt, à la correction et de
+      nouveau à l'approbation — le prix a pu bouger entre-temps.
 
     - L'approbation ne déplace AUCUN argent : elle ne fait qu'ouvrir le robinet. Ce sont les pesées
       suivantes qui mettront de côté, une à une. C'est pourquoi, contrairement à la demande de
@@ -45,7 +50,7 @@ use Symfony\Component\Validator\Constraints as Assert;
       depuis un bureau reviendrait à décider de l'épargne de quelqu'un d'autre.
 */
 #[ORM\Entity(repositoryClass: DemandePrelevementRepository::class)]
-#[ORM\Index(name: 'idx_demande_prelevement_statut', fields: ['fournisseur', 'statut'])]
+#[ORM\Index(name: 'idx_demande_prelevement_statut', fields: ['fournisseur', 'produit', 'statut'])]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
     normalizationContext: ['groups' => ['read:DemandePrelevement', 'read:Base'], 'skip_null_values' => false],
@@ -76,7 +81,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             processor: DemandePrelevementProcessor::class,
             openapi: new Operation(
                 summary: 'Demande de mise en compte',
-                description: 'L\'opérateur demande l\'ouverture d\'un prélèvement pour un planteur. Une seule demande en attente par planteur',
+                description: 'L\'opérateur demande l\'ouverture d\'un prélèvement pour un planteur, sur un produit. Une seule demande en attente par planteur et par produit',
                 security: [['bearerAuth' => []]]
             )
         ),
@@ -147,13 +152,26 @@ class DemandePrelevement extends EntityBase implements SiteOwnedInterface
     private ?int $id = null;
 
     /*
-        - Le taux réclamé par le planteur, en francs par kilo. C'est lui qui s'appliquera tel quel à l'approbation : le montant mis de côté sur une pesée en découle, taux × poids net, plafonné à ce que vaut la pesée.
+        - Le taux réclamé par le planteur, en francs par kilo DE CE PRODUIT. C'est lui qui s'appliquera tel quel à l'approbation : le montant mis de côté sur une pesée en découle, taux × poids net, plafonné à ce que vaut la récolte.
+
+        - La borne « strictement inférieur au prix du produit » n'est pas une contrainte de validation ici : elle a besoin du prix du jour et doit être revérifiée à l'approbation, qui peut arriver des jours plus tard. Elle vit dans 'TauxPrelevement', appelée par les trois processors.
     */
     #[ORM\Column]
     #[Assert\NotNull(message: 'Le taux demandé est obligatoire')]
     #[Assert\Positive(message: 'Le taux demandé doit être supérieur à zéro')]
     #[Groups(['read:DemandePrelevement', 'write:DemandePrelevement', 'write:DemandePrelevement:correction'])]
     private int $tauxDemande = 0;
+
+    /*
+        - LE PRODUIT sur lequel porte le prélèvement. Un planteur peut en avoir plusieurs — 20 F par kilo de cacao, 50 F par kilo d'hévéa — et chacun se demande, s'approuve et s'arrête séparément.
+
+        - Figé après le dépôt, comme le planteur : déplacer une demande d'un produit à l'autre ferait approuver un taux contre un prix qui n'a jamais été regardé.
+    */
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(nullable: false)]
+    #[Assert\NotNull(message: 'Le produit est obligatoire : c\'est son prix au kilo qui borne le taux')]
+    #[Groups(['read:DemandePrelevement', 'write:DemandePrelevement'])]
+    private ?Produit $produit = null;
 
     #[ORM\Column(type: 'text', nullable: true)]
     #[Assert\Length(max: 500)]
@@ -208,6 +226,18 @@ class DemandePrelevement extends EntityBase implements SiteOwnedInterface
     public function setTauxDemande(int $tauxDemande): static
     {
         $this->tauxDemande = $tauxDemande;
+
+        return $this;
+    }
+
+    public function getProduit(): ?Produit
+    {
+        return $this->produit;
+    }
+
+    public function setProduit(?Produit $produit): static
+    {
+        $this->produit = $produit;
 
         return $this;
     }

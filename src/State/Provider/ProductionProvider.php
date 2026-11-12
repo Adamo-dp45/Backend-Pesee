@@ -46,10 +46,13 @@ final class ProductionProvider implements ProviderInterface
             $sortie->totaux['nbPesees'] += $ligne['nbPesees'];
             $sortie->totaux['tonnageNet'] += $ligne['tonnageNet'];
             $sortie->totaux['montantDu'] += $ligne['montantDu'];
+            $sortie->totaux['montantTransport'] += $ligne['montantTransport'];
+            $sortie->totaux['retenue'] += $ligne['retenue'];
             $sortie->totaux['montantPaye'] += $ligne['montantPaye'];
         }
 
-        $sortie->totaux['montantRestant'] = max(0, $sortie->totaux['montantDu'] - $sortie->totaux['montantPaye']);
+        // Ce que le guichet sortira encore : la récolte, PLUS le transport, MOINS ce qui part en épargne
+        $sortie->totaux['montantRestant'] = max(0, $sortie->totaux['montantDu'] + $sortie->totaux['montantTransport'] - $sortie->totaux['retenue'] - $sortie->totaux['montantPaye']);
 
         return $sortie;
     }

@@ -113,7 +113,7 @@ class Produit extends EntityBase implements SiteOwnedInterface
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    #[Groups(['read:Produit', 'read:Operation'])]
+    #[Groups(['read:Produit', 'read:Operation', 'read:Fournisseur:item', 'read:DemandePrelevement'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 100, nullable: true)]
@@ -123,7 +123,7 @@ class Produit extends EntityBase implements SiteOwnedInterface
     #[ORM\Column(length: 255)]
     #[Assert\NotBlank(message: 'Le libellé du produit est obligatoire')]
     #[Assert\Length(min: 1, max: 255)]
-    #[Groups(['read:Produit', 'write:Produit', 'read:Operation'])]
+    #[Groups(['read:Produit', 'write:Produit', 'read:Operation', 'read:Fournisseur:item', 'read:DemandePrelevement'])]
     private ?string $libelle = null;
 
     #[ORM\Column(length: 255)]
@@ -134,7 +134,7 @@ class Produit extends EntityBase implements SiteOwnedInterface
     */
     #[ORM\Column(options: ['default' => 0])]
     #[Assert\PositiveOrZero(message: 'Le prix ne peut pas être négatif')]
-    #[Groups(['read:Produit', 'write:Produit', 'read:Operation'])]
+    #[Groups(['read:Produit', 'write:Produit', 'read:Operation', 'read:Fournisseur:item', 'read:DemandePrelevement'])]
     private int $prix = 0;
 
     #[ORM\Column(nullable: true)]

@@ -49,12 +49,12 @@ final class MiseEnCompteTest extends InvariantTestCase
         $this->epargne = self::getContainer()->get(EpargneService::class);
     }
 
+    /* Le prélèvement porte sur le produit du cas, qui est aussi celui de ses pesées : c'est lui qui décide du taux, pas le planteur. */
     private function planteurQuiEpargne(int $taux = self::TAUX, string $nom = 'Kouassi'): Fournisseur
     {
         $planteur = $this->creerPlanteur($this->site, $nom);
-        $planteur->setTauxEpargne($taux);
 
-        $this->em->flush();
+        $this->ouvrirPrelevement($planteur, $this->produit, $taux);
 
         return $planteur;
     }
@@ -154,8 +154,7 @@ final class MiseEnCompteTest extends InvariantTestCase
         self::assertSame(100_000, $pesee->getMontantpayable());
 
         // Le planteur ouvre un prélèvement APRÈS, et le poste renvoie son lot
-        $planteur->setTauxEpargne(self::TAUX);
-        $this->em->flush();
+        $this->ouvrirPrelevement($planteur, $this->produit, self::TAUX);
 
         $this->epargne->preleverSur($pesee);
         $this->em->flush();

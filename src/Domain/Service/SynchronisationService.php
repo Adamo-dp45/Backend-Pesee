@@ -350,7 +350,8 @@ class SynchronisationService
             $fournisseur->setContact1($this->texte($brute, 'contactfournisseur') ?? $this->texte($brute, 'contactFournisseur'));
         }
 
-        return array_key_exists('prixspeciale', $brute) && $fournisseur->appliquerPrixSpecialDuPoste($this->entier($brute, 'prixspeciale'));
+        // Pas de 'array_key_exists' ici, contrairement au produit : le prix de transport absent de la charge utile et le prix de transport à null sont la même chose, et la méthode refuse déjà les deux
+        return $fournisseur->appliquerPrixTransportDuPoste($this->entier($brute, 'prixtransport'));
     }
 
     /* ---- Lecture de la charge utile -------------------------------------------------------- */

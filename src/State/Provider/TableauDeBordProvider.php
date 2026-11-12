@@ -49,8 +49,14 @@ final class TableauDeBordProvider implements ProviderInterface
             return $sortie;
         }
 
+        /*
+            - « Reste à payer » est ce que le GUICHET va encore sortir, pas ce que vaut la récolte :
+              le transport s'ajoute, la mise en compte se retranche. C'est sur ce chiffre qu'un
+              opérateur dimensionne sa demande de fonds — le laisser sur le seul montant dû le ferait
+              demander trop peu, durablement et sans le moindre signal.
+        */
         $totaux = $this->operations->totaux($siteIds, $periode->du, $periode->au);
-        $totaux['montantRestant'] = max(0, $totaux['montantDu'] - $totaux['montantPaye']);
+        $totaux['montantRestant'] = max(0, $totaux['montantDu'] + $totaux['montantTransport'] - $totaux['retenue'] - $totaux['montantPaye']);
         $sortie->totaux = $totaux;
 
         $sortie->parJour = $this->operations->parJour($siteIds, $periode->du, $periode->au);

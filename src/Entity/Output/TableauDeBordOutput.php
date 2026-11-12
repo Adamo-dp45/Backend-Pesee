@@ -21,6 +21,8 @@ final class TableauDeBordOutput
         'nbEnCours' => 0,
         'tonnageNet' => 0,
         'montantDu' => 0,
+        'montantTransport' => 0,
+        'retenue' => 0,
         'montantPaye' => 0,
         'montantRestant' => 0,
     ];

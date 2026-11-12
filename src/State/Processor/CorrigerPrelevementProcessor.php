@@ -4,6 +4,7 @@ namespace App\State\Processor;
 
 use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
+use App\Domain\Support\TauxPrelevement;
 use App\Entity\DemandePrelevement;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
@@ -31,6 +32,17 @@ class CorrigerPrelevementProcessor implements ProcessorInterface
     {
         if($data instanceof DemandePrelevement && $data->estTraitee()) {
             throw new UnprocessableEntityHttpException('Cette demande a déjà été traitée : elle ne peut plus être corrigée.');
+        }
+
+        /*
+            - Le produit n'est pas corrigeable — il n'est pas dans le groupe d'écriture de la
+              correction — mais le TAUX l'est, et c'est lui que la règle borne. Corriger 20 en 500
+              sur un produit à 145 doit être refusé ici, sans quoi la demande part à l'administrateur
+              dans un état qu'il ne pourra que rejeter.
+        */
+        if($data instanceof DemandePrelevement
+            && ($motif = TauxPrelevement::motifDuRefus($data->getProduit(), $data->getTauxDemande())) !== null) {
+            throw new UnprocessableEntityHttpException($motif);
         }
 
         return $this->audit->process($data, $operation, $uriVariables, $context);

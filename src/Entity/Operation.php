@@ -220,7 +220,7 @@ class Operation extends EntityBase implements SiteOwnedInterface
     /* ---- Valorisation ------------------------------------------------------------------- */
 
     /*
-        - Prix retenu au moment du calcul : prix spécial du planteur s'il existe, sinon prix du produit. Figé sur la pesée pour que l'historique reste lisible même si les tarifs changent ensuite.
+        - Prix du produit au moment du calcul, figé sur la pesée pour que l'historique reste lisible même si les tarifs changent ensuite. 'null' veut dire « produit pas encore tarifé », et la pesée ne vaut alors rien.
     */
     #[ORM\Column(nullable: true)]
     #[Groups(['read:Operation'])]
@@ -228,7 +228,22 @@ class Operation extends EntityBase implements SiteOwnedInterface
 
     #[ORM\Column(nullable: true)]
     #[Groups(['read:Operation'])]
-    private ?int $montantdu = null;
+    private ?int $montantdu = null; // La RÉCOLTE seule. Le transport est à part, juste en dessous
+
+    /*
+        - Le transport, figé comme le reste : le prix au kilo du planteur au moment de la pesée, et ce qu'il donne sur ce poids-là. Certains planteurs amènent eux-mêmes leur récolte, et ce trajet leur est payé EN PLUS d'elle.
+
+        - Il n'entre PAS dans 'montantdu', et c'est la décision centrale : 'montantdu' reste ce que vaut la récolte. C'est sur elle que se calcule la mise en compte, et c'est elle que comptent la production et le bilan — un transport mélangé à la valeur du produit fausserait les trois. Le transport s'ajoute au PAYABLE, c'est-à-dire à ce qu'on remet au guichet.
+
+        - 'montanttransport' n'est pas nullable, contrairement à 'montantdu' : zéro et « pas de transport » sont ici la même chose, alors qu'un montant dû nul veut dire « produit pas encore tarifé ». Il n'y a donc rien à distinguer.
+    */
+    #[ORM\Column(nullable: true)]
+    #[Groups(['read:Operation'])]
+    private ?int $prixtransport = null;
+
+    #[ORM\Column(options: ['default' => 0])]
+    #[Groups(['read:Operation'])]
+    private int $montanttransport = 0;
 
     #[ORM\Column(options: ['default' => 0])]
     #[Groups(['read:Operation'])]
@@ -642,10 +657,13 @@ class Operation extends EntityBase implements SiteOwnedInterface
     }
 
     /*
-        - La valorisation vit ICI et non dans un service : elle ne dépend que de la pesée et de ses deux relations. La règle du patron : « quand on a le poids net on calcule par le prix unitaire du produit, mais on vérifie d'abord si le fournisseur a un prix spécial ».
+        - La valorisation vit ICI et non dans un service : elle ne dépend que de la pesée et de ses deux relations. La règle du patron : quand on a le poids net, la récolte vaut le prix du produit au kilo, et le transport du planteur s'ajoute par-dessus.
+
+        - DEUX nombres, jamais un seul. Les additionner ici ferait disparaître le transport des écrans, gonflerait la valeur de la récolte dans la production et le bilan, et surtout élargirait l'assiette de la mise en compte — on prélèverait l'épargne du planteur sur son propre transport.
+
         - Appelée par la synchronisation, et par tout écran qui retarife un produit ou un planteur.
 
-        @return bool vrai si le montant a changé
+        @return bool vrai si quelque chose a changé
     */
     public function calculerMontant(): bool
     {
@@ -653,22 +671,35 @@ class Operation extends EntityBase implements SiteOwnedInterface
             return false; // Déjà réglée, même partiellement : de l'argent est parti sur la base de ce montant, un changement de tarif ne réécrit pas l'histoire
         }
 
-        // Le prix négocié avec le planteur l'emporte sur le tarif du produit
-        $prixunitaire = $this->estTerminee()
-            ? ($this->fournisseur?->getPrixspeciale() ?? $this->produit?->getPrix())
-            : null;
+        $terminee = $this->estTerminee();
+        $prixunitaire = $terminee ? $this->produit?->getPrix() : null;
+        $prixtransport = $terminee ? $this->fournisseur?->getPrixtransport() : null;
 
         $montantdu = ($prixunitaire !== null && $this->poidsnet !== null) ? $this->poidsnet * $prixunitaire : null;
+        $montanttransport = ($prixtransport !== null && $this->poidsnet !== null) ? $this->poidsnet * $prixtransport : 0;
 
-        if($this->prixunitaire === $prixunitaire && $this->montantdu === $montantdu) {
+        if($this->prixunitaire === $prixunitaire && $this->montantdu === $montantdu
+            && $this->prixtransport === $prixtransport && $this->montanttransport === $montanttransport) {
             return false;
         }
 
         $this->prixunitaire = $prixunitaire;
         $this->montantdu = $montantdu;
+        $this->prixtransport = $prixtransport;
+        $this->montanttransport = $montanttransport;
         $this->statutReglement = StatutReglement::pour($montantdu, $this->getMontantpayable(), $this->montantpaye);
 
         return true;
+    }
+
+    public function getPrixtransport(): ?int
+    {
+        return $this->prixtransport;
+    }
+
+    public function getMontanttransport(): int
+    {
+        return $this->montanttransport;
     }
 
     public function getTauxRetenue(): ?int
@@ -716,14 +747,22 @@ class Operation extends EntityBase implements SiteOwnedInterface
     }
 
     /*
-        - Ce qu'on remettra au planteur au guichet : ce que vaut la pesée, moins ce qu'on lui garde. C'est le chiffre qui borne les versements.
+        - Ce qu'on remettra au planteur au guichet : ce que vaut sa récolte, PLUS son transport, MOINS ce qu'on lui garde. C'est le chiffre qui borne les versements, et le seul des trois qui réponde à « combien je lui compte ».
 
-        - 'montantdu' ne bouge pas, et c'est voulu : il reste ce que le planteur a GAGNÉ, celui que montrent sa fiche, le bilan et son ticket de pesée. Le payable est un second chiffre à côté, pas un remplacement.
+        - 'montantdu' ne bouge pas, et c'est voulu : il reste ce que vaut la récolte, celui que montrent la production, le bilan et le ticket de pesée. Le payable est un second chiffre à côté, pas un remplacement.
+
+        - Une pesée non valorisée ne paie rien, TRANSPORT COMPRIS : sans prix de produit on ne sait pas encore ce qu'on doit, et régler le seul transport laisserait une pesée à moitié payée que plus personne ne rouvre. 'getMotifNonPayable()' dit alors d'aller tarifer le produit.
+
+        - Le test porte sur '<= 0' et non sur 'null', exactement comme celui de 'getMotifNonPayable()'. Un produit créé à la volée par le peseur naît à 'prix = 0' et non à 'null' : la pesée vaut donc zéro franc sans être « non calculée ». Le seul 'null' laisserait ce cas-là payer son transport, qui est précisément le plus fréquent des deux.
     */
     #[Groups(['read:Operation'])]
     public function getMontantpayable(): int
     {
-        return $this->montantdu === null ? 0 : max(0, $this->montantdu - ($this->retenue ?? 0));
+        if($this->montantdu === null || $this->montantdu <= 0) {
+            return 0;
+        }
+
+        return max(0, $this->montantdu + $this->montanttransport - ($this->retenue ?? 0));
     }
 
     /*

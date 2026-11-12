@@ -117,7 +117,7 @@ final class SynchronisationController extends AbstractController
         return $this->json(array_map(static fn($fournisseur) => [
             'fournisseur' => $fournisseur->getNom(),
             'codefournisseur' => $fournisseur->getCodefournisseur(),
-            'prixspeciale' => $fournisseur->getPrixspeciale(),
+            'prixtransport' => $fournisseur->getPrixtransport(),
             'contact' => $fournisseur->getContact1(),
         ], $fournisseurs->findPourLePoste($site)));
     }
@@ -224,9 +224,11 @@ final class SynchronisationController extends AbstractController
             'prixunitaire' => $operation->getPrixunitaire(),
             'montant' => $operation->getMontantdu(),
             /*
-                - Ce que le planteur touchera réellement, et ce qu'on lui garde. Ajoutés sans rien changer à 'montant', qui reste ce que vaut la pesée : le logiciel du poste est un outil tiers, il n'imprimera ces clés que le jour où il saura les lire.
-                - Tant qu'il ne les imprime pas, le ticket annonce le montant plein et c'est l'opérateur qui explique la retenue au guichet.
+                - Ce que le planteur touchera réellement, et les deux écarts qui l'expliquent : le transport qu'on lui ajoute, la retenue qu'on lui garde. Ajoutés sans rien changer à 'montant', qui reste ce que vaut la récolte — le logiciel du poste est un outil tiers, il n'imprimera ces clés que le jour où il saura les lire.
+                - Tant qu'il ne les imprime pas, le ticket annonce le montant de la récolte seule et c'est l'opérateur qui explique l'écart au guichet.
             */
+            'prixtransport' => $operation->getPrixtransport(),
+            'montanttransport' => $operation->getMontanttransport(),
             'retenue' => $operation->getRetenue(),
             'montantpayable' => $operation->getMontantpayable(),
         ];

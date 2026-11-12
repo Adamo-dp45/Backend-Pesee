@@ -87,6 +87,23 @@ adam@gmail.com
 Socafpesage10
 
 
+La valeur du poste est **mémorisée à part**, pour que seul un vrai changement de son côté écrase ce qui a été saisi sur le web. `prixtransport` suivra ce patron tel quel — et votre phrase « il y a des **fournisseurs** pour lesquels » me fait penser qu'il se range au même endroit, sur la fiche du planteur. C'est la première question ci-dessous.
+
+
+
+
+
+
+- Une situation, si le destop n'envoi pas le prix du produit ou du fournisseur et que le web ne les est pas renseigné, qu'est ce qui ce passe pour la pesée
+
+
+Concernant `prixspeciale`, sache qu'il sera lié à un produit
+
+- Si l'admin modifie le prix/kg de prélèvement on log
+
+
+
+
 
 
 
@@ -190,6 +207,7 @@ c'est un ajout de périmètre à décider.
 
 
 
+- Dans la partie darkMode du frontend on vas ajouter le choix du `système` en plus du mode `dark` et `light` !
 
 Une pesée crédite l'épargne du planteur sans toucher aucune caisse -- Cette phrase me gène un peu
 

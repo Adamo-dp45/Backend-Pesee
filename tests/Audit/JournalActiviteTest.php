@@ -65,17 +65,17 @@ final class JournalActiviteTest extends InvariantTestCase
         self::assertCount(0, $this->activites());
     }
 
-    public function testLePrixSpecialDUnPlanteurEstTraceDeLaMemeFacon(): void
+    public function testLePrixDuTransportDUnPlanteurEstTraceDeLaMemeFacon(): void
     {
         $planteur = $this->creerPlanteur($this->site);
 
-        $this->appeler('PATCH', '/api/fournisseurs/' . $planteur->getId(), $this->admin, ['prixspeciale' => 250]);
+        $this->appeler('PATCH', '/api/fournisseurs/' . $planteur->getId(), $this->admin, ['prixtransport' => 250]);
         self::assertSame(200, $this->client->getResponse()->getStatusCode());
 
         $activite = $this->derniere();
 
         self::assertSame(TypeActivite::FOURNISSEUR_TARIFE, $activite->getType());
-        // Aucun prix spécial auparavant : le libellé doit le dire, pas afficher « 0 F »
+        // Aucun prix de transport auparavant : le libellé doit le dire, pas afficher « 0 F »
         self::assertStringContainsString('aucun prix', (string) $activite->getLibelle());
         self::assertStringContainsString('250 F', (string) $activite->getLibelle());
     }

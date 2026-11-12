@@ -65,12 +65,17 @@ use Symfony\Component\Validator\Constraints as Assert;
                 security: [['bearerAuth' => []]]
             )
         ),
-        new Get(
+        new Get( /*
+            - La fiche embarque les prélèvements, que la LISTE n'a pas : une collection sérialisée sur
+              chaque ligne tirerait une requête par planteur. C'est le même raisonnement que pour le
+              solde d'épargne, qui passe par un provider groupé sur la liste.
+        */
             security: "is_granted('VOIR', object)",
             requirements: ['id' => '\d+'],
+            normalizationContext: ['groups' => ['read:Fournisseur', 'read:Fournisseur:item', 'read:Base'], 'skip_null_values' => false],
             openapi: new Operation(
                 summary: 'Le planteur',
-                description: 'Permet de voir un planteur, son numéro mobile money et son prix spécial',
+                description: 'Permet de voir un planteur, son numéro mobile money, son prix de transport et ses mises en compte',
                 security: [['bearerAuth' => []]]
             )
         ),
@@ -89,7 +94,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             processor: TarificationProcessor::class, // Retient le prix AVANT, pour le journal des activités
             openapi: new Operation(
                 summary: 'Modification d\'un planteur',
-                description: 'C\'est ici qu\'on renseigne le numéro mobile money, sans lequel aucun versement n\'est possible, et le prix spécial',
+                description: 'C\'est ici qu\'on renseigne le numéro mobile money, sans lequel aucun versement n\'est possible, et le prix du transport',
                 security: [['bearerAuth' => []]]
             )
         ),
@@ -131,7 +136,7 @@ use Symfony\Component\Validator\Constraints as Assert;
     'site' => 'exact',
     'statut' => 'exact',
 ])]
-#[ApiFilter(OrderFilter::class, properties: ['codefournisseur', 'nom', 'prixspeciale', 'createdAt'])]
+#[ApiFilter(OrderFilter::class, properties: ['codefournisseur', 'nom', 'prixtransport', 'createdAt'])]
 class Fournisseur extends EntityBase implements SiteOwnedInterface
 {
     #[ORM\Id]
@@ -184,25 +189,34 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
     private ?ReseauMobile $reseau = null;
 
     /*
-        - Prix négocié avec ce planteur. Renseigné, il l'emporte sur le prix du produit — c'est la règle donnée par le patron. Même arbitrage poste/web que 'Produit::prix'.
+        - Le prix du transport, en francs PAR KILO. Certains planteurs amènent eux-mêmes leur récolte au pont bascule : on leur paie le transport EN PLUS de ce que vaut la récolte. 'null' veut dire qu'on ne paie pas de transport à ce planteur, et c'est le cas de la plupart d'entre eux.
+
+        - Ce n'est pas un prix de remplacement : la récolte garde sa valeur, le transport s'ajoute par-dessus. Voir 'Operation::calculerMontant()', où les deux restent deux nombres distincts jusqu'au bout.
+
+        - Même arbitrage poste/web que 'Produit::prix' : le poste l'envoie s'il le connaît, et sans lui c'est la valeur saisie sur le web qui tient. Un planteur n'est donc jamais bloqué parce que le logiciel de pesée ignore son transport.
     */
     #[ORM\Column(nullable: true)]
-    #[Assert\PositiveOrZero(message: 'Le prix spécial ne peut pas être négatif')]
+    #[Assert\PositiveOrZero(message: 'Le prix du transport ne peut pas être négatif')]
     #[Groups(['read:Fournisseur', 'write:Fournisseur'])]
-    private ?int $prixspeciale = null;
+    private ?int $prixtransport = null;
 
     #[ORM\Column(nullable: true)]
-    private ?int $prixspecialePoste = null; // Arbitre entre les deux sources, voir 'Produit::prixPoste'
+    private ?int $prixtransportPoste = null; // Arbitre entre les deux sources, voir 'Produit::prixPoste'
 
     /*
-        - Le taux de la mise en compte, en francs par kilo : à chaque pesée, cette part de ce qu'on lui doit part sur son épargne au lieu de lui être remise au guichet. 'null' veut dire qu'aucun prélèvement n'est en cours, et c'est le cas de l'immense majorité des planteurs.
+        - Les mises en compte du planteur, UNE PAR PRODUIT : à chaque pesée, le taux du produit pesé décide de la part qui va sur son épargne au lieu de lui être remise au guichet. La grande majorité des planteurs n'en a aucune.
 
-        - Il ne s'écrit pas au fil de l'eau : l'administrateur l'ouvre et l'arrête, sur demande de l'opérateur qui a le planteur devant lui. Le poste de pesée ne le connaît pas et n'a aucun moyen de le poser — c'est pour cela qu'il a son propre groupe d'écriture, hors de 'write:Fournisseur'.
+        - Par produit, et non une seule pour tout le monde, parce que les cultures ne se valent pas : 20 F par kilo de cacao et 50 F par kilo d'hévéa sont deux décisions différentes, prises à des moments différents, et qui s'arrêtent séparément.
+
+        - Elles ne s'écrivent pas au fil de l'eau : l'administrateur les ouvre et les arrête, sur demande de l'opérateur qui a le planteur devant lui. Le poste de pesée ne les connaît pas et n'a aucun moyen de les poser.
+
+        - Sérialisées sur la FICHE seulement ('read:Fournisseur:item'), jamais sur la liste : une collection par ligne ferait une requête par ligne.
     */
-    #[ORM\Column(nullable: true)]
-    #[Assert\Positive(message: 'Le taux de prélèvement doit être supérieur à zéro')]
-    #[Groups(['read:Fournisseur', 'write:Fournisseur:epargne', 'read:DemandePrelevement'])]
-    private ?int $tauxEpargne = null;
+    /** @var Collection<int, Prelevement> */
+    #[ORM\OneToMany(mappedBy: 'fournisseur', targetEntity: Prelevement::class, cascade: ['persist'])]
+    #[ORM\OrderBy(['arreteAt' => 'ASC', 'id' => 'DESC'])]
+    #[Groups(['read:Fournisseur:item'])]
+    private Collection $prelevements;
 
     /* Jamais sérialisé : c'est le solde qui est publié, pas le compte. Nul tant que rien n'a été prélevé. */
     #[ORM\OneToOne(mappedBy: 'fournisseur', targetEntity: CompteEpargne::class)]
@@ -224,6 +238,7 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
     public function __construct()
     {
         $this->pesees = new ArrayCollection();
+        $this->prelevements = new ArrayCollection();
     }
 
     /*
@@ -359,39 +374,43 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
         return $this;
     }
 
-    public function getPrixspeciale(): ?int
+    public function getPrixtransport(): ?int
     {
-        return $this->prixspeciale;
+        return $this->prixtransport;
     }
 
-    public function setPrixspeciale(?int $prixspeciale): static
+    public function setPrixtransport(?int $prixtransport): static
     {
-        $this->prixspeciale = $prixspeciale;
+        $this->prixtransport = $prixtransport;
 
         return $this;
     }
 
-    /** Renvoie vrai si le prix spécial EN VIGUEUR a bougé. Voir 'Produit::appliquerPrixDuPoste()'. */
-    public function appliquerPrixSpecialDuPoste(?int $prix): bool
+    /*
+        - Renvoie vrai si le prix de transport EN VIGUEUR a bougé. Copie conforme de 'Produit::appliquerPrixDuPoste()', y compris le refus du 'null'.
+
+        - Ce refus est tout l'intérêt : le poste qui ne connaît pas le transport d'un planteur n'envoie rien, et ne doit surtout pas effacer le prix saisi sur le web. Seule une valeur explicite — 0 compris, qui veut dire « plus de transport » — l'emporte.
+    */
+    public function appliquerPrixTransportDuPoste(?int $prix): bool
     {
-        if($prix === $this->prixspecialePoste) {
+        if($prix === null || $prix < 0 || $prix === $this->prixtransportPoste) {
             return false;
         }
 
-        $this->prixspecialePoste = $prix;
+        $this->prixtransportPoste = $prix;
 
-        if($prix === $this->prixspeciale) {
+        if($prix === $this->prixtransport) {
             return false;
         }
 
-        $this->prixspeciale = $prix;
+        $this->prixtransport = $prix;
 
         return true;
     }
 
-    public function getPrixspecialePoste(): ?int
+    public function getPrixtransportPoste(): ?int
     {
-        return $this->prixspecialePoste;
+        return $this->prixtransportPoste;
     }
 
     public function getStatut(): StatutActivation
@@ -481,22 +500,62 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
             ?? $this->pesees->matching(Criteria::create()->where(Criteria::expr()->isNull('deletedAt')))->count();
     }
 
-    public function getTauxEpargne(): ?int
+    /** @return Collection<int, Prelevement> */
+    public function getPrelevements(): Collection
     {
-        return $this->tauxEpargne;
+        return $this->prelevements;
     }
 
-    public function setTauxEpargne(?int $tauxEpargne): static
+    public function ajouterPrelevement(Prelevement $prelevement): static
     {
-        $this->tauxEpargne = $tauxEpargne;
+        if(!$this->prelevements->contains($prelevement)) {
+            $this->prelevements->add($prelevement);
+            $prelevement->setFournisseur($this);
+        }
 
         return $this;
     }
 
-    /* Un prélèvement est en cours, donc chaque nouvelle pesée mettra une part de côté. */
+    /*
+        - Le prélèvement en cours SUR CE PRODUIT, ou null. C'est lui qui décide ce qu'une pesée met de côté, et rien d'autre : un prélèvement sur le cacao ne touche pas une livraison d'hévéa.
+
+        - Parcourt la collection déjà chargée plutôt que de requêter : l'arbitrage traite des lots entiers, et un planteur y revient autant de fois qu'il a livré. Le repository rend le même service aux processors, qui n'ont pas le planteur hydraté sous la main.
+
+        - L'IDENTITÉ D'ABORD, l'identifiant ensuite, et l'ordre n'est pas décoratif : comparer deux 'getId()' avant le 'flush()' compare 'null' à 'null', et le PREMIER prélèvement de la liste répond alors pour toutes les cultures. Les fixtures l'ont montré — une pesée de palme repartait avec le taux de l'hévéa. Doctrine garantit un seul objet par entité chargée, proxy compris : le '===' est donc fiable, et le repli par identifiant ne sert qu'aux objets venus de deux chargements distincts.
+    */
+    public function prelevementPour(?Produit $produit): ?Prelevement
+    {
+        if($produit === null) {
+            return null;
+        }
+
+        $id = $produit->getId();
+
+        foreach($this->prelevements as $prelevement) {
+            if(!$prelevement->estActif()) {
+                continue;
+            }
+
+            $sien = $prelevement->getProduit();
+
+            if($sien === $produit || ($id !== null && $sien?->getId() === $id)) {
+                return $prelevement;
+            }
+        }
+
+        return null;
+    }
+
+    /* Au moins un prélèvement en cours, tous produits confondus. */
     public function epargneEnCours(): bool
     {
-        return $this->tauxEpargne !== null && $this->tauxEpargne > 0;
+        foreach($this->prelevements as $prelevement) {
+            if($prelevement->estActif()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function getCompteEpargne(): ?CompteEpargne

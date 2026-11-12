@@ -26,6 +26,7 @@ use App\Entity\MouvementCaisse;
 use App\Entity\MouvementEpargne;
 use App\Entity\Operation;
 use App\Entity\Paiement;
+use App\Entity\Prelevement;
 use App\Entity\Produit;
 use App\Entity\Site;
 use App\Entity\SynchronisationLot;
@@ -98,9 +99,17 @@ class AppFixtures extends Fixture
         $cafe = $this->creerProduit($manager, $gagnoa, 'Café', 'CAF', 950);
 
         $nguessan = $this->creerPlanteur($manager, $soubre, 'N\'Guessan', 'Kouamé', '0701020304', ReseauMobile::ORANGE);
-        $yao = $this->creerPlanteur($manager, $soubre, 'Kouame', 'Yao', '0505060708', ReseauMobile::WAVE, prixspeciale: 520, tauxEpargne: 25); // Il met de côté 25 F par kilo
+        $yao = $this->creerPlanteur($manager, $soubre, 'Kouame', 'Yao', '0505060708', ReseauMobile::WAVE, prixtransport: 15); // Il livre lui-même
         $sansNumero = $this->creerPlanteur($manager, $soubre, 'Bamba', 'Sekou'); // Non payable : pas de numéro
         $koffi = $this->creerPlanteur($manager, $gagnoa, 'Koffi', 'Jean', '0102030405', ReseauMobile::MTN);
+
+        /*
+            - Yao met de côté sur DEUX cultures, à deux taux différents : c'est tout l'intérêt du
+              prélèvement par produit. Chacun reste sous le prix de son produit — 50 < 400 pour
+              l'hévéa, 20 < 145 pour la palme — sans quoi il repartirait les mains vides.
+        */
+        $this->ouvrirPrelevement($manager, $yao, $hevea, 50);
+        $this->ouvrirPrelevement($manager, $yao, $palme, 20);
 
         /* ---- Pesées ---------------------------------------------------------------------- */
 
@@ -145,11 +154,11 @@ class AppFixtures extends Fixture
 
         /* ---- Demandes de mise en compte, une par issue ------------------------------------ */
 
-        // Approuvée : c'est elle qui explique le taux de 25 F/kg que porte Yao
-        $this->creerDemandePrelevement($manager, $yao, $awa, 25, 'Il veut mettre de côté pour la rentrée', StatutDemande::APPROUVEE, $patron);
-        $this->creerDemandePrelevement($manager, $sansNumero, $awa, 15, 'Demande faite au guichet'); // En attente : elle bloque une nouvelle demande sur ce planteur
-        $this->creerDemandePrelevement($manager, $koffi, $ali, 400, 'Épargne forcée', StatutDemande::REJETEE, $patron, 'Taux hors de proportion : il ne lui resterait presque rien au guichet.');
-        $this->creerDemandePrelevement($manager, $nguessan, $awa, 30, 'Erreur de planteur', StatutDemande::ANNULEE);
+        // Approuvée : c'est elle qui explique les 50 F/kg que Yao met de côté sur l'hévéa
+        $this->creerDemandePrelevement($manager, $yao, $hevea, $awa, 50, 'Il veut mettre de côté pour la rentrée', StatutDemande::APPROUVEE, $patron);
+        $this->creerDemandePrelevement($manager, $sansNumero, $hevea, $awa, 15, 'Demande faite au guichet'); // En attente : elle bloque une nouvelle demande sur CE couple planteur/produit
+        $this->creerDemandePrelevement($manager, $koffi, $cafe, $ali, 400, 'Épargne forcée', StatutDemande::REJETEE, $patron, 'Taux hors de proportion : il ne lui resterait presque rien au guichet.');
+        $this->creerDemandePrelevement($manager, $nguessan, $hevea, $awa, 30, 'Erreur de planteur', StatutDemande::ANNULEE);
 
         /* ---- AgriPese : le voisin, pour éprouver le cloisonnement ------------------------- */
 
@@ -270,16 +279,14 @@ class AppFixtures extends Fixture
         string $prenom,
         ?string $contact = null,
         ?ReseauMobile $reseau = null,
-        ?int $prixspeciale = null,
-        ?int $tauxEpargne = null
+        ?int $prixtransport = null
     ): Fournisseur {
         $planteur = (new Fournisseur())
             ->setNom($nom)
             ->setPrenom($prenom)
             ->setContact1($contact)
             ->setReseau($reseau)
-            ->setPrixspeciale($prixspeciale)
-            ->setTauxEpargne($tauxEpargne)
+            ->setPrixtransport($prixtransport)
             ->setSite($site);
 
         $manager->persist($planteur);
@@ -407,6 +414,7 @@ class AppFixtures extends Fixture
     private function creerDemandePrelevement(
         ObjectManager $manager,
         Fournisseur $planteur,
+        Produit $produit,
         User $demandeur,
         int $taux,
         string $motif,
@@ -416,6 +424,7 @@ class AppFixtures extends Fixture
     ): void {
         $demande = (new DemandePrelevement())
             ->setFournisseur($planteur)
+            ->setProduit($produit)
             ->setSite($planteur->getSite())
             ->setTauxDemande($taux)
             ->setMotif($motif)
@@ -430,9 +439,19 @@ class AppFixtures extends Fixture
         $manager->persist($demande);
     }
 
+    private function ouvrirPrelevement(ObjectManager $manager, Fournisseur $planteur, Produit $produit, int $taux): void
+    {
+        $planteur->ajouterPrelevement(
+            $prelevement = (new Prelevement())->setProduit($produit)->setTaux($taux)
+        );
+
+        $manager->persist($prelevement);
+    }
+
+    /* Reproduit à la main ce que fait 'EpargneService' : le taux vient du prélèvement ouvert SUR LE PRODUIT PESÉ, et non du planteur. */
     private function mettreEnCompte(ObjectManager $manager, Operation $pesee, Fournisseur $planteur): void
     {
-        $taux = (int) $planteur->getTauxEpargne();
+        $taux = $planteur->prelevementPour($pesee->getProduit())?->getTaux() ?? 0;
         $retenue = min($taux * (int) $pesee->getPoidsnet(), (int) $pesee->getMontantdu());
 
         if($retenue <= 0) {
@@ -467,7 +486,7 @@ class AppFixtures extends Fixture
                 ->setMontant($retenue)
                 ->setSoldeAvant($avant)
                 ->setSoldeApres($apres)
-                ->setMotif(sprintf('Mise en compte sur la pesée %s', (string) $pesee->getNumticket()))
+                ->setMotif(sprintf('Mise en compte sur la pesée %s (%s)', (string) $pesee->getNumticket(), (string) $pesee->getProduit()?->getLibelle()))
                 ->setEntreprise($compte->getEntreprise())
                 ->setSite($compte->getSite())
         );

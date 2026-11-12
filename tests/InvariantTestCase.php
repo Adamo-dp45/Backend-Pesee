@@ -10,6 +10,7 @@ use App\Domain\Service\Epargne\EpargneService;
 use App\Entity\Entreprise;
 use App\Entity\Fournisseur;
 use App\Entity\Operation;
+use App\Entity\Prelevement;
 use App\Entity\Produit;
 use App\Entity\Site;
 use App\Entity\User;
@@ -203,7 +204,7 @@ abstract class InvariantTestCase extends WebTestCase
     /*
         - Une pesée TERMINÉE et valorisée, dans l'état où la synchronisation l'aurait laissée. Le
           montant n'est pas posé à la main : 'calculerMontant()' applique la même règle qu'en
-          production — prix spécial du planteur s'il existe, sinon prix du produit.
+          production — le prix du produit pour la récolte, et le transport du planteur par-dessus.
     */
     protected function creerPesee(Site $site, Produit $produit, Fournisseur $planteur, int $poidsnet = 500, string $ref = '1'): Operation
     {
@@ -229,6 +230,21 @@ abstract class InvariantTestCase extends WebTestCase
         $this->em->flush();
 
         return $pesee;
+    }
+
+    /*
+        - Ouvre une mise en compte sur UN PRODUIT, comme le ferait l'approbation d'une demande. Le
+          taux doit rester sous le prix du produit, sauf à vouloir éprouver justement ce plafond —
+          le helper ne vérifie rien, ce sont les processors qui tiennent la règle.
+    */
+    protected function ouvrirPrelevement(Fournisseur $planteur, Produit $produit, int $taux): Prelevement
+    {
+        $planteur->ajouterPrelevement($prelevement = (new Prelevement())->setProduit($produit)->setTaux($taux));
+
+        $this->em->persist($prelevement);
+        $this->em->flush();
+
+        return $prelevement;
     }
 
     /*

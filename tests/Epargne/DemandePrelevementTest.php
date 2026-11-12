@@ -7,6 +7,7 @@ use App\Domain\Enum\StatutDemande;
 use App\Entity\CompteEpargne;
 use App\Entity\DemandePrelevement;
 use App\Entity\Fournisseur;
+use App\Entity\Prelevement;
 use App\Entity\Produit;
 use App\Entity\Site;
 use App\Entity\User;
@@ -18,8 +19,9 @@ use App\Tests\InvariantTestCase;
       réapprovisionnement, à une différence près qui change tout — l'approbation ne déplace aucun
       argent, elle ouvre un robinet. Ce qu'elle produit ne se voit donc qu'à la pesée suivante.
 
-    - Les cas ci-dessous surveillent surtout les portes : une seule demande en attente, pas de
-      double approbation, et l'ouverture directe réservée à l'administrateur.
+    - Les cas ci-dessous surveillent surtout les portes : une seule demande en attente PAR PRODUIT,
+      pas de double approbation, l'ouverture directe réservée à l'administrateur, et le taux tenu
+      sous le prix du produit — du dépôt jusqu'à l'approbation, qui le revérifie.
 */
 final class DemandePrelevementTest extends InvariantTestCase
 {
@@ -47,17 +49,33 @@ final class DemandePrelevementTest extends InvariantTestCase
         $this->admin = $this->creerUtilisateur($entreprise, Role::ADMIN, 'admin@acme.test');
     }
 
-    private function deposer(int $taux = self::TAUX): int
+    private function deposer(int $taux = self::TAUX, ?Produit $produit = null): int
     {
-        $this->appeler('POST', '/api/demande_prelevements', $this->operateur, [
-            'fournisseur' => '/api/fournisseurs/' . $this->planteur->getId(),
-            'tauxDemande' => $taux,
-            'motif' => 'Le planteur veut mettre de côté pour la rentrée',
-        ]);
+        $this->poster($taux, $produit);
 
         self::assertSame(201, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
 
         return (int) ($this->reponse()['id'] ?? 0);
+    }
+
+    /* Le dépôt brut, sans attendre de succès : les cas qui éprouvent un refus en ont besoin. */
+    private function poster(int $taux, ?Produit $produit = null): void
+    {
+        $this->appeler('POST', '/api/demande_prelevements', $this->operateur, [
+            'fournisseur' => '/api/fournisseurs/' . $this->planteur->getId(),
+            'produit' => '/api/produits/' . ($produit ?? $this->produit)->getId(),
+            'tauxDemande' => $taux,
+            'motif' => 'Le planteur veut mettre de côté pour la rentrée',
+        ]);
+    }
+
+    /* Le taux du prélèvement ouvert sur ce produit, ou null quand il n'y en a pas. */
+    private function tauxEnCours(?Produit $produit = null): ?int
+    {
+        $planteur = $this->em->find(Fournisseur::class, $this->planteur->getId());
+        $produit = $this->em->find(Produit::class, ($produit ?? $this->produit)->getId());
+
+        return $planteur?->prelevementPour($produit)?->getTaux();
     }
 
     /*
@@ -68,16 +86,79 @@ final class DemandePrelevementTest extends InvariantTestCase
     {
         $this->deposer();
 
-        $this->appeler('POST', '/api/demande_prelevements', $this->operateur, [
-            'fournisseur' => '/api/fournisseurs/' . $this->planteur->getId(),
-            'tauxDemande' => 50,
-        ]);
+        $this->poster(50);
 
         self::assertSame(422, $this->client->getResponse()->getStatusCode());
         self::assertStringContainsString('déjà en attente', (string) ($this->reponse()['detail'] ?? ''));
 
         $this->em->clear();
         self::assertCount(1, $this->em->getRepository(DemandePrelevement::class)->findAll());
+    }
+
+    /*
+        - Et la contrepartie, qui est tout l'objet du changement : une demande sur le cacao ne gêne
+          pas une demande sur l'hévéa. Ce sont deux décisions sans rapport, prises sur deux prix
+          différents, et les lier ferait attendre le planteur sans raison.
+    */
+    public function testUneDemandeSurUnAutreProduitPasseEnMemeTemps(): void
+    {
+        $cacao = $this->creerProduit($this->site, 'Cacao', 300);
+
+        $this->deposer();
+        $this->deposer(taux: 40, produit: $cacao);
+
+        $this->em->clear();
+        self::assertCount(2, $this->em->getRepository(DemandePrelevement::class)->findAll());
+    }
+
+    /*
+        - LA règle du patron : un taux qui atteint le prix du produit ne laisserait rien au planteur.
+          Refusé à l'ÉGALITÉ, pas seulement au-dessus — à 200 F sur un produit à 200 F, le planteur
+          repart avec exactement zéro.
+    */
+    public function testUnTauxQuiAtteintLePrixDuProduitEstRefuse(): void
+    {
+        $this->poster(self::PRIX);
+
+        self::assertSame(422, $this->client->getResponse()->getStatusCode());
+        self::assertStringContainsString('inférieur au prix du produit', (string) ($this->reponse()['detail'] ?? ''));
+
+        $this->em->clear();
+        self::assertCount(0, $this->em->getRepository(DemandePrelevement::class)->findAll());
+    }
+
+    /*
+        - Un produit non tarifé n'accepte aucun prélèvement : ses pesées ne valent rien, et le robinet
+          ouvert dessus ne mettrait jamais un franc de côté. Le message renvoie là où il y a quelque
+          chose à corriger.
+    */
+    public function testUnProduitNonTarifeNAccepteAucunPrelevement(): void
+    {
+        $this->poster(10, $this->creerProduit($this->site, 'Cacao', 0));
+
+        self::assertSame(422, $this->client->getResponse()->getStatusCode());
+        self::assertStringContainsString('tarifez-le', (string) ($this->reponse()['detail'] ?? ''));
+    }
+
+    /*
+        - LE cas que la revérification à l'approbation existe pour attraper : la demande est déposée
+          quand le produit vaut 200 F, et le prix tombe à 15 F avant que l'administrateur ne tranche.
+          Approuver ouvrirait un prélèvement de 20 F par kilo sur un produit qui en vaut 15.
+    */
+    public function testUneBaisseDePrixEntreLeDepotEtLApprobationBloqueLOuverture(): void
+    {
+        $id = $this->deposer();
+
+        $this->appeler('PATCH', '/api/produits/' . $this->produit->getId(), $this->admin, ['prix' => 15]);
+        self::assertSame(200, $this->client->getResponse()->getStatusCode());
+
+        $this->appeler('PATCH', '/api/demande_prelevements/' . $id . '/approbation', $this->admin, []);
+
+        self::assertSame(422, $this->client->getResponse()->getStatusCode());
+        self::assertStringContainsString('inférieur au prix du produit', (string) ($this->reponse()['detail'] ?? ''));
+
+        $this->em->clear();
+        self::assertNull($this->tauxEnCours(), 'Aucun prélèvement ouvert');
     }
 
     /*
@@ -96,7 +177,7 @@ final class DemandePrelevementTest extends InvariantTestCase
         $this->em->clear();
         $planteur = $this->em->find(Fournisseur::class, $this->planteur->getId());
 
-        self::assertSame(self::TAUX, $planteur?->getTauxEpargne());
+        self::assertSame(self::TAUX, $this->tauxEnCours());
 
         // La pesée suivante met de côté : 500 kg × 20 F
         $pesee = $this->creerPeseeArbitree(
@@ -129,7 +210,7 @@ final class DemandePrelevementTest extends InvariantTestCase
         self::assertSame(StatutDemande::REJETEE->value, $this->reponse()['statut'] ?? null);
 
         $this->em->clear();
-        self::assertNull($this->em->find(Fournisseur::class, $this->planteur->getId())?->getTauxEpargne());
+        self::assertNull($this->tauxEnCours());
     }
 
     public function testLAnnulationLibereLePlanteurPourUneNouvelleDemande(): void
@@ -167,14 +248,38 @@ final class DemandePrelevementTest extends InvariantTestCase
     {
         $uri = '/api/fournisseurs/' . $this->planteur->getId() . '/epargne';
 
-        $this->appeler('PATCH', $uri, $this->operateur, ['taux' => 25]);
+        $corps = ['produit' => $this->produit->getId(), 'taux' => 25];
+
+        $this->appeler('PATCH', $uri, $this->operateur, $corps);
         self::assertSame(403, $this->client->getResponse()->getStatusCode());
 
-        $this->appeler('PATCH', $uri, $this->admin, ['taux' => 25]);
+        $this->appeler('PATCH', $uri, $this->admin, $corps);
         self::assertSame(200, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
 
         $this->em->clear();
-        self::assertSame(25, $this->em->find(Fournisseur::class, $this->planteur->getId())?->getTauxEpargne());
+        self::assertSame(25, $this->tauxEnCours());
+    }
+
+    /*
+        - Changer un taux n'écrase pas la ligne : il en ouvre une nouvelle et DATE la précédente.
+          Sans cela, la fiche prétendrait qu'il a toujours épargné à 60 F alors que les pesées déjà
+          arbitrées portent 25 F figés, et plus rien n'expliquerait l'écart devant un planteur qui
+          compte.
+    */
+    public function testChangerLeTauxArreteLAncienPrelevementEtEnOuvreUnAutre(): void
+    {
+        $uri = '/api/fournisseurs/' . $this->planteur->getId() . '/epargne';
+
+        $this->appeler('PATCH', $uri, $this->admin, ['produit' => $this->produit->getId(), 'taux' => 25]);
+        self::assertSame(200, $this->client->getResponse()->getStatusCode());
+
+        $this->appeler('PATCH', $uri, $this->admin, ['produit' => $this->produit->getId(), 'taux' => 60]);
+        self::assertSame(200, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
+
+        $this->em->clear();
+
+        self::assertSame(60, $this->tauxEnCours(), 'Le nouveau taux prélève');
+        self::assertCount(2, $this->em->getRepository(Prelevement::class)->findAll(), 'Le précédent reste, daté');
     }
 
     /*
@@ -183,7 +288,7 @@ final class DemandePrelevementTest extends InvariantTestCase
     */
     public function testLArretNeTouchePasALEpargneDejaConstituee(): void
     {
-        $this->appeler('PATCH', '/api/fournisseurs/' . $this->planteur->getId() . '/epargne', $this->admin, ['taux' => self::TAUX]);
+        $this->appeler('PATCH', '/api/fournisseurs/' . $this->planteur->getId() . '/epargne', $this->admin, ['produit' => $this->produit->getId(), 'taux' => self::TAUX]);
         self::assertSame(200, $this->client->getResponse()->getStatusCode());
 
         $this->em->clear();
@@ -196,12 +301,12 @@ final class DemandePrelevementTest extends InvariantTestCase
         );
 
         // Puis l'arrêt
-        $this->appeler('PATCH', '/api/fournisseurs/' . $this->planteur->getId() . '/epargne', $this->admin, ['taux' => null]);
+        $this->appeler('PATCH', '/api/fournisseurs/' . $this->planteur->getId() . '/epargne', $this->admin, ['produit' => $this->produit->getId(), 'taux' => null]);
         self::assertSame(200, $this->client->getResponse()->getStatusCode());
 
         $this->em->clear();
 
-        self::assertNull($this->em->find(Fournisseur::class, $this->planteur->getId())?->getTauxEpargne());
+        self::assertNull($this->tauxEnCours());
         self::assertSame(
             10_000,
             $this->em->getRepository(CompteEpargne::class)->findOneBy([])?->getSolde(),

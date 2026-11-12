@@ -98,19 +98,34 @@ class EpargneService
             return null; // Déjà exclu par le prédicat, gardé pour l'analyseur statique
         }
 
-        $taux = $planteur->getTauxEpargne();
+        /*
+            - Le taux vient du prélèvement ouvert SUR LE PRODUIT PESÉ, et d'aucun autre. Un planteur
+              qui épargne sur son cacao ne doit rien voir retenu sur une livraison d'hévéa : ce sont
+              deux décisions distinctes, et il n'en a pris qu'une.
 
-        if($taux === null || $taux <= 0) {
-            $pesee->figerLaRetenue(null, 0); // Pas de prélèvement : on ferme la pesée, définitivement
+            - Pas de prélèvement sur ce produit, ou aucun du tout : on ferme quand même la pesée à
+              zéro. C'est ce qui implémente « seulement les pesées à venir » sans comparaison de
+              dates, et ouvrir un prélèvement ensuite ne reprendra pas celle-ci.
+        */
+        $prelevement = $planteur->prelevementPour($pesee->getProduit());
+        $taux = $prelevement?->getTaux() ?? 0;
+
+        if($taux <= 0) {
+            $pesee->figerLaRetenue(null, 0);
             $this->rafraichirLeReglement($pesee);
 
             return null;
         }
 
         /*
-            - Plafonnée à ce que vaut la pesée : un prélèvement ne doit JAMAIS créer de dette du
-              planteur envers l'entreprise. Sur une petite livraison, il prend donc tout — et le
-              planteur repart sans liquide, mais sans rien devoir.
+            - Plafonnée à ce que vaut la RÉCOLTE : un prélèvement ne doit JAMAIS créer de dette du
+              planteur envers l'entreprise, et il ne mord pas sur le transport, que le planteur a
+              avancé de sa poche.
+
+            - Le taux est pourtant déjà tenu sous le prix du produit à l'ouverture ('TauxPrelevement'),
+              donc ce plafond ne devrait jamais mordre. Il reste parce que le prix du produit peut
+              BAISSER après coup : un prélèvement ouvert à 50 F sur un produit tombé à 40 prendrait
+              alors tout. Le planteur repart sans liquide — mais sans rien devoir.
         */
         $retenue = min($taux * (int) $pesee->getPoidsnet(), (int) $pesee->getMontantdu());
 
@@ -141,7 +156,12 @@ class EpargneService
                 ->setMontant($retenue)
                 ->setSoldeAvant($avant)
                 ->setSoldeApres($apres)
-                ->setMotif(sprintf('Mise en compte sur la pesée %s', (string) $pesee->getNumticket()))
+                // Le produit est dans le motif : le livre d'épargne mélange les cultures, et c'est par elles que le planteur raisonne quand il conteste une ligne
+                ->setMotif(sprintf(
+                    'Mise en compte sur la pesée %s (%s)',
+                    (string) $pesee->getNumticket(),
+                    (string) $pesee->getProduit()?->getLibelle()
+                ))
                 ->setEntreprise($compte->getEntreprise())
                 ->setSite($compte->getSite())
         );

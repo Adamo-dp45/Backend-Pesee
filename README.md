@@ -122,6 +122,29 @@ Un opérateur ne peut pas dépenser tout ce que son solde affiche :
 - **l'épargne due** — ce que l'entreprise garde pour les planteurs. Elle n'est dans **aucune**
   caisse : au moment du prélèvement, pas un billet ne bouge (§7).
 
+### Les trois nombres d'une pesée
+
+Une pesée porte **trois** montants, et les confondre est la faute la plus coûteuse du domaine.
+
+| | Ce que c'est | Qui le voit |
+|---|---|---|
+| `montantdu` | la **récolte seule** : `poidsnet x prix du produit` | le ticket du planteur, la production, le bilan |
+| `montanttransport` | le **transport**, `poidsnet x prix du planteur`, payé EN PLUS pour ceux qui livrent eux-mêmes | les écrans d'argent |
+| `montantpayable` | `montantdu + montanttransport - retenue` | le guichet, et lui seul |
+
+- `montantdu` **ne bouge jamais** : ni le transport ni la mise en compte ne le touchent.
+- Le transport ne s'additionne **nulle part ailleurs** que dans le payable. L'ajouter au montant dû
+  gonflerait la valeur de la récolte dans la production et le bilan, et surtout **élargirait
+  l'assiette de la mise en compte** : on prélèverait l'épargne du planteur sur son propre transport.
+- Les deux prix sont **figés** sur la pesée (`prixunitaire`, `prixtransport`) à côté des montants :
+  un chiffre qu'on ne sait pas réexpliquer est inexplicable devant un planteur qui conteste.
+- Une pesée dont le produit n'est pas tarifé (`montantdu <= 0`) ne paie **rien, transport compris** :
+  régler le seul transport laisserait une pesée à moitié payée que plus personne ne rouvre.
+
+Le **prix du transport** vit sur la fiche du planteur, avec le même arbitrage poste/web que le prix
+d'un produit : le poste l'envoie s'il le connaît, et **un envoi vide n'efface pas** ce qui a été
+saisi au bureau. Sans ce refus du `null`, corriger une fiche sur le web serait sans effet.
+
 ### Un versement
 
 `PaiementService::initier()` refuse dans cet ordre : planteur suspendu → numéro manquant (mobile
@@ -178,9 +201,41 @@ au retrait*   │ compte : 10 000 → 0      │ caisse : − 10 000
                                            (* pas encore implémenté)
 ```
 
-- `montantdu` **ne bouge jamais** : c'est ce que le planteur a gagné, et c'est ce qu'imprime son
-  ticket. Ce qui baisse est `montantpayable = montantdu − retenue`.
-- La retenue est **plafonnée au montant dû** : un prélèvement ne crée jamais de dette.
+- `montantdu` **ne bouge jamais** : c'est ce que vaut la récolte, et c'est ce qu'imprime le ticket.
+  Ce qui baisse est `montantpayable = montantdu + montanttransport − retenue`.
+- La retenue est **plafonnée au montant dû**, donc à la **récolte seule** : un prélèvement ne crée
+  jamais de dette, et il ne mord pas sur le transport — le planteur a avancé le carburant.
+
+### Un prélèvement PAR PRODUIT
+
+Un planteur n'a pas un taux, il a **une ligne `Prelevement` par culture** : 20 F par kilo de cacao,
+50 F par kilo d'hévéa. Chacune s'ouvre, se change et s'arrête de son côté, et une pesée n'est
+prélevée que par celle de **son** produit (`Fournisseur::prelevementPour()`).
+
+```
+Prelevement : fournisseur, produit, taux, arreteAt, arretePar
+```
+
+- **Le taux est strictement INFÉRIEUR au prix du kilo du produit.** Égal, le planteur repartirait de
+  chaque livraison avec exactement zéro. La règle vit dans `TauxPrelevement::motifDuRefus()` et
+  n'est écrite nulle part ailleurs ; elle est vérifiée **quatre fois** — dépôt, correction,
+  **approbation** et ouverture directe. L'approbation n'est pas une redondance : la demande a pu
+  être déposée quand le cacao valait 100 F et n'être tranchée qu'après une baisse à 40.
+- Un produit **non tarifé** n'accepte aucun prélèvement : ses pesées ne valent rien, le robinet ne
+  mettrait jamais un franc de côté.
+- **Un seul compte d'épargne par planteur**, pas un par culture : c'est de l'argent qu'on lui doit,
+  et le découper par produit n'aurait aucun sens au moment de le lui rendre. Seul le taux est par
+  produit.
+- **Arrêter ne supprime pas la ligne, ça la date.** Changer un taux arrête l'ancien et en ouvre un
+  nouveau : sans cela la fiche prétendrait qu'il a toujours épargné à 60 F alors que les pesées de
+  mars portent 20 F figés, et plus rien n'expliquerait l'écart devant un planteur qui compte.
+- Pas d'index UNIQUE sur `(fournisseur, produit)` : la table garde les arrêtés. L'unicité porte sur
+  les seuls **actifs**, ce qu'un index ne sait pas dire — les processors la tiennent, comme un
+  validateur tient l'unicité des libellés en ignorant la corbeille.
+- `prelevementPour()` compare les produits **par identité d'objet d'abord**, par identifiant
+  ensuite. Deux `getId()` valant `null` avant le `flush()` se ressemblent, et le premier prélèvement
+  de la liste répondrait alors pour toutes les cultures — les fixtures l'ont montré, une pesée de
+  palme repartait avec le taux de l'hévéa.
 - Le livre d'épargne (`MouvementEpargne`) est **séparé** du grand livre des caisses, parce qu'un
   prélèvement ne déplace aucun argent. L'y mêler romprait le chaînage des soldes de caisse.
 
@@ -202,14 +257,26 @@ dessein : `null` = « jamais arbitrée », `0` = « arbitrée à taux nul ».
 3. `Operation::figerLaRetenue()` qui **lève** au second appel.
 4. `attendUnArbitrage()` qui filtre en amont.
 
-`findRecalculables()` exclut les pesées arbitrées : une baisse de prix ne doit pas mettre le payable
-à zéro sur une pesée dont le planteur a déjà la promesse — et il n'existe aucun retrait pour défaire.
+`findRecalculables()` et `findARevaloriser()` excluent les pesées arbitrées : une baisse de prix ne
+doit pas mettre le payable à zéro sur une pesée dont le planteur a déjà la promesse — et il n'existe
+aucun retrait pour défaire.
+
+**Les deux chemins de retarification.** Un prix venu du **poste** déclenche `findRecalculables()`
+dans la synchronisation ; un prix changé sur le **web** déclenche `findARevaloriser()` dans
+`TarificationProcessor`, qui recalcule les pesées de ce produit ou de ce planteur puis ouvre leur
+mise en compte dans la foulée. Le second a longtemps manqué : l'écran qu'on ouvre précisément pour
+tarifer un produit créé à la volée ne faisait que journaliser, et ses pesées restaient à zéro.
 
 ### Qui ouvre
 
-L'**administrateur** ouvre et arrête (`PATCH /api/fournisseurs/{id}/epargne`, droit `PRELEVER`).
-L'**opérateur** dépose une demande (`DemandePrelevement`), approuvée **au taux demandé** : le chiffre
-vient du planteur, le retoucher depuis un bureau reviendrait à décider de l'épargne d'autrui.
+L'**administrateur** ouvre et arrête (`PATCH /api/fournisseurs/{id}/epargne`, droit `PRELEVER`),
+en précisant **le produit** dans les deux sens — « arrêter la mise en compte de Kouassi » ne veut
+rien dire sans dire laquelle.
+
+L'**opérateur** dépose une demande (`DemandePrelevement`), qui vise elle aussi un produit, approuvée
+**au taux demandé** : le chiffre vient du planteur, le retoucher depuis un bureau reviendrait à
+décider de l'épargne d'autrui. Une seule demande en attente **par planteur et par produit** : le
+cacao et l'hévéa ne se gênent pas.
 
 Une ouverture n'écrit rien au grand livre — d'où la ligne au **journal des activités**, sans quoi
 décider qu'un homme touchera moins au guichet ne laisserait aucune trace.
@@ -240,6 +307,7 @@ Si l'un d'eux saute, c'est de l'argent qui se perd ou qui se crée.
 |---|---|
 | **Cache du sérialiseur** | Un getter `#[Groups]` tout neuf sort **absent du JSON**, sans la moindre erreur. `cache:clear` ne suffit pas toujours : supprimer `var/cache/dev` à la main. Pareil pour `--env=test` avant PHPUnit. |
 | **Relation sérialisée vide** | Une relation ne s'embarque que si une propriété de la cible porte le groupe de lecture du **parent** (`read:DemandePrelevement` sur `Fournisseur::getNomComplet()`). Sinon on n'obtient que l'IRI. |
+| **Un `#[Groups]` sans préfixe `get`** | Les groupes posés sur une méthode qui n'est ni `get…`, ni `is…`, ni `has…` sont **ignorés en silence**. `estActif()` serait absent du JSON, et l'écran afficherait tout comme arrêté : d'où `Prelevement::getActif()` à côté de lui. |
 | **`Operation` ambigu** | `ApiPlatform\OpenApi\Model\Operation` masque l'entité. Aliaser : `use App\Entity\Operation as Pesee;`. |
 | **`??` ne protège pas un appel** | `$a[$k]?->m() ?? 0` lève quand même « Undefined array key » : `??` n'étend ses semblants d'`isset` qu'aux chaînes de propriétés. Lire la case à part. |
 | **`$processor` est réservé** | `services.yaml` lie ce **nom d'argument** à la persistance native. Un processor qui décore autre chose doit nommer son argument autrement (`$audit`). |
@@ -285,9 +353,10 @@ tests/Caisse/PaiementWebhookTest   un webhook rejoué ne crédite qu'une fois
 tests/Caisse/ReconciliationTest    les versements restés en vol
 tests/Caisse/ResteAEngagerTest     un versement en vol baisse le reste à engager, pas le payé
 tests/Caisse/PeseeNonPayableTest   un montant nul N'EST PAS une pesée soldée   ← le canari
+tests/Caisse/PrixTransportTest     le transport s'ajoute au payable, jamais au montant dû
 tests/Caisse/DemandeSoldeTest      une seule demande en attente par poste
 tests/Epargne/MiseEnCompteTest     le prélèvement ne touche aucune caisse, ne crédite qu'une fois
-tests/Epargne/DemandePrelevementTest  l'ouverture, le rejet, l'arrêt
+tests/Epargne/DemandePrelevementTest  l'ouverture, le rejet, l'arrêt, le taux sous le prix
 tests/Securite/CloisonnementTest   deux clients dans la même base, aucun ne voit l'autre
 tests/Securite/DroitsTest          ce que /me annonce est ce que l'API accorde
 tests/Synchronisation/…            le gel des passages, l'idempotence d'un lot
@@ -295,7 +364,9 @@ tests/Synchronisation/…            le gel des passages, l'idempotence d'un lot
 
 `tests/InvariantTestCase.php` porte les fabriques. `creerPesee()` rend une pesée **jamais
 arbitrée** ; `creerPeseeArbitree()` en rend une passée par l'épargne — deux helpers distincts à
-dessein, pour que les cas anciens ne changent pas de sens d'un coup.
+dessein, pour que les cas anciens ne changent pas de sens d'un coup. `ouvrirPrelevement()` ouvre une
+mise en compte sur un produit **sans rien vérifier** : ce sont les processors qui tiennent la règle
+du taux, et un cas qui veut éprouver le plafond doit pouvoir poser un taux délirant.
 
 ---
 
@@ -349,8 +420,14 @@ dessein, pour que les cas anciens ne changent pas de sens d'un coup.
 
 - **Le retrait de l'épargne.** Un compte ne fait que se remplir ; le planteur est remboursé à la
   main, hors application. Le total dû se lit sur l'écran Caisse.
-- **La retarification depuis le web.** `findRecalculables()` n'est déclenché que par un prix venu du
-  **poste**. Une pesée d'un produit créé à la volée reste à montant nul — et sans épargne — jusqu'au
-  prochain changement de prix côté poste.
+- **Le prix négocié par planteur** (`prixspeciale`), qui remplaçait le prix du produit. Retiré avec
+  le prix du transport, le temps d'en revoir le mécanisme. La migration **supprime les valeurs** :
+  les exporter avant de migrer une base de production.
 - **Un planteur sur plusieurs postes.** Une même personne livrant à deux ponts bascules existe comme
   **deux** planteurs, sans lien. Avec de l'épargne, cela se voit.
+
+**Une limite connue de la mise en compte** : le taux est tenu sous le prix du produit à l'ouverture,
+mais rien ne le resserre si le prix **baisse** ensuite. Un prélèvement ouvert à 50 F sur un produit
+tombé à 40 prend alors toute la récolte — le plafond `min(taux × poidsnet, montantdu)` empêche la
+dette, pas le guichet vide. Le refus `RETENU` le dit à l'opérateur, et il reste à l'administrateur
+à baisser le taux.

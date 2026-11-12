@@ -4226,3 +4226,264 @@ Trois choses traînent dans le diff et ne vous appartiennent pas à ce commit :
 Et côté frontend, `public/build` est suivi : les fichiers hachés sont à jour, j'ai relancé `npm run build` — ce sont bien des assets de production qui partiront.
 
 Si vous préférez découper, les frontières nettes sont : *deux caisses* (migration `Version20261106104017`), *droits unifiés*, *sortie de Stimulus et nettoyage*, puis *mise en compte* (les deux migrations du 10/11). Les corrections de pesée, elles, sont enchevêtrées dans le premier lot.
+
+
+
+
+
+
+
+
+
+Concernant les pesées, sache qu'on vas maintenant recevoir `prixtransport` le prix unitaire de transport, la logique derrière est qu'il y'a des fournisseurs pour lesquelles on paient le transport en plus de la pesée, donc le `prixtransport` sera comme un complément ou une prime
+
+
+
+
+
+
+Rien de tel n'existe aujourd'hui : `transporteur` n'est qu'un libellé sur la pesée, sans un franc derrière. C'est donc une notion entièrement neuve — mais elle a un jumeau dans le code.
+
+## Ce que je comprends
+
+Pour certains planteurs, l'entreprise paie le transport **en plus** de la récolte. Le poste enverra un `prixtransport`, prix **unitaire** — donc, comme pour le reste, multiplié par le poids net.
+
+Le planteur recevra alors `montant de la pesée + transport`, moins ce qu'on lui met de côté.
+
+## Le jumeau : `prixspeciale`
+
+Le poste envoie déjà deux prix — `prix` (du produit) et `prixspeciale` (négocié avec le planteur) — et chacun est arbitré avec soin :
+
+```php
+public function appliquerPrixSpecialDuPoste(?int $prix): bool
+{
+    if($prix === $this->prixspecialePoste) { return false; }   // le poste n'a pas bougé
+    $this->prixspecialePoste = $prix;
+    if($prix === $this->prixspeciale) { return false; }
+    $this->prixspeciale = $prix;
+    return true;
+}
+```
+
+La valeur du poste est **mémorisée à part**, pour que seul un vrai changement de son côté écrase ce qui a été saisi sur le web. `prixtransport` suivra ce patron tel quel — et votre phrase « il y a des **fournisseurs** pour lesquels » me fait penser qu'il se range au même endroit, sur la fiche du planteur. C'est la première question ci-dessous.
+
+## Où il se rangerait dans le calcul
+
+Je garderais `montantdu` **tel quel** — `poids net × prix unitaire`, ce que vaut la récolte — et mettrais le transport à côté, exactement comme nous venons de le faire pour la retenue. Trois raisons :
+
+- c'est `montantdu` que le **ticket du planteur** imprime ;
+- c'est lui que totalisent le bilan, le tableau de bord et les statistiques par produit : y verser le transport changerait en silence le sens de « Montant dû » ;
+- `calculerMontant()` ne retouche plus une pesée déjà réglée, et le transport doit suivre la même règle.
+
+La formule du payable deviendrait donc :
+
+```
+montantpayable = montantdu + montanttransport − retenue
+```
+
+Et c'est tout. Le reste suit sans qu'on y touche : le reste à payer, le reste à engager, la borne du versement, les motifs de refus, le statut de règlement — nous venons de les réécrire **tous** en fonction de `getMontantpayable()`. Le chantier de la semaine dernière paie ici.
+
+Le prix du transport serait **figé sur la pesée** au moment de la valorisation, comme `prixunitaire` : un transport de 150 000 F dont personne ne sait s'il venait de 10 F × 15 000 kg ou de 15 F × 10 000 kg est un chiffre inexplicable devant un planteur qui conteste.
+
+## Un point à surveiller
+
+Une pesée dont le produit n'est pas tarifé vaut zéro et n'est pas payable. Si elle porte malgré tout du transport, faut-il payer le transport seul ? Je dirais **non** — une pesée non valorisée est une pesée à corriger, pas à régler à moitié — mais il faut que ce soit écrit, sinon le code en décidera tout seul.
+
+
+
+
+
+
+
+
+
+Oui tu as raison, le transport ne touche le `montantdu`, il agit comme un complément.
+
+- Concernant le point à surveiller `Une pesée dont le produit n’est pas tarifé vaut zéro et n’est pas payable`, tu as raison et on vas aussi faire en sorte qu'on puisse utiliser le prix du produit côté web si le desktop ne l'envoi pas ! 
+
+- Concernant le `prixspeciale`, on vas revoir le mécanisme, je t'explique après
+
+
+
+
+Votre point 2 vise exactement le trou que j'ai documenté dans le README. Je vérifie qu'il est bien là où je crois.
+
+Le trou est bien là, et il est pire que je ne le disais : [TarificationProcessor](Backend-Webpesee-V2/src/State/Processor/TarificationProcessor.php) **affirme en commentaire** ce qu'il ne fait pas.
+
+> *« Un prix n'est pas un champ comme un autre. Il décide de ce que touche un planteur, et le changer revalorise toutes les pesées non encore payées du poste. »*
+
+Il journalise, et rien d'autre. Aucun appel à `calculerMontant()`, aucun passage par `findRecalculables()`. Le prix saisi sur le web **est** utilisable — `calculerMontant()` se rabat déjà sur `produit->getPrix()` quand le planteur n'a pas de prix spécial — mais rien ne relance le calcul. Les pesées déjà reçues restent donc à zéro jusqu'à ce qu'un prix bouge **côté poste**, c'est-à-dire parfois jamais.
+
+Et depuis la mise en compte, c'est plus grave : une pesée qui ne se valorise pas ne s'arbitre pas, donc l'épargne du planteur ne démarre jamais sur elle.
+
+La correction est contenue : après un changement de prix sur le web, repasser la même séquence que la synchronisation — revaloriser les pesées recalculables du poste, puis les arbitrer. Je la garde pour le produit seul, puisque le prix spécial va bouger.
+
+## Ce qui est acté
+
+Le transport est un **complément** : `montantdu` ne bouge pas, `montantpayable = montantdu + transport − retenue`, et le prix de transport se fige sur la pesée comme `prixunitaire`. Une pesée non valorisée ne se paie pas, transport compris.
+
+Je n'ai encore rien écrit — et j'attends votre explication sur le prix spécial avant de toucher à la résolution des prix.
+
+
+Où se range le prix unitaire de transport ?
+Je dirai 1, si le desktop n'envoi pas le prix de transport du fournisseur et prend celui du web, aussi on doit pouvoir modifier le prix du transport du fournisseur côté web
+Le prélèvement d'épargne doit-il aussi mordre sur le transport ?
+Non, sur la récolte seule (Recommandé)
+
+
+Les deux réponses ferment le cadrage. Et la première contient une information de plus que je veux souligner.
+
+## Ce qui est arrêté
+
+Le prix de transport vit **sur la fiche du planteur**, avec la même règle d'arbitrage que le prix du produit : si le poste ne l'envoie pas, celui du web s'applique — et le web peut le modifier.
+
+```
+montanttransport = poids net × prix de transport      (figé sur la pesée)
+montantpayable   = montantdu + transport − retenue
+retenue          = min(taux × poids net, montantdu)   ← inchangé, la récolte seule
+```
+
+L'épargne ne mord donc **pas** sur le transport : le planteur a avancé des frais de route, il les récupère entiers. Et son plafond reste le montant de la récolte, pas le total.
+
+## Pourquoi votre réponse 1 est éclairante
+
+Vous décrivez le comportement du **produit**, pas celui du prix spécial. Les deux arbitrages existants ne font pourtant pas la même chose, et c'est sans doute ce qui vous fait dire qu'il faut revoir le mécanisme :
+
+```php
+// Produit : le poste muet ne change rien, le prix du web tient
+if($prix === null || $prix < 0 || $prix === $this->prixPoste) { return false; }
+
+// Fournisseur : le poste muet EFFACE le prix spécial saisi sur le web
+if($prix === $this->prixspecialePoste) { return false; }
+$this->prixspecialePoste = $prix;
+if($prix === $this->prixspeciale) { return false; }
+$this->prixspeciale = $prix;
+```
+
+Si le poste a envoyé un prix spécial hier et n'en envoie plus aujourd'hui, le second efface ce qu'un administrateur aurait saisi entre-temps. Le premier, non. Le transport suivra le **patron du produit**, celui que vous venez de décrire.
+
+## Ce que ça fait au reste
+
+Presque rien, et c'est le bénéfice du chantier de la semaine dernière : le reste à payer, le reste à engager, la borne du versement, les motifs de refus et le statut de règlement sont **tous** écrits en fonction de `getMontantpayable()`. Ajouter un terme à cette seule méthode les emmène tous.
+
+Trois endroits demanderont un geste à part : le ticket renvoyé au poste, le reçu du planteur, et les écrans qui montrent un montant dû — le transport doit s'y voir, sinon l'arithmétique ne tombera plus juste sous les yeux de l'opérateur, exactement comme pour la retenue avant-hier.
+
+
+
+
+
+
+
+
+
+Oui, on vas le mettre en place et on vas supprimé la notion `prixspeciale` pour l'instant car on vas faire une autre chose le concernant
+
+
+
+
+Je commence par mesurer ce que la suppression du prix spécial touche.
+
+Now the repository method that finds what a web-side re-pricing touches:
+
+Now the processor itself — making the comment's promise true:
+
+Now the two providers that turn those totals into "what's left to hand out":
+
+Now the test file for the transport price:
+
+Now the frontend. Let me see every place the special price surfaces:
+
+Now the payment screen and the planter's edit form:
+
+Le prix de transport est en place, et `prixspeciale` est retiré.
+
+**Le modèle** — trois nombres sur une pesée, jamais deux :
+
+| | |
+|---|---|
+| `montantdu` | la récolte seule : `poidsnet × prix du produit` — **inchangé** |
+| `montanttransport` | `poidsnet × prixtransport du planteur` |
+| `montantpayable` | `montantdu + montanttransport − retenue` |
+
+Les additionner aurait gonflé la récolte dans la production et le bilan, et surtout **élargi l'assiette de la mise en compte** : on aurait prélevé l'épargne du planteur sur son propre transport. La retenue reste plafonnée au montant dû, donc sur la récolte seule — si elle l'absorbe entièrement, le transport lui est quand même versé, il a avancé le carburant.
+
+**Le prix du produit côté web** — vous aviez demandé qu'on puisse l'utiliser quand le desktop ne l'envoie pas. Deux choses :
+
+- `appliquerPrixTransportDuPoste()` refuse le `null`, comme `Produit::appliquerPrixDuPoste()` : un poste muet n'efface pas ce qui a été saisi au bureau. Seule une valeur explicite l'emporte, `0` compris.
+- `TarificationProcessor` **revalorise** maintenant, au lieu de seulement journaliser. C'était un vrai trou : l'écran qu'on ouvre précisément pour tarifer un produit créé à la volée ne faisait rien aux pesées, qui restaient à zéro jusqu'au prochain prix venu du poste. Vérifié en vrai dans le navigateur — j'ai mis 20 F/kg à Koffi Jean, sa pesée T-9001 est passée à 240 000 F de transport et son arbitrage d'épargne s'est fait dans la foulée.
+
+**Un point à décider avant de migrer une base de production** : la migration fait `DROP prixspeciale, DROP prixspeciale_poste`. Les valeurs négociées sont **perdues**, et le `down()` ne rend que des colonnes vides. Si des planteurs en portent en production, il faut les exporter d'abord — vous m'avez dit qu'on reviendrait sur cette notion.
+
+**Vérifié** : 129 tests / 699 assertions au vert (9 nouveaux dans `tests/Caisse/PrixTransportTest.php`), `doctrine:schema:validate`, `lint:twig`, `lint:container`, `tsc --noEmit`, `npm run build`. Dans le navigateur : la liste des planteurs, la file du guichet, la fiche pesée, l'écran de versement et le tableau de bord — dont le « reste à payer », qui compte désormais le transport en plus et l'épargne en moins (sinon un opérateur dimensionnait sa demande de fonds trop bas, sans aucun signal).
+
+Les deux `README.md` sont à jour, et j'ai renommé la carte « Transport » de la fiche pesée en « Acheminement » : deux choses sans rapport portaient le même titre sur le même écran.
+
+
+
+
+
+
+
+Concernant la mise en compte, sache qu'il doit être lié aussi à un produit et le prix/kg ne doit pas être supérieur ou égal au prix(/kg) du produit ! donc le fournisseur peut avoir plusieurs prélèvements du genre : sur le produit Cacoa(20F/kg), Hevea(50/kg), etc...
+
+
+
+Now the repository and the one place the rule lives:
+
+Now the arbitration — the rate now comes from the weighed product:
+
+Now the repository lookup and the four processors:
+
+Now the three processors that decide:
+
+Now the approval — it must re-check the price and open a `Prelevement` row:
+
+Now the admin's direct open/stop, which needs a product too:
+
+Les fixtures viennent d'attraper un vrai bug : la pesée de palme a pris le taux de l'hévéa.
+
+Now the form, the fiche planteur card, and the React table:
+
+Now the planter's savings card — it becomes a list of per-product rates:
+
+Attention au piège du sérialiseur : `estActif()` ne porte pas de préfixe `get`, il ne serait jamais publié.
+
+Now the React model and the two remaining screens:
+
+Verification in the browser:
+
+Le site filtre existe — la liste proposait un produit d'un autre pont bascule :
+
+Le refus s'affiche bien. Testons maintenant le changement de taux, qui doit dater l'ancien :
+
+Vérifions maintenant le dépôt d'une demande, côté opérateur :
+
+Un défaut : le formulaire propose « Cacao — 0 F le kilo », que l'API refuse.
+
+Et le dépôt complet, de bout en bout, avec les deux refus :
+
+Rebuild, puis la suite complète une dernière fois :
+
+C'est en place. Un planteur a maintenant **autant de prélèvements que de cultures concernées**.
+
+**Le modèle** — une table `prelevement` *(fournisseur, produit, taux, arreteAt, arretePar)*. Deux points que j'ai tranchés sans vous déranger, dites-moi si je me suis trompé :
+
+- **Un seul compte d'épargne par planteur**, pas un par culture. C'est de l'argent qu'on lui doit : le découper par produit n'aurait aucun sens au moment de le lui rendre. Seul le *taux* est par produit.
+- **Une demande vise un produit**, pas plusieurs. Une seule en attente par couple planteur/produit — le cacao et l'hévéa ne se gênent plus.
+
+**La règle du taux** vit dans un seul endroit, `TauxPrelevement::motifDuRefus()`, et elle est vérifiée **quatre fois** : au dépôt, à la correction, **à l'approbation** et à l'ouverture directe. L'approbation n'est pas une redondance — une demande déposée quand le cacao valait 100 F peut n'être tranchée qu'après une baisse à 40. Un test couvre précisément ce cas. Refus à l'**égalité** comme vous l'avez demandé : à 200 F sur un produit à 200 F, le planteur repart avec exactement zéro.
+
+**Arrêter ne supprime pas la ligne, ça la date.** Changer un taux arrête l'ancien et en ouvre un nouveau. Sans ça, la fiche prétendrait qu'il a toujours épargné à 60 F alors que les pesées de mars portent 20 F figés — et plus rien n'expliquerait l'écart devant un planteur qui compte.
+
+**Deux bugs attrapés en chemin**, tous deux silencieux :
+
+- Les fixtures ont montré qu'une pesée de **palme repartait avec le taux de l'hévéa**. `prelevementPour()` comparait deux `getId()` qui valaient `null` avant le `flush()` : le premier prélèvement de la liste répondait pour toutes les cultures. Il compare maintenant l'identité d'objet d'abord.
+- `estActif()` ne porte pas de préfixe `get` : le sérialiseur **ignore les groupes** posés dessus, sans erreur. Tous les prélèvements seraient apparus comme arrêtés. D'où `getActif()` à côté. Les deux pièges sont au README.
+
+**Vérifié dans le navigateur**, pas seulement en test : ouvert un taux à 400 sur un produit à 400 → refusé avec le message complet ; changé 50 → 100 sur l'hévéa → l'ancien daté, le nouveau ouvert, la palme intacte ; arrêté depuis la fiche ; déposé une demande en opérateur, avec les deux refus (taux trop élevé, doublon sur le même produit). Et j'ai filtré deux listes déroulantes qui proposaient des choix que l'API refuse : les produits non tarifés, et ceux d'un autre pont bascule.
+
+**Avant de migrer une base de production** : la migration **s'arrête** si des prélèvements en cours ou des demandes en attente existent, parce qu'un taux unique ne dit pas sur quelle culture il portait, et le deviner ouvrirait un prélèvement que personne n'a décidé. Le message donne la marche à suivre.
+
+**Une limite** que je laisse en l'état et qui est au README : le taux est tenu sous le prix à l'ouverture, mais rien ne le resserre si le prix **baisse** ensuite. Le plafond `min(taux × poidsnet, montantdu)` empêche la dette, pas le guichet vide — la pesée passe en `RETENU` et l'opérateur le voit.
+
+134 tests / 722 assertions au vert, `schema:validate`, `lint:twig`, `lint:container`, `tsc --noEmit`, `npm run build`, et base reconstruite de zéro à travers toutes les migrations.

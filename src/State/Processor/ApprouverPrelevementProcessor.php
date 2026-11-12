@@ -7,9 +7,12 @@ use ApiPlatform\State\ProcessorInterface;
 use App\Domain\Enum\StatutDemande;
 use App\Domain\Enum\TypeActivite;
 use App\Domain\Service\ActiviteLogger;
+use App\Domain\Support\TauxPrelevement;
 use App\Entity\DemandePrelevement;
+use App\Entity\Prelevement;
 use App\Entity\User;
 use App\Repository\DemandePrelevementRepository;
+use App\Repository\PrelevementRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -24,6 +27,9 @@ use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
       livre, qui racontent tout ; une ouverture de prélèvement n'y laisse rien. Sans la ligne du
       journal, personne ne saurait qui a décidé que ce planteur toucherait moins au guichet.
 
+    - Un prélèvement par PRODUIT : la ligne ouverte ici ne touchera que les pesées de ce produit-là.
+      Le planteur peut en avoir d'autres, ouvertes à d'autres moments, sur d'autres cultures.
+
     - Le taux appliqué est CELUI QUI A ÉTÉ DEMANDÉ. L'opération n'accepte aucun corps : le chiffre
       vient du planteur, par la bouche de l'opérateur, et le retoucher depuis un bureau reviendrait
       à décider de l'épargne de quelqu'un d'autre.
@@ -37,6 +43,7 @@ class ApprouverPrelevementProcessor implements ProcessorInterface
     public function __construct(
         private EntityManagerInterface $em,
         private DemandePrelevementRepository $demandes,
+        private PrelevementRepository $prelevements,
         private ActiviteLogger $activites,
         private Security $security
     )
@@ -56,16 +63,40 @@ class ApprouverPrelevementProcessor implements ProcessorInterface
         }
 
         $planteur = $demande->getFournisseur();
+        $produit = $demande->getProduit();
 
-        if($planteur === null) {
-            throw new UnprocessableEntityHttpException('Cette demande ne vise aucun planteur.');
+        if($planteur === null || $produit === null) {
+            throw new UnprocessableEntityHttpException('Cette demande ne vise pas un planteur et un produit.');
         }
 
         $taux = $demande->getTauxDemande();
+
+        /*
+            - LA RÈGLE EST REVÉRIFIÉE ICI, et ce n'est pas une redondance : la demande a pu être
+              déposée quand le cacao valait 100 F et n'être approuvée qu'après une baisse à 40. Le
+              prix qui compte est celui du jour où l'on ouvre le robinet, pas celui du jour où on l'a
+              demandé.
+        */
+        if(($motif = TauxPrelevement::motifDuRefus($produit, $taux)) !== null) {
+            throw new UnprocessableEntityHttpException($motif);
+        }
+
+        if($this->prelevements->findActifPour($planteur, $produit) !== null) {
+            throw new UnprocessableEntityHttpException(sprintf(
+                'Un prélèvement est déjà en cours pour ce planteur sur « %s ». Arrêtez-le avant d\'en ouvrir un autre.',
+                (string) $produit->getLibelle()
+            ));
+        }
+
         $auteur = $this->security->getUser();
         $auteur = $auteur instanceof User ? $auteur : null;
 
-        $planteur->setTauxEpargne($taux);
+        $planteur->ajouterPrelevement(
+            (new Prelevement())
+                ->setProduit($produit)
+                ->setTaux($taux)
+                ->setCreatedBy($auteur?->getId())
+        );
 
         $demande
             ->setStatut(StatutDemande::APPROUVEE)
@@ -77,9 +108,10 @@ class ApprouverPrelevementProcessor implements ProcessorInterface
         $this->activites->log(
             TypeActivite::FOURNISSEUR_PRELEVEMENT,
             sprintf(
-                '%s a ouvert une mise en compte de %d F par kilo pour %s',
+                '%s a ouvert une mise en compte de %d F par kilo de %s pour %s',
                 $auteur instanceof User ? $auteur->getNomComplet() : 'Le système',
                 $taux,
+                (string) $produit->getLibelle(),
                 $planteur->getNomComplet()
             ),
             $planteur
