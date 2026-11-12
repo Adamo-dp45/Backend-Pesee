@@ -113,12 +113,46 @@ class BasculerPrelevementProcessor implements ProcessorInterface
             );
         }
 
-        // Avant le flush : la trace part dans la même transaction que la décision
+        /*
+            - Avant le flush : la trace part dans la même transaction que la décision.
+
+            - LE TAUX FIGURE DANS LES TROIS CAS, arrêt compris. Ce journal est la SEULE trace de ces
+              décisions — ouvrir ou arrêter un prélèvement ne déplace aucun argent, le grand livre
+              ne les voit donc jamais. Une ligne qui dit « a arrêté la mise en compte de Bamba Sekou
+              sur Hévéa » laisse sans réponse la seule question qu'on vient y chercher : combien lui
+              retenait-on ?
+
+            - Le changement de taux porte les DEUX chiffres. C'est le seul cas où l'ancien compte
+              autant que le nouveau, parce que les pesées déjà arbitrées gardent l'ancien figé.
+        */
+        $libelle = match(true) {
+            $taux === null => sprintf(
+                '%s a arrêté la mise en compte de %d F par kilo sur %s pour %s',
+                $nomAuteur,
+                $enCours?->getTaux() ?? 0,
+                (string) $produit->getLibelle(),
+                $planteur->getNomComplet()
+            ),
+            $enCours !== null => sprintf(
+                '%s a porté la mise en compte de %s sur %s de %d à %d F par kilo',
+                $nomAuteur,
+                $planteur->getNomComplet(),
+                (string) $produit->getLibelle(),
+                $enCours->getTaux(),
+                $taux
+            ),
+            default => sprintf(
+                '%s a ouvert une mise en compte de %d F par kilo sur %s pour %s, sans demande préalable',
+                $nomAuteur,
+                $taux,
+                (string) $produit->getLibelle(),
+                $planteur->getNomComplet()
+            ),
+        };
+
         $this->activites->log(
             $taux === null ? TypeActivite::FOURNISSEUR_PRELEVEMENT_ARRET : TypeActivite::FOURNISSEUR_PRELEVEMENT,
-            $taux === null
-                ? sprintf('%s a arrêté la mise en compte de %s sur %s', $nomAuteur, $planteur->getNomComplet(), (string) $produit->getLibelle())
-                : sprintf('%s a fixé la mise en compte de %s sur %s à %d F par kilo', $nomAuteur, $planteur->getNomComplet(), (string) $produit->getLibelle(), $taux),
+            $libelle,
             $planteur
         );
 

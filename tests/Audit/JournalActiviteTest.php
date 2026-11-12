@@ -183,6 +183,86 @@ final class JournalActiviteTest extends InvariantTestCase
         self::assertSame(403, $this->client->getResponse()->getStatusCode());
     }
 
+    /*
+        - LES MONTANTS DANS LE JOURNAL DE LA MISE EN COMPTE. Ouvrir ou arrêter un prélèvement ne
+          déplace aucun argent : le grand livre ne le voit jamais, et ces lignes sont donc la SEULE
+          trace de la décision. Un libellé qui omet le taux laisse sans réponse la question pour
+          laquelle on vient consulter le journal — combien lui retenait-on ?
+
+        - Le défaut a vécu jusqu'à ce qu'un œil humain le remarque à l'écran : l'ouverture portait le
+          taux, l'arrêt non. Rien ne lisait ces libellés, donc rien ne pouvait le signaler.
+    */
+    public function testLeJournalDeLaMiseEnComptePorteToujoursLeTaux(): void
+    {
+        $produit = $this->creerProduit($this->site, 'Hévéa', 400);
+        $planteur = $this->creerPlanteur($this->site, 'Bamba');
+        $uri = '/api/fournisseurs/' . $planteur->getId() . '/epargne';
+
+        // 1. Ouverture directe
+        $this->appeler('PATCH', $uri, $this->admin, ['produit' => $produit->getId(), 'taux' => 15]);
+        self::assertSame(200, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
+
+        $ouverture = (string) $this->derniere()->getLibelle();
+
+        self::assertSame(TypeActivite::FOURNISSEUR_PRELEVEMENT, $this->derniere()->getType());
+        self::assertStringContainsString('15 F par kilo', $ouverture);
+        self::assertStringContainsString('Hévéa', $ouverture);
+        self::assertStringContainsString('Bamba', $ouverture);
+
+        // 2. Changement de taux : les DEUX chiffres, parce que les pesées déjà arbitrées gardent l'ancien
+        $this->appeler('PATCH', $uri, $this->admin, ['produit' => $produit->getId(), 'taux' => 50]);
+        self::assertSame(200, $this->client->getResponse()->getStatusCode());
+
+        $changement = (string) $this->derniere()->getLibelle();
+
+        self::assertStringContainsString('15', $changement, 'Le taux quitté a disparu du libellé');
+        self::assertStringContainsString('50 F par kilo', $changement);
+
+        // 3. Arrêt : c'est ici que le taux manquait
+        $this->appeler('PATCH', $uri, $this->admin, ['produit' => $produit->getId(), 'taux' => null]);
+        self::assertSame(200, $this->client->getResponse()->getStatusCode());
+
+        $arret = $this->derniere();
+
+        self::assertSame(TypeActivite::FOURNISSEUR_PRELEVEMENT_ARRET, $arret->getType());
+        self::assertStringContainsString('50 F par kilo', (string) $arret->getLibelle(), 'Un arrêt sans montant ne dit pas ce qu\'on retenait');
+        self::assertStringContainsString('Hévéa', (string) $arret->getLibelle());
+        self::assertStringContainsString('Bamba', (string) $arret->getLibelle());
+    }
+
+    /*
+        - L'autre porte d'ouverture, celle qui part d'une demande. Son libellé doit porter les mêmes
+          informations : lu dans le journal, rien ne distingue les deux chemins si l'un d'eux tait le
+          produit ou le taux.
+    */
+    public function testLApprobationDUneDemandeTraceLeTauxEtLeProduit(): void
+    {
+        $produit = $this->creerProduit($this->site, 'Cacao', 300);
+        $planteur = $this->creerPlanteur($this->site, 'Kouassi');
+        $operateur = $this->creerUtilisateur($this->entreprise, Role::OPERATEUR, 'op@acme.test');
+        $this->affecterOperateur($this->site, $operateur);
+
+        $this->appeler('POST', '/api/demande_prelevements', $operateur, [
+            'fournisseur' => '/api/fournisseurs/' . $planteur->getId(),
+            'produit' => '/api/produits/' . $produit->getId(),
+            'tauxDemande' => 25,
+            'motif' => 'Il veut mettre de côté',
+        ]);
+        self::assertSame(201, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
+
+        $id = (int) ($this->reponse()['id'] ?? 0);
+
+        $this->appeler('PATCH', '/api/demande_prelevements/' . $id . '/approbation', $this->admin, []);
+        self::assertSame(200, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
+
+        $libelle = (string) $this->derniere()->getLibelle();
+
+        self::assertSame(TypeActivite::FOURNISSEUR_PRELEVEMENT, $this->derniere()->getType());
+        self::assertStringContainsString('25 F par kilo', $libelle);
+        self::assertStringContainsString('Cacao', $libelle);
+        self::assertStringContainsString('Kouassi', $libelle);
+    }
+
     /* ---- Outils ------------------------------------------------------------------------------ */
 
     /** @return list<Activite> */

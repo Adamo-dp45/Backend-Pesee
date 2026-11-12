@@ -4487,3 +4487,53 @@ C'est en place. Un planteur a maintenant **autant de prélèvements que de cultu
 **Une limite** que je laisse en l'état et qui est au README : le taux est tenu sous le prix à l'ouverture, mais rien ne le resserre si le prix **baisse** ensuite. Le plafond `min(taux × poidsnet, montantdu)` empêche la dette, pas le guichet vide — la pesée passe en `RETENU` et l'opérateur le voit.
 
 134 tests / 722 assertions au vert, `schema:validate`, `lint:twig`, `lint:container`, `tsc --noEmit`, `npm run build`, et base reconstruite de zéro à travers toutes les migrations.
+
+
+
+
+
+
+
+
+
+
+Quand je crée un site, normalement je devrais être redirigé vers l'écran suivant mais ça reste sur la même page alors que le site se crée !
+
+
+C'est le piège Turbo que le README du frontend décrit déjà : un POST qui rend directement une vue laisse la page figée. Et il touche **deux** écrans, pas un.
+
+Vérifions que le même piège n'est pas ailleurs — un POST qui rend une vue en 200 :
+
+Vérifions d'abord le mécanisme, c'est-à-dire la redirection que Turbo attend :
+
+Le POST renvoie bien une redirection désormais. Testons le vrai geste, avec Turbo actif :
+
+Et la lecture unique — rafraîchir ne doit pas remontrer le mot de passe :
+
+Maintenant le renouvellement, depuis cette fiche :
+
+C'est le piège Turbo que votre README du frontend décrit déjà : **un POST qui rend directement une vue laisse la page figée.** Turbo intercepte l'envoi du formulaire, reçoit une réponse 200 au lieu d'une redirection, et ne fait rien — alors que le site, lui, a bien été créé côté API.
+
+Le même défaut touchait **le renouvellement des identifiants**, qui rendait la vue de la même façon. Vous ne l'aviez pas vu parce qu'il plantait avant, et qu'une réponse 500, elle, Turbo l'affiche.
+
+**Ce qui bloquait la correction évidente** : rediriger perd le mot de passe. Il n'existe nulle part — ni en clair en base, ni recalculable — il ne vit que dans cette unique réponse. Une redirection vers un GET qui relit le site ne le retrouverait jamais.
+
+Donc : les identifiants transitent par **la session**, le temps de la redirection, et l'écran d'affichage les **lit puis les retire**. Pas par l'URL, où un mot de passe se retrouverait dans l'historique et les journaux d'accès.
+
+```
+POST /sites/nouveau          → dépose en session, redirige
+GET  /sites/{id}/identifiants → affiche, vide la session
+```
+
+Ça donne au passage la bonne sémantique, qui manquait : **rafraîchir ne remontre rien**, et un retour arrière non plus. Le bandeau « Ce mot de passe ne sera plus jamais affiché » dit maintenant la vérité. Avant, un simple F5 le réaffichait.
+
+J'ai aussi vérifié que le piège n'était pas ailleurs : sur les 39 `render()` des contrôleurs, tous les autres sont sur des routes GET, ou renvoient un 422 quand un formulaire est invalide — ce que Turbo affiche bien, et c'est précisément à ça que sert la constante `EN_ERREUR`. `SiteController` était le seul endroit touché.
+
+**Vérifié dans le navigateur, Turbo actif** — pas en `fetch`, qui contourne Turbo et aurait passé dans les deux cas :
+
+- Mise en service → l'écran bascule sur « Poste mis en service », compte et mot de passe affichés ;
+- Renouvellement depuis la fiche → « Nouveaux identifiants », même login, nouveau mot de passe ;
+- Rafraîchir cette URL → retour sur la fiche avec « Les identifiants du poste ne s'affichent qu'une fois » ;
+- Le téléchargement du fichier de configuration marche toujours (il porte `data-turbo="false"`, parce qu'une réponse de type fichier ne peut pas rediriger).
+
+Une remarque sur le correctif précédent, pendant que j'y étais : la fiche d'un poste n'expose pas son code en modification — « Le code n'est pas modifiable ». Le scénario par lequel j'avais reproduit vos 500 passait donc par l'API, pas par vos écrans. La dérive entre le code et l'adresse du compte machine a dû naître autrement chez vous — données plus anciennes, ou un compte resté orphelin. Le correctif tient quelle qu'en soit l'origine, puisqu'il rend la collision impossible au lieu de supposer d'où elle vient.

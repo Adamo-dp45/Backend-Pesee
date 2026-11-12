@@ -90,35 +90,26 @@ Socafpesage10
 La valeur du poste est **mémorisée à part**, pour que seul un vrai changement de son côté écrase ce qui a été saisi sur le web. `prixtransport` suivra ce patron tel quel — et votre phrase « il y a des **fournisseurs** pour lesquels » me fait penser qu'il se range au même endroit, sur la fiche du planteur. C'est la première question ci-dessous.
 
 
+- Lorsque les peseés arrive, si il n'y a de problème du genre le prixtransport ou le prix du produit est 0 et que côté web ça match directement, la syncrone se fait sinon on affiche la liste des syncro qui ont un soucis à l'opérateur et adminstrateur pour qu'il fasse des choix et sync les différents pesées
+
+
+Un point que je n’ai pas tranché, dites-moi s’il vous gêne : un changement de taux s’affiche sous le geste « Ouverture d’une mise en compte », faute d’un troisième type dans l’énumération. Le libellé dit exactement ce qui s’est passé, mais la colonne « Geste », elle, annonce une ouverture.
 
 
 
 
-- Une situation, si le destop n'envoi pas le prix du produit ou du fournisseur et que le web ne les est pas renseigné, qu'est ce qui ce passe pour la pesée
-
-
-Concernant `prixspeciale`, sache qu'il sera lié à un produit
 
 
 
-- Dans la partie darkMode du frontend on vas ajouter le choix du `système` en plus du mode `dark` et `light` !
-- Changer la couleur de la sidebar et navbar
+- Concernant la notion prix spéciale, sache qu'on peut avoir un prix spéciale pour un fournissuer conernant un produit 
 
 
 
-Adama Bakayoko a arrêté la mise en compte de FF sur HEVEA 2 - le prix aussi
-Fiche fournisseur : Dernières pesées affiché plus d'infos comme le prix du transport et montanttransport
+Si le prix du produit vient vide payload, on n'utilise pas celui du web ! mais ça remplace plutôt celui du web à vide, de même pour le fournisseur !
+
+Une situation, si le destop n'envoi pas le prix du produit ou le prixtransport du fournisseur et que le web ne les est pas renseigné, qu'est ce qui ce passe pour la pesée
 
 lorsque le desktop envoi et qu'il y'a des modifications sur fourniseur et produit on doit loge
-
-
-
-Lorsque les peseés arrive, si il n'y a de problème du genre le prixtransport ou le prix du produit est 0 et que côté web ça match directement, la syncrone se fait sinon on affiche la liste des syncro qui ont un soucis à l'opérateur et adminstrateur pour qu'il fasse des choix et sync les différents pesées
-
-
-
-
-
 
 J'ai vu que quand le Desktop envoi les données et que le prix du produit est vide, on ne peut pas payé le planteur mais lorsque j'ai modifié le prix du produit côté web ça a fait un recalcule et j'ai pu payé le planteur ! tu confirme le comportement !!
 

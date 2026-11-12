@@ -108,7 +108,8 @@ class ApprouverPrelevementProcessor implements ProcessorInterface
         $this->activites->log(
             TypeActivite::FOURNISSEUR_PRELEVEMENT,
             sprintf(
-                '%s a ouvert une mise en compte de %d F par kilo de %s pour %s',
+                /* « sur Hévéa » et non « de Hévéa » : la seconde forme demanderait l'élision — « d'hévéa », « de cacao » — et un nom de produit est saisi librement, aucun 'sprintf' ne peut la deviner. Même tournure dans 'BasculerPrelevementProcessor', pour que le journal se lise d'une seule façon. */
+                '%s a ouvert une mise en compte de %d F par kilo sur %s pour %s',
                 $auteur instanceof User ? $auteur->getNomComplet() : 'Le système',
                 $taux,
                 (string) $produit->getLibelle(),
