@@ -106,12 +106,6 @@ Concernant `prixspeciale`, sache qu'il sera lié à un produit
 
 
 
-
-
-
-
-dans la regénération 
-
 Adama Bakayoko a arrêté la mise en compte de FF sur HEVEA 2 - le prix aussi
 Fiche fournisseur : Dernières pesées affiché plus d'infos comme le prix du transport et montanttransport
 
@@ -119,15 +113,20 @@ lorsque le desktop envoi et qu'il y'a des modifications sur fourniseur et produi
 
 
 
-
-
-
-
-
-
-
-
 Lorsque les peseés arrive, si il n'y a de problème du genre le prixtransport ou le prix du produit est 0 et que côté web ça match directement, la syncrone se fait sinon on affiche la liste des syncro qui ont un soucis à l'opérateur et adminstrateur pour qu'il fasse des choix et sync les différents pesées
+
+
+
+
+
+
+J'ai vu que quand le Desktop envoi les données et que le prix du produit est vide, on ne peut pas payé le planteur mais lorsque j'ai modifié le prix du produit côté web ça a fait un recalcule et j'ai pu payé le planteur ! tu confirme le comportement !!
+
+Pour le transport du fournisseur, j'ai remarqué que je web n'agit pas dessus, le calcule se base sur celui venu du Desktop ! tu confirme le comportement !!
+
+
+
+
 
 
 
