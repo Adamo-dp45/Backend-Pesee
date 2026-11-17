@@ -18,21 +18,27 @@ class PaiementRepository extends ServiceEntityRepository
         parent::__construct($registry, Paiement::class);
     }
 
-    /** Total réellement CONFIRMÉ sur une pesée. C'est lui qui alimente 'Operation::montantpaye'. */
-    public function sommeVersee(Operation $operation): int
+    /**
+     * Ce qui est réellement CONFIRMÉ sur une pesée, par part et au total. C'est lui qui alimente les trois cumuls dénormalisés de 'Operation'.
+     *
+     * @return array{produit: int, transport: int, total: int}
+     */
+    public function sommesVersees(Operation $operation): array
     {
-        return $this->somme($operation, [StatutPaiement::REUSSI]);
+        return $this->sommes($operation, [StatutPaiement::REUSSI]);
     }
 
     /**
-     * Total ENGAGÉ sur une pesée : confirmé, plus ce qui est encore en vol chez l'agrégateur.
+     * Ce qui est ENGAGÉ sur une pesée, par part et au total : confirmé, plus ce qui est encore en vol chez l'agrégateur.
      *
-     * C'est ce montant qui borne un nouveau versement, et non le seul confirmé. Sinon, tant qu'un versement n'est pas confirmé, on pourrait en engager un second sur le même reste à payer et le planteur serait payé deux fois.
+     * Ce sont ces montants qui bornent un nouveau versement, et non les seuls confirmés. Sinon, tant qu'un versement n'est pas confirmé, on pourrait en engager un second sur le même reste à payer et le planteur serait payé deux fois.
+     *
+     * @return array{produit: int, transport: int, total: int}
      */
-    public function sommeEngagee(Operation $operation): int
+    public function sommesEngagees(Operation $operation): array
     {
         // Étalement et non '+' : sur deux listes, l'opérateur '+' garde la gauche à clé égale et 'REUSSI' disparaîtrait
-        return $this->somme($operation, [...StatutPaiement::enCours(), StatutPaiement::REUSSI]);
+        return $this->sommes($operation, [...StatutPaiement::enCours(), StatutPaiement::REUSSI]);
     }
 
     /**
@@ -46,7 +52,13 @@ class PaiementRepository extends ServiceEntityRepository
      *
      * @param list<int> $operationIds
      *
-     * @return array<int, int> 'id de la pesée' => 'montant en vol'
+     * PAR PART : un versement en vol sur le transport ne doit pas amputer ce qu'on peut encore
+     * engager sur la récolte, sans quoi l'API refuserait « un versement est déjà en cours » pour
+     * une part sur laquelle rien n'est parti.
+     *
+     * @param list<int> $operationIds
+     *
+     * @return array<int, array{produit: int, transport: int}> 'id de la pesée' => ses deux montants en vol
      */
     public function montantsEnVolParPesee(array $operationIds): array
     {
@@ -55,7 +67,11 @@ class PaiementRepository extends ServiceEntityRepository
         }
 
         $lignes = $this->createQueryBuilder('p')
-            ->select('IDENTITY(p.operation) AS peseeId', 'COALESCE(SUM(p.montant), 0) AS montant')
+            ->select(
+                'IDENTITY(p.operation) AS peseeId',
+                'COALESCE(SUM(p.montantproduit), 0) AS produit',
+                'COALESCE(SUM(p.montanttransport), 0) AS transport'
+            )
             ->andWhere('p.operation IN (:pesees)')
             ->andWhere('p.statut IN (:statuts)')
             ->setParameter('pesees', $operationIds)
@@ -67,7 +83,10 @@ class PaiementRepository extends ServiceEntityRepository
         $parPesee = [];
 
         foreach($lignes as $ligne) {
-            $parPesee[(int) $ligne['peseeId']] = (int) $ligne['montant'];
+            $parPesee[(int) $ligne['peseeId']] = [
+                'produit' => (int) $ligne['produit'],
+                'transport' => (int) $ligne['transport'],
+            ];
         }
 
         return $parPesee;
@@ -131,16 +150,37 @@ class PaiementRepository extends ServiceEntityRepository
     /**
      * @param list<StatutPaiement> $statuts
      */
-    private function somme(Operation $operation, array $statuts): int
+    /*
+        - UNE SEULE REQUÊTE pour les trois sommes, et c'est délibéré : trois requêtes laisseraient une
+          fenêtre où un webhook confirme entre deux, et la base porterait un total différent de la
+          somme de ses parts sans que rien ne le signale.
+    */
+    /**
+     * @param list<StatutPaiement> $statuts
+     *
+     * @return array{produit: int, transport: int, total: int}
+     */
+    private function sommes(Operation $operation, array $statuts): array
     {
-        return (int) $this->createQueryBuilder('p')
-            ->select('COALESCE(SUM(p.montant), 0)')
+        /** @var array{produit: string|int|null, transport: string|int|null, total: string|int|null} $ligne */
+        $ligne = $this->createQueryBuilder('p')
+            ->select(
+                'COALESCE(SUM(p.montantproduit), 0) AS produit',
+                'COALESCE(SUM(p.montanttransport), 0) AS transport',
+                'COALESCE(SUM(p.montant), 0) AS total'
+            )
             ->andWhere('p.operation = :operation')
             ->andWhere('p.statut IN (:statuts)')
             ->setParameter('operation', $operation)
             ->setParameter('statuts', $statuts)
             ->getQuery()
-            ->getSingleScalarResult();
+            ->getSingleResult();
+
+        return [
+            'produit' => (int) $ligne['produit'],
+            'transport' => (int) $ligne['transport'],
+            'total' => (int) $ligne['total'],
+        ];
     }
 
     /**

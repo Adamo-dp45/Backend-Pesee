@@ -245,9 +245,24 @@ class Operation extends EntityBase implements SiteOwnedInterface
     #[Groups(['read:Operation'])]
     private int $montanttransport = 0;
 
+    /*
+        - Le cumul des paiements CONFIRMÉS, et sa ventilation. Dénormalisés : sans eux, lister des pesées imposerait une sous-requête de somme par ligne.
+
+        - DEUX PARTS, parce qu'une pesée se règle désormais par la récolte, par le transport, ou par les deux, chacune en plusieurs fois. 'montantpaye' reste leur somme : il est seul à figurer dans les agrégats du bilan et dans les filtres de retarification, et le découper partout n'apprendrait rien à ces écrans-là.
+
+        - Les trois sont posés ENSEMBLE par 'PaiementService::recalculerLeReglement()', en une requête : trois requêtes séparées laisseraient une fenêtre où un webhook confirme entre deux, et la base porterait 'montantpaye ≠ produit + transport' sans que rien ne le signale.
+    */
     #[ORM\Column(options: ['default' => 0])]
     #[Groups(['read:Operation'])]
-    private int $montantpaye = 0; // Cumul des paiements confirmés. Dénormalisé : sans lui, lister des pesées imposerait une sous-requête de somme par ligne
+    private int $montantpaye = 0;
+
+    #[ORM\Column(options: ['default' => 0])]
+    #[Groups(['read:Operation'])]
+    private int $montantpayeproduit = 0;
+
+    #[ORM\Column(options: ['default' => 0])]
+    #[Groups(['read:Operation'])]
+    private int $montantpayetransport = 0;
 
     #[ORM\Column(enumType: StatutReglement::class, options: ['default' => 'NON_PAYE'])]
     #[Groups(['read:Operation'])]
@@ -287,15 +302,20 @@ class Operation extends EntityBase implements SiteOwnedInterface
     }
 
     /*
-        - Posé par 'MontantEnVolProvider' sur une LISTE : une seule requête groupée pour toute la
-          page, sur le modèle de 'Produit::$peseesCount'. Nul sur une fiche, où le repli de
-          'getMontantenvol()' additionne les versements déjà chargés pour l'échéancier.
+        - Posés par 'MontantEnVolProvider' sur une LISTE : une seule requête groupée pour toute la
+          page, sur le modèle de 'Produit::$peseesCount'. Nuls sur une fiche, où le repli additionne
+          les versements déjà chargés pour l'échéancier.
+        - PAR PART, comme le reste : un versement en vol sur le transport ne doit pas amputer ce
+          qu'on peut encore engager sur la récolte. Sans cette séparation, l'API refuserait « un
+          versement est déjà en cours » pour une part sur laquelle rien n'est parti.
     */
-    private ?int $montantenvol = null;
+    private ?int $montantenvolproduit = null;
+    private ?int $montantenvoltransport = null;
 
-    public function setMontantenvol(int $montantenvol): static
+    public function setMontantsenvol(int $produit, int $transport): static
     {
-        $this->montantenvol = $montantenvol;
+        $this->montantenvolproduit = $produit;
+        $this->montantenvoltransport = $transport;
 
         return $this;
     }
@@ -637,9 +657,26 @@ class Operation extends EntityBase implements SiteOwnedInterface
         return $this->montantpaye;
     }
 
-    public function setMontantpaye(int $montantpaye): static
+    public function getMontantpayeproduit(): int
     {
-        $this->montantpaye = $montantpaye;
+        return $this->montantpayeproduit;
+    }
+
+    public function getMontantpayetransport(): int
+    {
+        return $this->montantpayetransport;
+    }
+
+    /*
+        - LES TROIS D'UN SEUL GESTE, et c'est pour ça qu'il n'existe pas de 'setMontantpaye()'. Les
+          poser séparément permettrait d'écrire un total qui ne soit pas la somme de ses parts, ce
+          qu'aucun écran ne saurait montrer et qu'aucune erreur ne lèverait.
+    */
+    public function setMontantspayes(int $produit, int $transport): static
+    {
+        $this->montantpayeproduit = $produit;
+        $this->montantpayetransport = $transport;
+        $this->montantpaye = $produit + $transport;
 
         return $this;
     }
@@ -663,20 +700,35 @@ class Operation extends EntityBase implements SiteOwnedInterface
 
         - Appelée par la synchronisation, et par tout écran qui retarife un produit ou un planteur.
 
+        - DEUX VERROUS, UN PAR PART, et non plus un seul sur le cumul. Payer le transport d'une pesée dont le produit n'est pas encore tarifé est désormais permis : avec un verrou global, ce versement gèlerait POUR TOUJOURS la valorisation de sa récolte, et la tarification faite au bureau n'arriverait jamais jusqu'à elle.
+
+        - Chaque verrou porte sur l'ENGAGÉ et non sur le seul confirmé : un versement parti sans réponse de la passerelle a déjà quitté la caisse sur la base de ce montant-là.
+
+        - UNE PESÉE ARBITRÉE NE SE REVALORISE PLUS, retenue nulle comprise : une promesse a été écrite au planteur sur la base de ce montant. Ce garde-fou ne vivait jusqu'ici que dans 'findARevaloriser()', donc côté web seulement ; le poste, lui, réécrivait le montant d'une pesée arbitrée à chaque renvoi de son lot. Les deux chemins tranchent désormais pareil.
+
         @return bool vrai si quelque chose a changé
     */
     public function calculerMontant(): bool
     {
-        if($this->montantpaye > 0) {
-            return false; // Déjà réglée, même partiellement : de l'argent est parti sur la base de ce montant, un changement de tarif ne réécrit pas l'histoire
+        if($this->retenue !== null) {
+            return false;
         }
 
-        $terminee = $this->estTerminee();
-        $prixunitaire = $terminee ? $this->produit?->getPrix() : null;
-        $prixtransport = $terminee ? $this->fournisseur?->getPrixtransport() : null;
+        $gelProduit = $this->montantpayeproduit > 0 || $this->getMontantenvolproduit() > 0;
+        $gelTransport = $this->montantpayetransport > 0 || $this->getMontantenvoltransport() > 0;
 
-        $montantdu = ($prixunitaire !== null && $this->poidsnet !== null) ? $this->poidsnet * $prixunitaire : null;
-        $montanttransport = ($prixtransport !== null && $this->poidsnet !== null) ? $this->poidsnet * $prixtransport : 0;
+        $terminee = $this->estTerminee();
+
+        $prixunitaire = $gelProduit ? $this->prixunitaire : ($terminee ? $this->produit?->getPrix() : null);
+        $prixtransport = $gelTransport ? $this->prixtransport : ($terminee ? $this->fournisseur?->getPrixtransport() : null);
+
+        $montantdu = $gelProduit
+            ? $this->montantdu
+            : (($prixunitaire !== null && $this->poidsnet !== null) ? $this->poidsnet * $prixunitaire : null);
+
+        $montanttransport = $gelTransport
+            ? $this->montanttransport
+            : (($prixtransport !== null && $this->poidsnet !== null) ? $this->poidsnet * $prixtransport : 0);
 
         if($this->prixunitaire === $prixunitaire && $this->montantdu === $montantdu
             && $this->prixtransport === $prixtransport && $this->montanttransport === $montanttransport) {
@@ -687,7 +739,15 @@ class Operation extends EntityBase implements SiteOwnedInterface
         $this->montantdu = $montantdu;
         $this->prixtransport = $prixtransport;
         $this->montanttransport = $montanttransport;
-        $this->statutReglement = StatutReglement::pour($montantdu, $this->getMontantpayable(), $this->montantpaye);
+
+        // SUR LES CHAMPS ÉCRITS, et non sur les variables locales : avec des verrous par part, les deux peuvent désormais diverger
+        $this->statutReglement = StatutReglement::pourLesParts(
+            $this->montantdu,
+            $this->getPayableproduit(),
+            $this->montantpayeproduit,
+            $this->getPayabletransport(),
+            $this->montantpayetransport,
+        );
 
         return true;
     }
@@ -747,22 +807,35 @@ class Operation extends EntityBase implements SiteOwnedInterface
     }
 
     /*
-        - Ce qu'on remettra au planteur au guichet : ce que vaut sa récolte, PLUS son transport, MOINS ce qu'on lui garde. C'est le chiffre qui borne les versements, et le seul des trois qui réponde à « combien je lui compte ».
+        - DEUX PAYABLES, parce qu'on règle désormais la récolte, le transport, ou les deux. Ce sont eux qui bornent les versements — un par part.
 
-        - 'montantdu' ne bouge pas, et c'est voulu : il reste ce que vaut la récolte, celui que montrent la production, le bilan et le ticket de pesée. Le payable est un second chiffre à côté, pas un remplacement.
+        - La retenue ne mord que sur la récolte, nulle part ailleurs : le transport, le planteur l'a avancé de sa poche. C'est la même règle que celle du plafond de 'EpargneService', vue de l'autre bout.
 
-        - Une pesée non valorisée ne paie rien, TRANSPORT COMPRIS : sans prix de produit on ne sait pas encore ce qu'on doit, et régler le seul transport laisserait une pesée à moitié payée que plus personne ne rouvre. 'getMotifNonPayable()' dit alors d'aller tarifer le produit.
+        - Un produit NON TARIFÉ ferme la part produit et elle seule. Son transport, lui, se paie : le planteur a brûlé son carburant que la récolte ait un prix ou non, et le faire patienter jusqu'à ce que le bureau tarife était précisément ce qu'on a voulu supprimer. Ce qui empêche alors la pesée de disparaître de la file du guichet, ce n'est plus ce zéro, c'est 'StatutReglement' qui refuse de la dire soldée.
 
-        - Le test porte sur '<= 0' et non sur 'null', exactement comme celui de 'getMotifNonPayable()'. Un produit créé à la volée par le peseur naît à 'prix = 0' et non à 'null' : la pesée vaut donc zéro franc sans être « non calculée ». Le seul 'null' laisserait ce cas-là payer son transport, qui est précisément le plus fréquent des deux.
+        - Le test porte sur '<= 0' et non sur 'null' : un produit créé à la volée par le peseur naît à 'prix = 0' et non à 'null'. La pesée vaut donc zéro franc sans être « non calculée », et les deux cas doivent se traiter pareil.
     */
     #[Groups(['read:Operation'])]
-    public function getMontantpayable(): int
+    public function getPayableproduit(): int
     {
         if($this->montantdu === null || $this->montantdu <= 0) {
             return 0;
         }
 
-        return max(0, $this->montantdu + $this->montanttransport - ($this->retenue ?? 0));
+        return max(0, $this->montantdu - ($this->retenue ?? 0));
+    }
+
+    #[Groups(['read:Operation'])]
+    public function getPayabletransport(): int
+    {
+        return max(0, $this->montanttransport);
+    }
+
+    /* La somme des deux, et rien d'autre : ce qu'on remettra au planteur au guichet, toutes parts confondues. */
+    #[Groups(['read:Operation'])]
+    public function getMontantpayable(): int
+    {
+        return $this->getPayableproduit() + $this->getPayabletransport();
     }
 
     /*
@@ -770,9 +843,22 @@ class Operation extends EntityBase implements SiteOwnedInterface
         - Calculé sur le PAYABLE et non sur le montant dû : la part retenue sur l'épargne ne lui sera pas remise au guichet, elle ne peut donc pas rester dans ce qui reste à payer.
     */
     #[Groups(['read:Operation'])]
+    public function getResteapayerproduit(): int
+    {
+        return max(0, $this->getPayableproduit() - $this->montantpayeproduit);
+    }
+
+    #[Groups(['read:Operation'])]
+    public function getResteapayertransport(): int
+    {
+        return max(0, $this->getPayabletransport() - $this->montantpayetransport);
+    }
+
+    /* La somme des deux restes, et non le payable total moins le payé total : un trop-perçu sur une part ne doit pas éponger ce qui reste dû sur l'autre. */
+    #[Groups(['read:Operation'])]
     public function getResteapayer(): int
     {
-        return max(0, $this->getMontantpayable() - $this->montantpaye);
+        return $this->getResteapayerproduit() + $this->getResteapayertransport();
     }
 
     /*
@@ -781,18 +867,31 @@ class Operation extends EntityBase implements SiteOwnedInterface
         - Sur une liste, la valeur vient du provider, qui l'a obtenue en UNE requête groupée pour toute la page. Le repli ne sert qu'à la fiche, dont l'échéancier a de toute façon chargé les versements.
     */
     #[Groups(['read:Operation'])]
+    public function getMontantenvolproduit(): int
+    {
+        return $this->montantenvolproduit ?? $this->sommerLesVersementsEnVol(true);
+    }
+
+    #[Groups(['read:Operation'])]
+    public function getMontantenvoltransport(): int
+    {
+        return $this->montantenvoltransport ?? $this->sommerLesVersementsEnVol(false);
+    }
+
+    #[Groups(['read:Operation'])]
     public function getMontantenvol(): int
     {
-        if($this->montantenvol !== null) {
-            return $this->montantenvol;
-        }
+        return $this->getMontantenvolproduit() + $this->getMontantenvoltransport();
+    }
 
+    /* La même définition du « en vol » que la requête groupée du dépôt : les deux doivent trancher pareil. */
+    private function sommerLesVersementsEnVol(bool $produit): int
+    {
         $total = 0;
 
-        // La même définition du « en vol » que la requête groupée du dépôt : les deux doivent trancher pareil
         foreach($this->paiements as $versement) {
             if(in_array($versement->getStatut(), StatutPaiement::enCours(), true)) {
-                $total += $versement->getMontant();
+                $total += $produit ? $versement->getMontantproduit() : $versement->getMontanttransport();
             }
         }
 
@@ -805,30 +904,40 @@ class Operation extends EntityBase implements SiteOwnedInterface
         - Distinct de 'getResteapayer()', qui reste la créance du planteur : une pesée dont tous les versements sont en vol ne doit rien montrer à engager, sans pour autant passer pour soldée — elle ne le sera que quand la passerelle aura confirmé.
     */
     #[Groups(['read:Operation'])]
+    public function getResteaengagerproduit(): int
+    {
+        return max(0, $this->getResteapayerproduit() - $this->getMontantenvolproduit());
+    }
+
+    #[Groups(['read:Operation'])]
+    public function getResteaengagertransport(): int
+    {
+        return max(0, $this->getResteapayertransport() - $this->getMontantenvoltransport());
+    }
+
+    #[Groups(['read:Operation'])]
     public function getResteaengager(): int
     {
-        return max(0, $this->getResteapayer() - $this->getMontantenvol());
+        return $this->getResteaengagerproduit() + $this->getResteaengagertransport();
     }
 
     /*
-        - Conditions pour qu'un versement soit possible. Le contrôle du solde du site n'est pas ici : il dépend de la caisse, pas de la pesée.
+        - LES DEUX REFUS D'ARGENT D'UNE PART, écrits une seule fois. 'PaiementService' les compose
+          lui aussi — depuis les chiffres de SA requête, qui sont à jour là où la collection de
+          versements de cette entité ne l'est pas encore — et l'écran doit annoncer mot pour mot ce
+          que le serveur répondra.
+        - « La part %s » et non « %s » : ça évite d'accorder au féminin pour la récolte et au
+          masculin pour le transport, donc d'avoir deux phrases là où une suffit.
     */
-    public function estPayable(): bool
-    {
-        return $this->getMotifNonPayable() === null;
-    }
+    public const PART_RECOLTE = 'récolte';
+    public const PART_TRANSPORT = 'transport';
+    public const MOTIF_PART_REGLEE = 'La part %s de cette pesée est déjà réglée.';
+    public const MOTIF_PART_EN_COURS = 'Un versement est déjà en cours sur la part %s de cette pesée.';
 
     /*
-        - La raison pour laquelle cette pesée ne peut pas être réglée, ou null si elle peut l'être. Un motif plutôt qu'un booléen, pour la même raison que sur 'Fournisseur' : l'opérateur a le planteur devant lui et doit savoir QUOI corriger, pas seulement que « ça ne marche pas ».
-
-        - UN MONTANT NUL N'EST PAS UNE PESÉE SOLDÉE, et les confondre était un piège : un produit créé à la volée par le peseur naît sans prix ('Produit::$prix' vaut 0), ses pesées valent donc zéro franc. Elles restent « non payées », s'affichent dans la file du guichet, et le versement était refusé d'un « Cette pesée est déjà soldée » — l'opérateur partait chercher un versement qui n'avait jamais eu lieu, alors qu'il suffisait d'aller tarifer le produit.
-
-        - L'ordre des cas va du plus structurel au plus réparable : ce qui ne se rattrape pas d'abord, ce qui se corrige au bureau ensuite.
-
-        - Le préfixe 'get' n'est pas un caprice : le sérialiseur ignore les groupes posés sur une méthode qui n'en porte pas.
+        - Ce qui ferme les DEUX parts à la fois : rien de tout cela ne parle d'argent, et aucun versement ne peut partir tant que l'un d'eux tient. C'est le seul endroit où ces quatre refus sont écrits.
     */
-    #[Groups(['read:Operation'])]
-    public function getMotifNonPayable(): ?string
+    private function motifCommun(): ?string
     {
         if($this->deletedAt !== null) {
             return 'Cette pesée est à la corbeille.';
@@ -843,8 +952,21 @@ class Operation extends EntityBase implements SiteOwnedInterface
         }
 
         // Ce qui interdit tout règlement, quel qu'en soit le mode — la suspension, et elle seule
-        if(($bloquant = $this->fournisseur->getMotifBloquant()) !== null) {
-            return $bloquant;
+        return $this->fournisseur->getMotifBloquant();
+    }
+
+    /*
+        - Pourquoi la RÉCOLTE de cette pesée ne peut pas être réglée, ou null si elle peut l'être.
+
+        - UN MONTANT NUL N'EST PAS UNE RÉCOLTE RÉGLÉE, et les confondre était un piège : un produit créé à la volée par le peseur naît sans prix ('Produit::$prix' vaut 0), ses pesées valent donc zéro franc. Le versement était refusé d'un « Cette pesée est déjà soldée » — l'opérateur partait chercher un versement qui n'avait jamais eu lieu, alors qu'il suffisait d'aller tarifer le produit.
+
+        - L'ordre va du plus structurel au plus réparable : ce qui ne se rattrape pas d'abord, ce qui se corrige au bureau ensuite. Le produit non tarifé vient donc AVANT la retenue, et la retenue avant « déjà réglée », sans quoi le reste valant zéro, la branche suivante avalerait le cas.
+    */
+    #[Groups(['read:Operation'])]
+    public function getMotifNonPayableProduit(): ?string
+    {
+        if(($commun = $this->motifCommun()) !== null) {
+            return $commun;
         }
 
         if($this->montantdu === null || $this->montantdu <= 0) {
@@ -853,31 +975,91 @@ class Operation extends EntityBase implements SiteOwnedInterface
                 : sprintf('Le produit « %s » n\'a pas de prix : cette pesée ne vaut rien tant qu\'il n\'est pas tarifé.', (string) $this->produit->getLibelle());
         }
 
-        /*
-            - APRÈS le produit non tarifé, parce qu'un message qui nomme quelque chose à corriger doit gagner sur un message qui ne fait que constater. AVANT « déjà soldée », sans quoi le reste à payer valant zéro, la branche suivante avalerait le cas et annoncerait un versement qui n'a jamais eu lieu.
-        */
-        if($this->getMontantpayable() <= 0) {
+        if($this->getPayableproduit() <= 0) {
             return sprintf(
-                'Les %s F CFA de cette pesée sont intégralement retenus sur l\'épargne de %s : il n\'y a rien à lui verser au guichet.',
+                'Les %s F CFA de récolte de cette pesée sont intégralement retenus sur l\'épargne de %s : il n\'y a rien à lui verser sur la récolte.',
                 number_format((int) $this->montantdu, 0, ',', ' '),
-                $this->fournisseur->getNomComplet()
+                $this->fournisseur?->getNomComplet() ?? 'ce planteur'
             );
         }
 
-        if($this->getResteapayer() <= 0) {
+        // Mot pour mot les refus de 'PaiementService' : l'écran annonce ce que le serveur répondra, il ne le paraphrase pas
+        if($this->getResteapayerproduit() <= 0) {
+            return sprintf(self::MOTIF_PART_REGLEE, self::PART_RECOLTE);
+        }
+
+        if($this->getResteaengagerproduit() <= 0) {
+            return sprintf(self::MOTIF_PART_EN_COURS, self::PART_RECOLTE);
+        }
+
+        return null;
+    }
+
+    /*
+        - Pourquoi le TRANSPORT de cette pesée ne peut pas être réglé, ou null s'il peut l'être. La plupart des planteurs n'en ont aucun : le premier refus est donc le cas courant, pas une anomalie.
+        - Aucun refus lié à la retenue ici, et c'est la règle de fond : l'épargne ne mord jamais sur le transport.
+    */
+    #[Groups(['read:Operation'])]
+    public function getMotifNonPayableTransport(): ?string
+    {
+        if(($commun = $this->motifCommun()) !== null) {
+            return $commun;
+        }
+
+        if($this->getPayabletransport() <= 0) {
+            return 'Aucun transport n\'est payé à ce planteur sur cette pesée.';
+        }
+
+        if($this->getResteapayertransport() <= 0) {
+            return sprintf(self::MOTIF_PART_REGLEE, self::PART_TRANSPORT);
+        }
+
+        if($this->getResteaengagertransport() <= 0) {
+            return sprintf(self::MOTIF_PART_EN_COURS, self::PART_TRANSPORT);
+        }
+
+        return null;
+    }
+
+    /*
+        - Conditions pour qu'un versement soit possible, toutes parts confondues. Le contrôle du solde du site n'est pas ici : il dépend de la caisse, pas de la pesée.
+    */
+    public function estPayable(): bool
+    {
+        return $this->getMotifNonPayable() === null;
+    }
+
+    /*
+        - Le motif GLOBAL : null dès qu'UNE part est ouverte. C'est lui que lit le bouton « Verser », et c'est tout ce qu'il a besoin de savoir — l'écran de versement, lui, affiche le motif de chaque part.
+
+        - Les deux parts fermées, il faut en choisir un, et un message qui nomme quelque chose à corriger gagne sur un message qui ne fait que constater : c'est toujours celui de la récolte, sauf quand la pesée est réellement soldée des deux côtés.
+
+        - « Déjà soldée » exige que la pesée soit TARIFÉE et qu'il y ait eu quelque chose à verser. Sans ces deux gardes, une récolte sans prix dont on vient de payer le transport s'annoncerait soldée, et l'opérateur repartirait chercher un versement qui n'a jamais eu lieu — exactement le piège que ce code existe pour fermer.
+
+        - Le motif MOBILE du planteur — numéro absent ou illisible — ne figure volontairement nulle part ici : il ferme un mode de règlement, pas le règlement. Un planteur sans téléphone se paie en espèces.
+
+        - Le préfixe 'get' n'est pas un caprice : le sérialiseur ignore les groupes posés sur une méthode qui n'en porte pas.
+    */
+    #[Groups(['read:Operation'])]
+    public function getMotifNonPayable(): ?string
+    {
+        $produit = $this->getMotifNonPayableProduit();
+        $transport = $this->getMotifNonPayableTransport();
+
+        if($produit === null || $transport === null) {
+            return null;
+        }
+
+        if(($commun = $this->motifCommun()) !== null) {
+            return $commun;
+        }
+
+        if($this->montantdu !== null && $this->montantdu > 0
+            && $this->getMontantpayable() > 0 && $this->getResteapayer() <= 0) {
             return 'Cette pesée est déjà soldée.';
         }
 
-        // Mot pour mot le refus de 'PaiementService' : l'écran doit annoncer ce que le serveur répondra, pas le paraphraser
-        if($this->getResteaengager() <= 0) {
-            return 'Un versement est déjà en cours sur cette pesée pour le montant restant.';
-        }
-
-        /*
-            - Le motif MOBILE du planteur — numéro absent ou illisible — ne figure volontairement pas ici : il ferme un mode de règlement, pas le règlement. Un planteur sans téléphone se paie en espèces, et le déclarer non payable le laissait attendre sa récolte jusqu'à ce que quelqu'un lui trouve un numéro.
-            - L'écran continue de le montrer sur la ligne du planteur, et l'écran de versement ferme le mode mobile : l'information n'est pas perdue, elle a seulement cessé d'être un refus.
-        */
-        return null;
+        return $produit;
     }
 
     /**

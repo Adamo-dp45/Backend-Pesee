@@ -2,9 +2,15 @@
 
 namespace App\Entity;
 
+use ApiPlatform\Doctrine\Orm\Filter\BooleanFilter;
+use ApiPlatform\Doctrine\Orm\Filter\FreeTextQueryFilter;
+use ApiPlatform\Doctrine\Orm\Filter\OrFilter;
+use ApiPlatform\Doctrine\Orm\Filter\PartialSearchFilter;
+use ApiPlatform\Doctrine\Orm\Filter\NumericFilter;
 use ApiPlatform\Doctrine\Orm\Filter\OrderFilter;
 use ApiPlatform\Doctrine\Orm\Filter\SearchFilter;
 use ApiPlatform\Metadata\ApiFilter;
+use ApiPlatform\Metadata\QueryParameter;
 use ApiPlatform\Metadata\ApiResource;
 use ApiPlatform\Metadata\Get;
 use ApiPlatform\Metadata\GetCollection;
@@ -30,11 +36,11 @@ use Symfony\Component\Validator\Constraints as Assert;
 /*
     - Produit pesé (hévéa, cacao, palme…). Rattaché au SITE et non à l'entreprise : le peseur crée ses produits localement, depuis le bouton « Créer » de l'écran de pesée. Le référentiel appartient donc au logiciel de pesée, et le web ne fait que l'enrichir — le prix, essentiellement.
 
-    - PROPRIÉTÉ DU PRIX : les deux côtés font autorité. Le poste envoie son prix à chaque synchronisation, et le web peut le modifier. Sans arbitrage, la tarification faite en ligne serait écrasée au premier envoi suivant, et la bidirectionnalité ne marcherait que dans un sens.
+    - PROPRIÉTÉ DU PRIX : LE WEB, ET LUI SEUL. Le poste pese ; il ne tarife pas. Un prix qui arriverait dans une charge utile de synchronisation est lu et jeté — la valorisation se fait ici, avec le prix d'ici.
 
-      L'arbitrage se fait par détection de changement : 'prixPoste' mémorise la dernière valeur reçue du poste, et on ne réapplique celle du poste que si elle a bougé depuis. Le dernier qui modifie l'emporte, et rien à changer côté logiciel de pesée.
+      Les deux côtés ont longtemps fait autorité, arbitrés par détection de changement sur un 'prixPoste' qui mémorisait le dernier envoi. Cet arbitrage a disparu avec sa raison d'être : le paiement se décide sur le web, donc le prix qui le fonde aussi. Deux sources pour un chiffre qui sort de l'argent, c'était une divergence qu'aucun écran n'affichait.
 
-      Exemple : le poste envoie 400 (appliqué, prixPoste = 400) · le web passe à 500 (prix = 500, prixPoste toujours 400) · le poste renvoie 400 → ignoré, le web est préservé · le poste passe à 470 → appliqué, la valeur a changé de son côté.
+      CE QUE ÇA CHANGE AU QUOTIDIEN : un produit créé à la volée par le peseur naît à zéro et ses pesées ne valent rien tant que personne ne l'a tarifé au bureau. C'était déjà vrai quand le poste se taisait ; c'est désormais la règle. D'où le filtre « non tarifés » sur la liste des produits, qui est là pour qu'on ne les découvre pas au guichet.
 */
 #[ORM\Entity(repositoryClass: ProduitRepository::class)]
 #[ORM\Index(name: 'idx_produit_site_cle', fields: ['site', 'cle'])]
@@ -106,7 +112,34 @@ use Symfony\Component\Validator\Constraints as Assert;
     ],
     openapi: new Operation(security: [['bearerAuth' => []]])
 )]
-#[ApiFilter(SearchFilter::class, properties: ['libelle' => 'partial', 'site' => 'exact', 'actif' => 'exact'])]
+#[ApiFilter(SearchFilter::class, properties: ['libelle' => 'partial', 'site' => 'exact'])]
+/*
+    - 'actif' est un BOOLÉEN, et 'SearchFilter' n'en sait rien : il comparait la chaîne reçue à ce
+      que porte la colonne, un tinyint. 'actif=1' répondait donc, 'actif=true' et 'actif=false'
+      — les deux valeurs que l'écran envoie — ne correspondaient à rien, et la liste se vidait
+      sur les DEUX choix. Aucune erreur nulle part : un filtre qui ne rend rien ressemble à un
+      référentiel vide.
+    - 'BooleanFilter' est fait pour ça, et accepte aussi bien 'true'/'false' que '1'/'0'.
+*/
+#[ApiFilter(BooleanFilter::class, properties: ['actif'])]
+/*
+    - Le prix en filtre sert à UNE question, devenue quotidienne depuis que le poste ne tarife
+      plus : quels produits attendent leur prix ? Ils naissent tous à zéro, leurs pesées ne valent
+      rien, et personne ne s'en aperçoit avant le guichet. 'prix=0' les rassemble.
+*/
+#[ApiFilter(NumericFilter::class, properties: ['prix'])]
+/*
+    - UN champ de saisie, PLUSIEURS colonnes en OU. Les écrans annoncent « Libellé ou code » dans leur
+      champ de recherche ; avec un filtre par colonne, une seule répondait et le code ne trouvait
+      jamais rien — sans message, comme s'il n'existait pas.
+    - 'FreeTextQueryFilter' rassemble les colonnes, 'OrFilter' les met en OU plutôt qu'en ET, et
+      'PartialSearchFilter' cherche le fragment sans tenir compte de la casse.
+*/
+#[QueryParameter(
+    key: 'recherche',
+    filter: new FreeTextQueryFilter(new OrFilter(new PartialSearchFilter())),
+    properties: ['libelle', 'codeproduit'],
+)]
 #[ApiFilter(OrderFilter::class, properties: ['codeproduit', 'libelle', 'prix', 'createdAt'])]
 class Produit extends EntityBase implements SiteOwnedInterface
 {
@@ -136,9 +169,6 @@ class Produit extends EntityBase implements SiteOwnedInterface
     #[Assert\PositiveOrZero(message: 'Le prix ne peut pas être négatif')]
     #[Groups(['read:Produit', 'write:Produit', 'read:Operation', 'read:Fournisseur:item', 'read:DemandePrelevement'])]
     private int $prix = 0;
-
-    #[ORM\Column(nullable: true)]
-    private ?int $prixPoste = null; // Dernier prix reçu du poste. Sert d'ARBITRE, n'est jamais affiché, et ne doit pas être confondu avec le prix en vigueur
 
     #[ORM\Column(options: ['default' => true])]
     #[Groups(['read:Produit', 'write:Produit'])]
@@ -213,7 +243,7 @@ class Produit extends EntityBase implements SiteOwnedInterface
     }
 
     /*
-        - Tarification depuis l'interface web. Ne touche PAS à 'prixPoste' : c'est précisément cet écart qui permettra d'ignorer le prochain envoi du poste s'il n'a pas changé.
+        - Tarification depuis l'interface web, seul endroit où un prix se fixe.
     */
     public function setPrix(int $prix): static
     {
@@ -222,31 +252,6 @@ class Produit extends EntityBase implements SiteOwnedInterface
         return $this;
     }
 
-    /*
-        - Prix reçu du logiciel de pesée, appliqué seulement s'il a changé depuis le dernier envoi. Sans cette comparaison, chaque synchronisation réécraserait la tarification faite en ligne avec une valeur pourtant inchangée côté poste.
-        - Renvoie vrai si le prix EN VIGUEUR a bougé, ce qui permet à la synchronisation de ne recalculer les montants des pesées que lorsque c'est nécessaire.
-    */
-    public function appliquerPrixDuPoste(?int $prix): bool
-    {
-        if($prix === null || $prix < 0 || $prix === $this->prixPoste) {
-            return false;
-        }
-
-        $this->prixPoste = $prix;
-
-        if($prix === $this->prix) {
-            return false;
-        }
-
-        $this->prix = $prix;
-
-        return true;
-    }
-
-    public function getPrixPoste(): ?int
-    {
-        return $this->prixPoste;
-    }
 
     public function isActif(): bool
     {

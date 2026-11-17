@@ -26,6 +26,14 @@ final class CaisseOutput
     #[Groups(['read:Statistique'])]
     public ?int $soldeEntrepriseNumerique = null;
 
+    /*
+        - La troisième caisse, et elle n'existe QU'À CE NIVEAU : un pont bascule ne tient pas de
+          carnet de chèques. Sans cette ligne, 'soldeEntreprise' — qui cumule les trois — cessait
+          d'être la somme des parts affichées, et l'écart se lisait sur le même écran.
+    */
+    #[Groups(['read:Statistique'])]
+    public ?int $soldeEntrepriseBancaire = null;
+
     #[Groups(['read:Statistique'])]
     public int $soldeSites = 0;
 

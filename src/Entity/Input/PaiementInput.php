@@ -19,10 +19,26 @@ final class PaiementInput
     #[Groups(['write:Paiement'])]
     public ?int $operationId = null;
 
-    #[Assert\NotNull(message: 'Le montant est obligatoire')]
-    #[Assert\Positive(message: 'Le montant doit être supérieur à zéro')]
+    /*
+        - DEUX MONTANTS, UN PAR PART : on règle la récolte, le transport, ou les deux. Zéro sur une
+          part veut dire « on n'y touche pas », et c'est le cas courant — la plupart des planteurs
+          n'ont pas de transport.
+
+        - Pas de 'Positive' sur chacun, mais un refus sur LEUR SOMME, porté par le service : exiger
+          les deux strictement positifs interdirait précisément ce que cette fonctionnalité apporte.
+
+        - Un seul montant suffisait tant qu'une pesée se réglait d'un bloc. Le garder et laisser le
+          service imputer aurait rendu « payer seulement le transport » inexprimable.
+    */
+    #[Assert\NotNull(message: 'Le montant versé sur la récolte est obligatoire — zéro si vous n\'en versez pas')]
+    #[Assert\PositiveOrZero(message: 'Le montant versé sur la récolte ne peut pas être négatif')]
     #[Groups(['write:Paiement'])]
-    public ?int $montant = null;
+    public ?int $montantProduit = null;
+
+    #[Assert\NotNull(message: 'Le montant versé sur le transport est obligatoire — zéro si vous n\'en versez pas')]
+    #[Assert\PositiveOrZero(message: 'Le montant versé sur le transport ne peut pas être négatif')]
+    #[Groups(['write:Paiement'])]
+    public ?int $montantTransport = null;
 
     /*
         - Espèces ou mobile money. Obligatoire et sans défaut : c'est lui qui désigne la caisse qui se vide, et un défaut implicite aurait vidé le flotte pour des billets remis de la main à la main.
@@ -46,4 +62,14 @@ final class PaiementInput
 
     #[Groups(['write:Paiement'])]
     public ?ReseauMobile $reseau = null;
+
+    /*
+        - Le numéro du chèque remis, qui ne vaut que pour ce mode. Facultatif ICI pour la même
+          raison que le numéro de téléphone : un formulaire qui garde ses champs cachés remplis ne
+          doit pas faire échouer un versement. C'est le service qui l'exige quand le mode est le
+          chèque, avec un message qui dit à quoi il sert.
+    */
+    #[Assert\Length(max: 50)]
+    #[Groups(['write:Paiement'])]
+    public ?string $numeroCheque = null;
 }

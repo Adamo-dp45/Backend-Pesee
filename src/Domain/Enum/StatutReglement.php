@@ -25,19 +25,37 @@ enum StatutReglement: string
 
     /*
         - La règle de transition vit ici plutôt que dans un service : elle est appelée depuis la synchronisation (recalcul du montant dû) et depuis la confirmation d'un paiement, et les deux doivent trancher exactement pareil.
-        - Elle se compare au montant PAYABLE et non au montant dû : une part de la pesée peut être retenue sur l'épargne du planteur, et elle ne lui sera pas versée au guichet. La pesée est soldée quand on a versé ce qu'on devait VERSER, pas ce que la pesée valait.
-        - La méthode s'appelait 'depuis(montantdu, montantpaye)'. Le changement de nom est délibéré : il fait casser les trois appelants à la compilation. Gardé, l'ancien nom les aurait laissés passer le montant dû en silence, et une pesée intégralement réglée sur son payable serait restée 'PARTIEL' — la file du guichet ne se serait plus jamais vidée.
+
+        - DEUX PARTS, ET NON PLUS UNE. Une pesée se règle désormais par la récolte, par le transport, ou par les deux, chacune en plusieurs fois. Un seul couple (payable, payé) ne peut plus décider : une pesée dont la récolte est soldée et le transport impayé affichait le même chiffre qu'une pesée à moitié réglée sur chaque part.
+
+        - La méthode s'appelait 'pour(montantdu, montantpayable, montantpaye)', et avant cela 'depuis()'. Le changement de nom est délibéré, pour la même raison que la fois précédente : il fait casser les appelants au lieu de les laisser passer un total là où deux parts sont attendues. Un total passe la compilation et rend 'SOLDE' sur une pesée dont le transport n'a jamais été versé.
+
+        - Elle se compare aux montants PAYABLES et non aux montants dus : une part de la récolte peut être retenue sur l'épargne du planteur, et elle ne lui sera pas versée au guichet. La pesée est soldée quand on a versé ce qu'on devait VERSER, pas ce qu'elle valait.
+
         - '>=' et non '===' : si un tarif baisse après un paiement, le montant déjà versé peut dépasser le payable. La pesée est alors soldée, pas bloquée dans un état incohérent.
-        - La garde 'montantdu > 0' sur 'RETENU' n'est pas décorative : sans elle, une pesée dont le produit n'est pas tarifé — montant dû nul, donc payable nul — basculerait en 'RETENU' et ferait croire à une épargne là où il n'y a qu'un prix manquant.
+
+        - 'RETENU' exige que la récolte soit entièrement retenue ET qu'il n'y ait rien à verser au titre du transport : sinon il reste de l'argent à sortir, et la pesée doit rester dans la file du guichet. La garde 'montantdu > 0' n'est pas décorative non plus — sans elle, une pesée dont le produit n'est pas tarifé basculerait en 'RETENU' et ferait croire à une épargne là où il n'y a qu'un prix manquant.
+
+        - UNE PESÉE NON TARIFÉE N'EST JAMAIS 'SOLDE', même transport entièrement versé. C'est ce qui reste de l'ancienne règle « un montant nul n'est pas une pesée soldée », et c'est ce qui empêche une récolte sans prix de disparaître de la file du guichet parce qu'on a payé son carburant.
     */
-    public static function pour(?int $montantdu, int $montantpayable, int $montantpaye): self
+    public static function pourLesParts(
+        ?int $montantdu,
+        int $payableProduit,
+        int $payeProduit,
+        int $payableTransport,
+        int $payeTransport,
+    ): self
     {
-        if($montantpaye <= 0) {
-            return $montantdu !== null && $montantdu > 0 && $montantpayable <= 0
+        $tarifee = $montantdu !== null && $montantdu > 0;
+
+        if($payeProduit + $payeTransport <= 0) {
+            return $tarifee && $payableProduit <= 0 && $payableTransport <= 0
                 ? self::RETENU
                 : self::NON_PAYE;
         }
 
-        return $montantpaye >= $montantpayable ? self::SOLDE : self::PARTIEL;
+        $couverte = $payeProduit >= $payableProduit && $payeTransport >= $payableTransport;
+
+        return $couverte && $tarifee ? self::SOLDE : self::PARTIEL;
     }
 }

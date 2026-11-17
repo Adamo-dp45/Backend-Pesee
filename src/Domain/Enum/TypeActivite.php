@@ -31,6 +31,7 @@ enum TypeActivite: string
     */
     case FOURNISSEUR_PRELEVEMENT = 'FOURNISSEUR_PRELEVEMENT'; // Ouverture ou changement du taux
     case FOURNISSEUR_PRELEVEMENT_ARRET = 'FOURNISSEUR_PRELEVEMENT_ARRET';
+    case RETRAIT_ACCORDE = 'RETRAIT_ACCORDE'; // Accorder un retrait n'écrit aucun mouvement : seul ce journal en garde trace
 
     // Ce qui coupe ou rouvre un accès
     case SITE_BLOQUE = 'SITE_BLOQUE';
@@ -59,6 +60,7 @@ enum TypeActivite: string
             self::FOURNISSEUR_TARIFE => 'Prix du transport d\'un planteur',
             self::FOURNISSEUR_PRELEVEMENT => 'Ouverture d\'une mise en compte',
             self::FOURNISSEUR_PRELEVEMENT_ARRET => 'Arrêt d\'une mise en compte',
+            self::RETRAIT_ACCORDE => 'Accord d\'un retrait d\'épargne',
             self::SITE_BLOQUE => 'Blocage d\'un pont bascule',
             self::SITE_DEBLOQUE => 'Déblocage d\'un pont bascule',
             self::SITE_OPERATEUR => 'Affectation de l\'opérateur',

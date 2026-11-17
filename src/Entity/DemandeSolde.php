@@ -12,6 +12,7 @@ use ApiPlatform\Metadata\GetCollection;
 use ApiPlatform\Metadata\Patch;
 use ApiPlatform\Metadata\Post;
 use ApiPlatform\OpenApi\Model\Operation;
+use App\Domain\Enum\CompteMouvement;
 use App\Domain\Enum\StatutDemande;
 use App\Domain\Enum\TypeCaisse;
 use App\Entity\Input\TraiterDemandeInput;
@@ -148,8 +149,20 @@ class DemandeSolde extends EntityBase implements SiteOwnedInterface
     */
     #[ORM\Column(enumType: TypeCaisse::class, options: ['default' => 'NUMERIQUE'])]
     #[Assert\NotNull(message: 'La caisse à réapprovisionner est obligatoire')]
+    #[Assert\Choice(callback: 'caissesDUnPoste', message: 'Un pont bascule ne tient pas cette caisse : elle est à l\'entreprise seule.')]
     #[Groups(['read:DemandeSolde', 'write:DemandeSolde', 'write:DemandeSolde:correction'])]
     private TypeCaisse $caisse = TypeCaisse::NUMERIQUE;
+
+    /*
+        - Les caisses qu'une demande peut nommer. La banque est à l'entreprise seule : sans ce refus, la
+          demande s'enregistre, attend un administrateur, et meurt à l'approbation — 'doterSite()' la
+          refuse, mais après que deux personnes s'en sont occupées.
+    */
+    /** @return list<TypeCaisse> */
+    public static function caissesDUnPoste(): array
+    {
+        return TypeCaisse::celles(CompteMouvement::SITE);
+    }
 
     #[ORM\Column(nullable: true)]
     #[Groups(['read:DemandeSolde'])]

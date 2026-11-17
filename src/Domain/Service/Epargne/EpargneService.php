@@ -13,6 +13,7 @@ use App\Repository\CompteEpargneRepository;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
 /*
     - Le SEUL endroit qui touche à l'épargne d'un planteur, sur le modèle exact de 'CaisseService' :
@@ -82,6 +83,88 @@ class EpargneService
         return $ecrites;
     }
 
+    /* ---- Retrait --------------------------------------------------------------------------- */
+
+    /*
+        - Le planteur reprend tout ou partie de ce qu'on lui gardait. Ce service ne remet PAS
+          l'argent : il ne fait que débiter le livre d'épargne. C'est 'PaiementService' qui sort les
+          billets, dans le même geste, et les deux écritures tombent ou passent ensemble.
+
+        - LE DÉBIT A LIEU À L'INITIATION, avant même que la passerelle ait répondu, et c'est ce qui
+          rend le double retrait impossible : tant que le versement est en vol, la somme a déjà
+          quitté le solde et ne peut pas être demandée une seconde fois. Attendre la confirmation
+          aurait laissé une fenêtre pendant laquelle deux retraits du même solde partent ensemble.
+
+        - Le verrou est le même que pour le prélèvement. Le solde lu sous verrou EST la borne : il
+          n'y a rien à soustraire, puisque les retraits en vol en sont déjà sortis.
+
+        @return MouvementEpargne l'écriture passée
+    */
+    public function retirer(Fournisseur $planteur, int $montant, ?string $motif = null): MouvementEpargne
+    {
+        if($montant <= 0) {
+            throw new UnprocessableEntityHttpException('Un retrait doit être supérieur à zéro.');
+        }
+
+        return $this->em->wrapInTransaction(function() use ($planteur, $montant, $motif): MouvementEpargne {
+            $compte = $this->compteDe($planteur);
+            $this->verrouiller($compte);
+
+            $avant = $compte->getSolde();
+
+            if($montant > $avant) {
+                throw new UnprocessableEntityHttpException(sprintf(
+                    'Retrait supérieur à l\'épargne de %s : %s F CFA au maximum.',
+                    $planteur->getNomComplet(),
+                    number_format($avant, 0, ',', ' ')
+                ));
+            }
+
+            return $this->ecrire($compte, TypeMouvementEpargne::RETRAIT, $montant, $motif ?? 'Retrait d\'épargne');
+        });
+    }
+
+    /*
+        - Le versement a échoué : ce qui avait été retiré revient au planteur. Contrepartie exacte,
+          jamais une rature — ce livre ne se réécrit pas plus que celui des caisses.
+        - Appelé par 'PaiementService' juste après le remboursement de la caisse, pour que les deux
+          livres reviennent ensemble à leur état d'avant.
+    */
+    public function annulerRetrait(Fournisseur $planteur, int $montant, string $motif): MouvementEpargne
+    {
+        return $this->em->wrapInTransaction(function() use ($planteur, $montant, $motif): MouvementEpargne {
+            $compte = $this->compteDe($planteur);
+            $this->verrouiller($compte);
+
+            return $this->ecrire($compte, TypeMouvementEpargne::ANNULATION_RETRAIT, $montant, $motif);
+        });
+    }
+
+    /*
+        - L'écriture elle-même, une fois le compte verrouillé : le solde avant, le solde après, et la
+          ligne qui les chaîne. Elle suppose le verrou DÉJÀ pris — c'est l'appelant qui transacte.
+    */
+    private function ecrire(CompteEpargne $compte, TypeMouvementEpargne $type, int $montant, string $motif): MouvementEpargne
+    {
+        $avant = $compte->getSolde();
+        $apres = $avant + ($type->sens()->signe() * $montant);
+
+        $compte->setSolde($apres);
+
+        return $this->tracer(
+            (new MouvementEpargne())
+                ->setCompte($compte)
+                ->setType($type)
+                ->setSens($type->sens())
+                ->setMontant($montant)
+                ->setSoldeAvant($avant)
+                ->setSoldeApres($apres)
+                ->setMotif($motif)
+                ->setEntreprise($compte->getEntreprise())
+                ->setSite($compte->getSite())
+        );
+    }
+
     /*
         - Tranche le sort d'une pesée, une fois pour toutes. Renvoie l'écriture passée, ou null quand
           il n'y avait rien à mettre de côté — ce qui reste un arbitrage : la pesée en ressort close.
@@ -126,8 +209,17 @@ class EpargneService
               donc ce plafond ne devrait jamais mordre. Il reste parce que le prix du produit peut
               BAISSER après coup : un prélèvement ouvert à 50 F sur un produit tombé à 40 prendrait
               alors tout. Le planteur repart sans liquide — mais sans rien devoir.
+
+            - ET SOUS CE QUI N'A PAS DÉJÀ ÉTÉ VERSÉ SUR LA RÉCOLTE. L'arbitrage peut désormais arriver
+              APRÈS un versement : une pesée dont le produit n'était pas tarifé peut avoir vu son
+              transport payé, puis être tarifée au bureau, et c'est seulement là qu'elle devient
+              arbitrable. Sans ce second plafond, on mettrait de côté une part de récolte déjà
+              remise au planteur, et le guichet lui redemanderait de l'argent.
         */
-        $retenue = min($taux * (int) $pesee->getPoidsnet(), (int) $pesee->getMontantdu());
+        $retenue = min(
+            $taux * (int) $pesee->getPoidsnet(),
+            max(0, (int) $pesee->getMontantdu() - $pesee->getMontantpayeproduit())
+        );
 
         if($retenue <= 0) {
             $pesee->figerLaRetenue($taux, 0);
@@ -174,9 +266,13 @@ class EpargneService
     */
     private function rafraichirLeReglement(Operation $pesee): void
     {
-        $pesee->setStatutReglement(
-            StatutReglement::pour($pesee->getMontantdu(), $pesee->getMontantpayable(), $pesee->getMontantpaye())
-        );
+        $pesee->setStatutReglement(StatutReglement::pourLesParts(
+            $pesee->getMontantdu(),
+            $pesee->getPayableproduit(),
+            $pesee->getMontantpayeproduit(),
+            $pesee->getPayabletransport(),
+            $pesee->getMontantpayetransport(),
+        ));
     }
 
     /*

@@ -60,6 +60,20 @@ class CaisseService
     {
         $this->exigerMontantPositif($montant);
 
+        /*
+            - ON NE DOTE PAS UN POSTE EN BANQUE. Le refus est ici, en message métier, et non laissé
+              au 'match' de l'entité : sans lui, une demande portant la caisse bancaire traversait
+              l'écran de l'administrateur, était approuvée, verrouillait l'entreprise, écrivait son
+              débit — et mourait en erreur de moteur sur l'écriture du poste, transaction avortée à
+              mi-chemin sur un geste qui déplace de l'argent.
+        */
+        if(!$caisse->vitAuNiveauDuSite()) {
+            throw new UnprocessableEntityHttpException(sprintf(
+                'Un pont bascule ne tient pas de %s : elle appartient à l\'entreprise seule, et sert aux règlements par chèque.',
+                strtolower($caisse->libelle())
+            ));
+        }
+
         $entreprise = $site->getEntreprise();
 
         if($entreprise === null) {
@@ -106,12 +120,38 @@ class CaisseService
             throw new UnprocessableEntityHttpException('Ce paiement n\'est rattaché à aucun pont bascule.');
         }
 
-        return $this->em->wrapInTransaction(function() use ($site, $caisse, $paiement, $montant): MouvementCaisse {
+        [$type] = TypeMouvement::pourUnVersement($caisse);
+
+        /*
+            - UN CHÈQUE NE SORT PAS DU POSTE. Il est tiré sur le compte en banque de l'entreprise :
+              c'est elle qu'on verrouille, c'est sa provision qu'on exige, et c'est sur son compte
+              que la ligne s'écrit. Le tiroir de l'opérateur et son flotte ne bougent pas d'un franc
+              — sans quoi son contrôle de caisse aurait cessé de tomber juste au premier chèque.
+            - Le poste reste porté par le paiement, et donc par la ligne : on veut savoir d'où est
+              parti le règlement, même quand l'argent ne vient pas de là.
+        */
+        if($type->compte() === CompteMouvement::ENTREPRISE) {
+            $entreprise = $site->getEntreprise();
+
+            if($entreprise === null) {
+                throw new UnprocessableEntityHttpException('Ce pont bascule n\'est rattaché à aucune entreprise : aucun chèque ne peut en être tiré.');
+            }
+
+            return $this->em->wrapInTransaction(function() use ($entreprise, $caisse, $type, $paiement, $montant): MouvementCaisse {
+                $this->verrouiller($entreprise);
+
+                $this->exigerProvision($entreprise, $caisse, $montant);
+
+                return $this->ecrireEntreprise($entreprise, $caisse, $type, $montant, 'Paiement ' . $paiement->getReference(), null, $paiement);
+            });
+        }
+
+        return $this->em->wrapInTransaction(function() use ($site, $caisse, $type, $paiement, $montant): MouvementCaisse {
             $this->verrouiller($site);
 
             $this->exigerProvision($site, $caisse, $montant);
 
-            return $this->ecrireSite($site, $caisse, TypeMouvement::PAIEMENT, $montant, 'Paiement ' . $paiement->getReference(), $paiement);
+            return $this->ecrireSite($site, $caisse, $type, $montant, 'Paiement ' . $paiement->getReference(), $paiement);
         });
     }
 
@@ -126,16 +166,39 @@ class CaisseService
             throw new UnprocessableEntityHttpException('Ce paiement n\'est rattaché à aucun pont bascule.');
         }
 
-        return $this->em->wrapInTransaction(function() use ($site, $paiement, $motif): MouvementCaisse {
+        $caisse = $paiement->getCaisse();
+        [, $type] = TypeMouvement::pourUnVersement($caisse);
+
+        // Contrepartie EXACTE du débit : même caisse, même montant, et surtout même NIVEAU — un chèque revient en banque, pas dans le tiroir du poste
+        if($type->compte() === CompteMouvement::ENTREPRISE) {
+            $entreprise = $site->getEntreprise();
+
+            if($entreprise === null) {
+                throw new UnprocessableEntityHttpException('Ce pont bascule n\'est rattaché à aucune entreprise.');
+            }
+
+            return $this->em->wrapInTransaction(function() use ($entreprise, $caisse, $type, $paiement, $motif): MouvementCaisse {
+                $this->verrouiller($entreprise);
+
+                return $this->ecrireEntreprise($entreprise, $caisse, $type, $paiement->getMontant(), $motif, null, $paiement);
+            });
+        }
+
+        return $this->em->wrapInTransaction(function() use ($site, $caisse, $type, $paiement, $motif): MouvementCaisse {
             $this->verrouiller($site);
 
-            return $this->ecrireSite($site, $paiement->getCaisse(), TypeMouvement::REMBOURSEMENT, $paiement->getMontant(), $motif, $paiement);
+            return $this->ecrireSite($site, $caisse, $type, $paiement->getMontant(), $motif, $paiement);
         });
     }
 
     /* ---- Écriture ------------------------------------------------------------------------- */
 
-    private function ecrireEntreprise(Entreprise $entreprise, TypeCaisse $caisse, TypeMouvement $type, int $montant, ?string $motif, ?DemandeSolde $demande = null): MouvementCaisse
+    /*
+        - Le paiement est facultatif et ne sert qu'aux règlements par chèque : eux seuls s'imputent
+          à l'entreprise. Le SITE y est repris depuis le paiement — l'argent vient de la banque,
+          mais le règlement a bien eu lieu à un pont bascule, et le grand livre doit pouvoir le dire.
+    */
+    private function ecrireEntreprise(Entreprise $entreprise, TypeCaisse $caisse, TypeMouvement $type, int $montant, ?string $motif, ?DemandeSolde $demande = null, ?Paiement $paiement = null): MouvementCaisse
     {
         $avant = $entreprise->getSoldeDe($caisse);
         $apres = $avant + ($type->sens()->signe() * $montant);
@@ -147,12 +210,14 @@ class CaisseService
                 ->setCompte(CompteMouvement::ENTREPRISE)
                 ->setCaisse($caisse)
                 ->setEntreprise($entreprise)
+                ->setSite($paiement?->getSite())
                 ->setSens($type->sens())
                 ->setType($type)
                 ->setMontant($montant)
                 ->setSoldeAvant($avant)
                 ->setSoldeApres($apres)
                 ->setMotif($motif)
+                ->setPaiement($paiement)
                 ->setDemandeSolde($demande)
         );
     }

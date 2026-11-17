@@ -235,7 +235,7 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface, Entrepr
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde'])]
+    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde', 'read:DemandeRetrait'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 180)]
@@ -485,7 +485,7 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface, Entrepr
         return $this;
     }
 
-    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne'])]
+    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:DemandeRetrait'])]
     public function getNomComplet(): string
     {
         return trim(($this->prenom ?? '') . ' ' . ($this->nom ?? ''));

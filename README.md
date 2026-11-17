@@ -59,13 +59,31 @@ poste ──POST /api/synchronisation──▶ SynchronisationService::traiter()
                                       │
                                       ├─ 1. interprétation du lot
                                       ├─ 2. préchargement groupé (produits, planteurs, comptes)
-                                      ├─ 3. application ligne à ligne  → calculerMontant()
-                                      │     puis retarification si un prix du poste a bougé
+                                      ├─ 3. application ligne à ligne  → calculerMontant(), au prix du web
                                       └─ 4. UNE transaction : flush → mises en compte → flush
 ```
 
 **Tout ou rien.** Si quoi que ce soit échoue, rien n'est acquitté, le poste renverra, et
 l'idempotence absorbe. On préfère un renvoi inutile à une pesée acquittée mais absente de la base.
+
+### Ce que le poste ne décide pas
+
+**Le poste pèse ; il ne tarife pas.** Le prix d'un produit et le prix du transport d'un planteur
+se fixent sur le web, qui est aussi l'endroit où l'on paie — une seule source pour le chiffre qui
+fonde un versement. Les logiciels de pesée déployés envoient toujours `prix` et `prixtransport`
+dans leur charge utile : ces champs sont **lus et jetés**. Les refuser ferait échouer des lots
+entiers pour une information dont on n'a plus l'usage.
+
+> Les deux côtés ont longtemps fait autorité, départagés par détection de changement sur un
+> `prixPoste` qui mémorisait le dernier envoi. L'arbitrage est parti avec sa raison d'être. Ce
+> qu'il coûtait : deux sources pour un chiffre qui sort de l'argent, et une divergence qu'aucun
+> écran n'affichait.
+
+**Ce que ça change au quotidien** : un produit créé à la volée par le peseur naît à zéro, et ses
+pesées ne valent rien tant que personne ne l'a tarifé au bureau. C'était déjà vrai quand le poste
+se taisait ; c'est désormais la règle. La liste des produits sait filtrer **ceux qui attendent
+leur prix** (`?prix=0`), et la colonne des prix affiche « Aucun prix » en rouge — sans quoi on les
+découvrirait au guichet.
 
 ### Ce qui se fige, et pourquoi
 
@@ -86,19 +104,45 @@ pesée dont le premier envoi n'a rien apporté doit pouvoir se compléter au pas
 
 ## 5. L'argent
 
-### Deux caisses, deux niveaux
+### Trois caisses, et toutes ne vivent pas au même niveau
 
-| | Caisse **physique** | Caisse **numérique** |
-|---|---|---|
-| **Entreprise** | les espèces en coffre | le flotte mobile money |
-| **Pont bascule** | le tiroir de l'opérateur | le flotte du poste |
+| | Caisse **physique** | Caisse **numérique** | Caisse **bancaire** |
+|---|---|---|---|
+| **Entreprise** | les espèces en coffre | le flotte mobile money | le compte sur lequel les chèques sont tirés |
+| **Pont bascule** | le tiroir de l'opérateur | le flotte du poste | — |
 
-**Rien ne traverse.** Il n'existe aucun verbe pour passer des espèces au flotte : cela se fait à la
-banque ou chez l'agrégateur, pas ici. Une dotation prend dans la caisse physique de l'entreprise
-pour remplir la caisse physique du poste, et pareillement pour le numérique.
+La bancaire est à l'**entreprise seule**. Un carnet de chèques ne se dote pas à une barrière de
+pesage : il n'y a rien à y remettre, et « doter un poste en banque » ne veut rien dire. D'où deux
+accesseurs plutôt qu'un : `TypeCaisse::toutes()` énumère les trois, **`TypeCaisse::celles($compte)`
+celles que ce niveau tient réellement**. Toute boucle qui construit des colonnes, un total ou une
+liste déroulante passe par la seconde — avec la première, un poste afficherait une caisse bancaire
+éternellement à zéro, que personne ne pourrait alimenter, et un opérateur pourrait la réclamer.
+`Site::getSoldeDe()` et `DemandeSolde::caissesDUnPoste()` refusent la bancaire en la nommant.
+
+**Rien ne traverse.** Il n'existe aucun verbe pour passer des espèces au flotte, ni du flotte à la
+banque : cela se fait à la banque ou chez l'agrégateur, pas ici. Une dotation prend dans la caisse
+physique de l'entreprise pour remplir la caisse physique du poste, et pareillement pour le
+numérique. La bancaire ne se dote pas : elle se recharge depuis l'écran Caisse.
 
 Le **mode de règlement** d'un paiement décide seul de la caisse qui se vide
-(`ModeReglement::caisse()`). Ajouter un chèque un jour, c'est un cas de plus dans cet enum.
+(`ModeReglement::caisse()`) : espèces → physique, mobile money → numérique, **chèque → bancaire**.
+Un mode ajouté plus tard (virement) se déclare dans cet enum et le reste suit.
+
+### Le chèque, et le seul paiement imputé à l'entreprise
+
+Un chèque ne vide pas le tiroir du poste : il vide le compte en banque de l'**entreprise**. C'est
+le premier paiement dont le compte n'est pas celui du site, et `TypeMouvement` tenant à ce que le
+type décide seul du compte et du sens, il gagne deux cas plutôt qu'un paramètre :
+`PAIEMENT_BANCAIRE` (débit sur l'entreprise) et `REMBOURSEMENT_BANCAIRE` (crédit). `CaisseService`
+branche sur `$type->compte()` : verrou et provision sur l'entreprise, ou sur le site comme avant.
+
+`Paiement::numeroCheque` est **obligatoire pour ce mode seulement** : c'est la seule référence qui
+permette le rapprochement avec le relevé bancaire, et sans elle un chèque émis est indistinguable
+d'un autre.
+
+> **Ce que ce mode ne fait pas** : émettre le chèque solde la pesée immédiatement. L'application ne
+> sait pas s'il a été encaissé — même compromis que les espèces, à ceci près que le délai est réel.
+> À revoir si le chèque sans provision devient un cas.
 
 ### Le grand livre
 
@@ -132,29 +176,55 @@ Une pesée porte **trois** montants, et les confondre est la faute la plus coût
 | `montanttransport` | le **transport**, `poidsnet x prix du planteur`, payé EN PLUS pour ceux qui livrent eux-mêmes | les écrans d'argent |
 | `montantpayable` | `montantdu + montanttransport - retenue` | le guichet, et lui seul |
 
+Et depuis qu'on règle les deux parts séparément, le payable se lit lui-même en **deux** :
+
+```
+payableproduit   = max(0, montantdu − retenue)      la récolte, moins ce qu'on lui garde
+payabletransport = montanttransport                 le carburant qu'il a avancé
+montantpayable   = la somme des deux, et rien d'autre
+```
+
 - `montantdu` **ne bouge jamais** : ni le transport ni la mise en compte ne le touchent.
 - Le transport ne s'additionne **nulle part ailleurs** que dans le payable. L'ajouter au montant dû
   gonflerait la valeur de la récolte dans la production et le bilan, et surtout **élargirait
   l'assiette de la mise en compte** : on prélèverait l'épargne du planteur sur son propre transport.
 - Les deux prix sont **figés** sur la pesée (`prixunitaire`, `prixtransport`) à côté des montants :
   un chiffre qu'on ne sait pas réexpliquer est inexplicable devant un planteur qui conteste.
-- Une pesée dont le produit n'est pas tarifé (`montantdu <= 0`) ne paie **rien, transport compris** :
-  régler le seul transport laisserait une pesée à moitié payée que plus personne ne rouvre.
+- Une pesée dont le produit n'est pas tarifé (`montantdu <= 0`) **paie quand même son transport**.
+  C'était l'inverse tant qu'une pesée se réglait d'un bloc — régler le seul transport aurait laissé
+  une pesée à moitié payée que plus personne ne rouvre. Ce qui l'empêche aujourd'hui de disparaître
+  de la file du guichet n'est plus ce zéro, mais `StatutReglement`, qui **refuse de la dire soldée**
+  tant qu'elle n'est pas tarifée, et le motif de sa part produit, qui nomme ce qu'il faut corriger.
 
-Le **prix du transport** vit sur la fiche du planteur, avec le même arbitrage poste/web que le prix
-d'un produit : le poste l'envoie s'il le connaît, et **un envoi vide n'efface pas** ce qui a été
-saisi au bureau. Sans ce refus du `null`, corriger une fiche sur le web serait sans effet.
+Le **prix du transport** vit sur la fiche du planteur, et se saisit sur le web comme le prix d'un
+produit — §4. `null` veut dire « on ne lui paie pas de transport », ce qui est le cas de la
+plupart des planteurs ; `0` veut dire « on ne lui en paie plus ». Les deux se distinguent à
+l'écran, et il faut qu'ils se distinguent dans le code.
 
 ### Un versement
 
-`PaiementService::initier()` refuse dans cet ordre : planteur suspendu → numéro manquant (mobile
-seulement) → montant dû nul → **payable nul** → reste déjà engagé → montant supérieur au reste.
+Un versement porte **deux montants**, un par part : la récolte, le transport, ou les deux. Zéro sur
+une part veut dire « on n'y touche pas », et c'est le cas courant. `PaiementService::initier()`
+refuse d'abord ce qui ferme les deux parts — planteur suspendu, numéro manquant (mobile seulement),
+pesée non terminée, poste bloqué — puis les deux montants à zéro, puis **chaque part contre sa
+propre borne**.
 
-> **Une seule ligne de toute l'application décide combien d'argent peut sortir :**
-> `$reste = max(0, $payable - sommeEngagee($pesee))`.
+> **Deux lignes de toute l'application décident combien d'argent peut sortir**, une par part :
+> `max(0, payableproduit − engagé sur la récolte)` et `max(0, payabletransport − engagé sur le
+> transport)`. Il n'y en avait qu'une tant qu'une pesée se réglait d'un bloc.
+>
 > On borne sur ce qui est **engagé**, pas sur ce qui est confirmé — un versement en vol a déjà
-> quitté la caisse. Et sur le **payable**, pas sur le montant dû — la part mise en compte ne passe
+> quitté la caisse. Et sur les **payables**, pas sur le montant dû — la part mise en compte ne passe
 > pas par le guichet.
+>
+> **Un refus sur une part fait échouer tout l'appel.** Déverser en silence sur l'autre paierait
+> autre chose que ce que l'opérateur a saisi, avec le planteur devant lui.
+
+Un `Paiement` porte donc `montant` — le TOTAL, seul chiffre que voient la caisse, la passerelle et
+le grand livre — et sa ventilation en `montantproduit` + `montanttransport`. **L'invariant
+`montant = montantproduit + montanttransport` vaut pour toute ligne**, retrait d'épargne compris
+(qui porte tout sur la part produit), et une contrainte `CHECK` le fige. Payer les deux parts d'un
+geste reste **un seul versement** : une référence, une sortie de caisse, un seul frais mobile.
 
 Les espèces sont confirmées sur-le-champ (`confirmeSansPasserelle()`) : les billets ont changé de
 main pendant la saisie, il n'y a personne à interroger. Le mobile money attend la passerelle, et la
@@ -197,8 +267,7 @@ Pesée de 500 kg à 200 F/kg = 100 000 F, taux 20 F/kg
 
 à la pesée    │ compte : 0 → 10 000      │ caisse : NE BOUGE PAS
 au guichet    │ compte : 10 000          │ caisse : − 90 000
-au retrait*   │ compte : 10 000 → 0      │ caisse : − 10 000
-                                           (* pas encore implémenté)
+au retrait    │ compte : 10 000 → 0      │ caisse : − 10 000
 ```
 
 - `montantdu` **ne bouge jamais** : c'est ce que vaut la récolte, et c'est ce qu'imprime le ticket.
@@ -261,11 +330,14 @@ dessein : `null` = « jamais arbitrée », `0` = « arbitrée à taux nul ».
 doit pas mettre le payable à zéro sur une pesée dont le planteur a déjà la promesse — et il n'existe
 aucun retrait pour défaire.
 
-**Les deux chemins de retarification.** Un prix venu du **poste** déclenche `findRecalculables()`
-dans la synchronisation ; un prix changé sur le **web** déclenche `findARevaloriser()` dans
-`TarificationProcessor`, qui recalcule les pesées de ce produit ou de ce planteur puis ouvre leur
-mise en compte dans la foulée. Le second a longtemps manqué : l'écran qu'on ouvre précisément pour
+**Un seul chemin de retarification**, celui du web : `TarificationProcessor` appelle
+`findARevaloriser()`, qui recalcule les pesées de ce produit ou de ce planteur puis ouvre leur
+mise en compte dans la foulée. Il a longtemps manqué : l'écran qu'on ouvre précisément pour
 tarifer un produit créé à la volée ne faisait que journaliser, et ses pesées restaient à zéro.
+
+> Il y en avait deux. `findRecalculables()` balayait tout un poste quand un prix bougeait côté
+> logiciel de pesée ; elle est partie avec l'arbitrage des prix (§4). La portée de celle qui reste
+> est étroite exprès : tarifer un produit ne touche que **ses** pesées.
 
 ### Qui ouvre
 
@@ -281,6 +353,46 @@ cacao et l'hévéa ne se gênent pas.
 Une ouverture n'écrit rien au grand livre — d'où la ligne au **journal des activités**, sans quoi
 décider qu'un homme touchera moins au guichet ne laisserait aucune trace.
 
+### Le retrait : un versement sans pesée
+
+Rendre son épargne à un planteur passe par le **versement existant**, `Paiement.operation` étant
+devenu nullable. Le retrait hérite ainsi sans une ligne de plus : la référence, les trois modes de
+règlement, la passerelle mobile, l'état « en vol », le remboursement automatique sur échec, la
+réconciliation et l'écran de guichet. `PaiementService::initier()` et `initierRetrait()` ne
+diffèrent que par **la borne**, puis partagent `executer()` :
+
+```
+initier(pesée, …)        borne = montantpayable − déjà engagé sur la pesée   ┐
+                                                                            ├→ executer(…)
+initierRetrait(…)        borne = le solde d'épargne                        ┘
+```
+
+**Les deux livres marchent au pas cadencé**, et c'est ce qui rend le double retrait impossible :
+
+| | caisse | épargne |
+|---|---|---|
+| à l'initiation | débit (réservation) | **débit** (`RETRAIT`) |
+| sur échec | `REMBOURSEMENT` | **`ANNULATION_RETRAIT`** |
+| sur succès | rien de plus | rien de plus |
+
+Les deux écritures tiennent dans **la même transaction** : l'épargne est débitée juste avant la
+caisse, sous le même `wrapInTransaction`. Débiter l'épargne seulement à la confirmation ouvrirait
+une fenêtre pendant laquelle le solde est encore entier alors que l'argent est parti : deux
+retraits du même solde partiraient en vol ensemble. C'est aussi pourquoi la borne n'a **rien à
+soustraire** — un retrait en vol a déjà quitté le solde, il n'y a pas d'équivalent de
+`sommeEngagee()` à écrire.
+
+### Qui décide d'un retrait
+
+L'opérateur **demande** (`DemandeRetrait`), l'administrateur **accorde**, l'opérateur **verse**.
+Trois temps et non deux : contrairement à la demande de solde, qui dote la caisse sur-le-champ,
+l'administrateur n'a ni le planteur devant lui, ni son numéro, ni le choix du mode. Il autorise un
+montant — qui peut être **inférieur** au demandé, jamais supérieur — et **l'accord n'écrit aucun
+mouvement**. L'argent ne bouge qu'au guichet, et les deux soldes y baissent ensemble.
+
+Une seule demande en attente par planteur, et aucune nouvelle tant qu'un accord n'a pas été servi :
+sans cette seconde règle, deux accords dormants videraient le compte deux fois.
+
 ---
 
 ## 8. Les invariants
@@ -293,7 +405,8 @@ Si l'un d'eux saute, c'est de l'argent qui se perd ou qui se crée.
    **et par caisse**.
 3. **Aucun ajustement libre** : tout mouvement de caisse va d'un compte à un autre.
 4. **Une pesée s'arbitre une fois**, et l'index unique le garantit.
-5. **La borne d'un versement est le payable**, jamais le montant dû.
+5. **Un versement est borné par les payables**, jamais par le montant dû — et par part : celui de
+   la récolte, celui du transport, chacun contre ce qui est déjà engagé sur lui.
 6. **Un trop-perçu ne devient pas une dette du planteur** : `max(0, …)` partout.
 7. **Le cloisonnement passe par les interfaces** `EntrepriseOwnedInterface` / `SiteOwnedInterface`,
    jamais par un `where` écrit à la main.
@@ -305,8 +418,11 @@ Si l'un d'eux saute, c'est de l'argent qui se perd ou qui se crée.
 
 | Piège | Ce qui se passe |
 |---|---|
+| **`SearchFilter` sur un booléen** | Il compare des **chaînes** à ce que porte la colonne. Sur un `bool`, seul `=1` répond ; `=true` et `=false` — ce que les écrans envoient — ne correspondent à rien, et la liste se **vide sur les deux choix** sans la moindre erreur. `BooleanFilter` est fait pour ça. Le cas vécu : le filtre « Actif / Désactivé » des produits. |
+| **Un champ de recherche, plusieurs colonnes** | Un `SearchFilter` par colonne donne un paramètre par colonne, jamais un OU. Les écrans qui annoncent « Nom **ou code** » n'en interrogeaient qu'une, et le code ne trouvait jamais rien. Le paramètre `recherche` (`QueryParameter` + `FreeTextQueryFilter` + `OrFilter` + `PartialSearchFilter`) les met en OU : voir `Produit`, `Fournisseur`, `Site`. |
+| **Un filtre qui ne filtre pas ne lève rien** | Il rend une liste vide, ou entière, et l'écran l'affiche. Le contrôle qui les débusque tous tient en une comparaison : total filtré contre total nu, valeur par valeur — toujours zéro, ou toujours le total, et c'est cassé. `tests/Api/FiltresDeListeTest` fige les deux cas rencontrés. |
 | **Cache du sérialiseur** | Un getter `#[Groups]` tout neuf sort **absent du JSON**, sans la moindre erreur. `cache:clear` ne suffit pas toujours : supprimer `var/cache/dev` à la main. Pareil pour `--env=test` avant PHPUnit. |
-| **Relation sérialisée vide** | Une relation ne s'embarque que si une propriété de la cible porte le groupe de lecture du **parent** (`read:DemandePrelevement` sur `Fournisseur::getNomComplet()`). Sinon on n'obtient que l'IRI. |
+| **Relation sérialisée vide** | Une relation ne s'embarque que si une propriété de la cible porte le groupe de lecture du **parent** (`read:DemandePrelevement` sur `Fournisseur::getNomComplet()`). Sinon on n'obtient que l'IRI, l'écran affiche un tiret, et rien ne lève. **À faire pour CHAQUE champ qu'un écran lit à travers la relation**, pas seulement le nom : `DemandeRetrait` a montré les deux moitiés du piège — la colonne Planteur vide, et, plus discret, le formulaire de versement qui se pré-remplissait à blanc faute de `contact1` et `reseau`. Les formes partagées côté web (`SiteBref`, `UserBref`) fixent le minimum : `id`, `code`, `libellesite`, `nomComplet`. |
 | **Un `#[Groups]` sans préfixe `get`** | Les groupes posés sur une méthode qui n'est ni `get…`, ni `is…`, ni `has…` sont **ignorés en silence**. `estActif()` serait absent du JSON, et l'écran afficherait tout comme arrêté : d'où `Prelevement::getActif()` à côté de lui. |
 | **`Operation` ambigu** | `ApiPlatform\OpenApi\Model\Operation` masque l'entité. Aliaser : `use App\Entity\Operation as Pesee;`. |
 | **`??` ne protège pas un appel** | `$a[$k]?->m() ?? 0` lève quand même « Undefined array key » : `??` n'étend ses semblants d'`isset` qu'aux chaînes de propriétés. Lire la case à part. |
@@ -355,13 +471,16 @@ tests/Caisse/ReconciliationTest    les versements restés en vol
 tests/Caisse/ResteAEngagerTest     un versement en vol baisse le reste à engager, pas le payé
 tests/Caisse/PeseeNonPayableTest   un montant nul N'EST PAS une pesée soldée   ← le canari
 tests/Caisse/PrixTransportTest     le transport s'ajoute au payable, jamais au montant dû
+tests/Caisse/DeuxPartsTest         récolte et transport se règlent séparément, chacun avec sa borne
 tests/Caisse/DemandeSoldeTest      une seule demande en attente par poste
+tests/Caisse/ChequeEtRetraitTest   le chèque vide la banque et non le poste, le retrait les deux livres
+tests/Api/FiltresDeListeTest       un filtre qui ne filtre pas ne lève rien : actif, et la recherche par code
 tests/Epargne/MiseEnCompteTest     le prélèvement ne touche aucune caisse, ne crédite qu'une fois
 tests/Epargne/DemandePrelevementTest  l'ouverture, le rejet, l'arrêt, le taux sous le prix
 tests/Site/IdentifiantsPosteTest   le poste reçoit un identifiant qui ouvre vraiment, et qui ne bouge pas
 tests/Securite/CloisonnementTest   deux clients dans la même base, aucun ne voit l'autre
 tests/Securite/DroitsTest          ce que /me annonce est ce que l'API accorde
-tests/Synchronisation/…            le gel des passages, l'idempotence d'un lot
+tests/Synchronisation/…            le gel des passages, l'idempotence d'un lot, le prix du poste ignoré
 ```
 
 `tests/InvariantTestCase.php` porte les fabriques. `creerPesee()` rend une pesée **jamais
@@ -420,8 +539,8 @@ du taux, et un cas qui veut éprouver le plafond doit pouvoir poser un taux dél
 
 ## 13. Ce qui n'existe pas encore
 
-- **Le retrait de l'épargne.** Un compte ne fait que se remplir ; le planteur est remboursé à la
-  main, hors application. Le total dû se lit sur l'écran Caisse.
+- **L'encaissement d'un chèque.** L'émission solde la pesée ; rien ne dit si le chèque a été
+  présenté, ni s'il est revenu impayé. Le numéro est là pour le rapprochement à la main.
 - **Le prix négocié par planteur** (`prixspeciale`), qui remplaçait le prix du produit. Retiré avec
   le prix du transport, le temps d'en revoir le mécanisme. La migration **supprime les valeurs** :
   les exporter avant de migrer une base de production.

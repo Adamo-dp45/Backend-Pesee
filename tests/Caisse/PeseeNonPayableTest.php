@@ -43,7 +43,8 @@ final class PeseeNonPayableTest extends InvariantTestCase
         $this->appeler('POST', '/api/paiements', $operateur, [
             'operationId' => $pesee->getId(),
             'modeReglement' => 'MOBILE_MONEY',
-            'montant' => 20_000,
+            'montantProduit' => 20_000,
+            'montantTransport' => 0,
         ]);
 
         self::assertSame(422, $this->client->getResponse()->getStatusCode());
@@ -90,7 +91,7 @@ final class PeseeNonPayableTest extends InvariantTestCase
         $this->em->persist(
             (new Paiement())
                 ->setReference(Paiement::genererReference())
-                ->setMontant((int) $pesee->getMontantdu())
+                ->setMontants((int) $pesee->getMontantdu(), 0)
                 ->setOperation($pesee)
                 ->setFournisseur($pesee->getFournisseur())
                 ->setSite($site)
@@ -100,17 +101,29 @@ final class PeseeNonPayableTest extends InvariantTestCase
                 ->setInitiePar($operateur)
         );
 
-        $pesee->setMontantpaye((int) $pesee->getMontantdu())->setStatutReglement(StatutReglement::SOLDE);
+        $pesee->setMontantspayes((int) $pesee->getMontantdu(), 0)->setStatutReglement(StatutReglement::SOLDE);
         $this->em->flush();
 
         $this->appeler('POST', '/api/paiements', $operateur, [
             'operationId' => $pesee->getId(),
             'modeReglement' => 'MOBILE_MONEY',
-            'montant' => 20_000,
+            'montantProduit' => 20_000,
+            'montantTransport' => 0,
         ]);
 
         self::assertSame(422, $this->client->getResponse()->getStatusCode());
-        self::assertStringContainsString('soldée', (string) ($this->reponse()['detail'] ?? ''));
+
+        // Le refus porte sur LA PART demandée, et le dit : c'est la récolte qui est réglée
+        $detail = (string) ($this->reponse()['detail'] ?? '');
+        self::assertStringContainsString('La part récolte de cette pesée est déjà réglée', $detail);
+        self::assertStringNotContainsString('pas de prix', $detail);
+
+        // Et le motif GLOBAL dit bien « soldée » : les deux parts sont fermées pour de l'argent
+        $this->em->clear();
+        self::assertStringContainsString(
+            'soldée',
+            (string) $this->em->find(Operation::class, $pesee->getId())?->getMotifNonPayable()
+        );
     }
 
     /* ---- Montage ----------------------------------------------------------------------------- */

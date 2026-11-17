@@ -19,6 +19,7 @@ use App\Domain\Enum\TypeMouvementEpargne;
 use App\Domain\Service\CompteMachineService;
 use App\Entity\CompteEpargne;
 use App\Entity\DemandePrelevement;
+use App\Entity\DemandeRetrait;
 use App\Entity\DemandeSolde;
 use App\Entity\Entreprise;
 use App\Entity\Fournisseur;
@@ -85,6 +86,8 @@ class AppFixtures extends Fixture
         */
         $this->ecrire($manager, $socaf, null, TypeCaisse::NUMERIQUE, TypeMouvement::RECHARGE, 40_000_000, 'Achat de flotte mobile money');
         $this->ecrire($manager, $socaf, null, TypeCaisse::PHYSIQUE, TypeMouvement::RECHARGE, 12_000_000, 'Retrait bancaire d\'ouverture');
+        // La troisième caisse, à l'entreprise SEULE : c'est sur elle que les chèques sont tirés
+        $this->ecrire($manager, $socaf, null, TypeCaisse::BANCAIRE, TypeMouvement::RECHARGE, 60_000_000, 'Approvisionnement du compte en banque');
 
         $this->doter($manager, $socaf, $soubre, TypeCaisse::NUMERIQUE, 15_000_000);
         $this->doter($manager, $socaf, $soubre, TypeCaisse::PHYSIQUE, 2_000_000);
@@ -160,6 +163,14 @@ class AppFixtures extends Fixture
         $this->creerDemandePrelevement($manager, $koffi, $cafe, $ali, 400, 'Épargne forcée', StatutDemande::REJETEE, $patron, 'Taux hors de proportion : il ne lui resterait presque rien au guichet.');
         $this->creerDemandePrelevement($manager, $nguessan, $hevea, $awa, 30, 'Erreur de planteur', StatutDemande::ANNULEE);
 
+        /* ---- Demandes de retrait d'épargne, une par issue --------------------------------- */
+
+        // Accordée et PAS ENCORE SERVIE : c'est la file de travail du guichet, l'état qu'on ne voit qu'ici
+        $this->creerDemandeRetrait($manager, $yao, $awa, 400_000, 'Il veut reprendre une part pour la rentrée', StatutDemande::APPROUVEE, $patron, accorde: 300_000);
+        $this->creerDemandeRetrait($manager, $nguessan, $awa, 50_000, 'Besoin urgent'); // En attente : elle bloque une nouvelle demande sur ce planteur
+        $this->creerDemandeRetrait($manager, $koffi, $ali, 2_000_000, 'Retrait total', StatutDemande::REJETEE, $patron, motifRejet: 'Son épargne ne couvre pas cette somme.');
+        $this->creerDemandeRetrait($manager, $sansNumero, $awa, 10_000, 'Erreur de saisie', StatutDemande::ANNULEE);
+
         /* ---- AgriPese : le voisin, pour éprouver le cloisonnement ------------------------- */
 
         $agri = $this->creerEntreprise($manager, 'AgriPese', 'AGRI02', '0700000009', 'contact@agri.ci', 'Bouaké');
@@ -171,6 +182,7 @@ class AppFixtures extends Fixture
 
         $this->ecrire($manager, $agri, null, TypeCaisse::NUMERIQUE, TypeMouvement::RECHARGE, 5_000_000, 'Achat de flotte mobile money');
         $this->ecrire($manager, $agri, null, TypeCaisse::PHYSIQUE, TypeMouvement::RECHARGE, 1_000_000, 'Retrait bancaire d\'ouverture');
+        $this->ecrire($manager, $agri, null, TypeCaisse::BANCAIRE, TypeMouvement::RECHARGE, 8_000_000, 'Approvisionnement du compte en banque');
         $this->doter($manager, $agri, $bouake, TypeCaisse::NUMERIQUE, 2_000_000);
         $this->doter($manager, $agri, $bouake, TypeCaisse::PHYSIQUE, 500_000);
 
@@ -352,9 +364,16 @@ class AppFixtures extends Fixture
         $planteur = $pesee->getFournisseur();
         $mobile = $mode->passeParLaPasserelle();
 
+        /*
+            - La même cascade qu'à la reprise des données : la récolte d'abord jusqu'à son payable, le
+              surplus au transport. C'est l'ordre dans lequel un humain lirait un versement global,
+              et il faut bien en choisir un : le décor doit porter des parts qui font le total.
+        */
+        $surLaRecolte = min($montant, max(0, $pesee->getPayableproduit() - $pesee->getMontantpayeproduit()));
+
         $paiement = (new Paiement())
             ->setReference(Paiement::genererReference())
-            ->setMontant($montant)
+            ->setMontants($surLaRecolte, $montant - $surLaRecolte)
             ->setModeReglement($mode)
             ->setOperation($pesee)
             ->setFournisseur($planteur)
@@ -389,9 +408,18 @@ class AppFixtures extends Fixture
 
         // Seul le confirmé compte dans ce qui a été versé
         if($statut === StatutPaiement::REUSSI) {
-            $verse = $pesee->getMontantpaye() + $montant;
+            $pesee->setMontantspayes(
+                $pesee->getMontantpayeproduit() + $paiement->getMontantproduit(),
+                $pesee->getMontantpayetransport() + $paiement->getMontanttransport()
+            );
 
-            $pesee->setMontantpaye($verse)->setStatutReglement(StatutReglement::pour($pesee->getMontantdu(), $pesee->getMontantpayable(), $verse));
+            $pesee->setStatutReglement(StatutReglement::pourLesParts(
+                $pesee->getMontantdu(),
+                $pesee->getPayableproduit(),
+                $pesee->getMontantpayeproduit(),
+                $pesee->getPayabletransport(),
+                $pesee->getMontantpayetransport(),
+            ));
         }
     }
 
@@ -411,6 +439,45 @@ class AppFixtures extends Fixture
           démonstration qui construit tout puis écrit d'un bloc.
         - Le plafond est le même qu'en production : jamais plus que ce que vaut la pesée.
     */
+    /*
+        - Une demande de retrait, dans l'état voulu. 'accorde' ne sert qu'aux demandes approuvées :
+          il peut être inférieur au demandé, comme sur une demande de solde, quand la caisse du
+          poste ne couvre pas tout.
+        - Aucune ne porte de versement : elles sont accordées, pas servies. C'est au guichet que
+          l'argent bouge, et les fixtures s'arrêtent avant — sans quoi elles écriraient dans deux
+          livres sans passer par les services qui les tiennent.
+    */
+    private function creerDemandeRetrait(
+        ObjectManager $manager,
+        Fournisseur $planteur,
+        User $demandeur,
+        int $montant,
+        string $motif,
+        StatutDemande $statut = StatutDemande::EN_ATTENTE,
+        ?User $traitePar = null,
+        ?int $accorde = null,
+        ?string $motifRejet = null
+    ): void {
+        $demande = (new DemandeRetrait())
+            ->setFournisseur($planteur)
+            ->setSite($planteur->getSite())
+            ->setMontantDemande($montant)
+            ->setMotif($motif)
+            ->setStatut($statut)
+            ->setDemandePar($demandeur)
+            ->setMotifRejet($motifRejet);
+
+        if($statut === StatutDemande::APPROUVEE) {
+            $demande->setMontantAccorde($accorde ?? $montant);
+        }
+
+        if($statut->estTraitee()) {
+            $demande->setTraitePar($traitePar)->setTraiteAt(new \DateTimeImmutable('-1 day'));
+        }
+
+        $manager->persist($demande);
+    }
+
     private function creerDemandePrelevement(
         ObjectManager $manager,
         Fournisseur $planteur,
@@ -475,7 +542,13 @@ class AppFixtures extends Fixture
 
         $compte->setSolde($apres);
         $pesee->figerLaRetenue($taux, $retenue);
-        $pesee->setStatutReglement(StatutReglement::pour($pesee->getMontantdu(), $pesee->getMontantpayable(), $pesee->getMontantpaye()));
+        $pesee->setStatutReglement(StatutReglement::pourLesParts(
+            $pesee->getMontantdu(),
+            $pesee->getPayableproduit(),
+            $pesee->getMontantpayeproduit(),
+            $pesee->getPayabletransport(),
+            $pesee->getMontantpayetransport(),
+        ));
 
         $manager->persist(
             (new MouvementEpargne())

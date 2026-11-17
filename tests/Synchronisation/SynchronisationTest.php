@@ -280,6 +280,56 @@ final class SynchronisationTest extends InvariantTestCase
      *
      * @return array<string, mixed>
      */
+    /*
+        - LE POSTE PESE, IL NE TARIFE PAS. Les logiciels de pesée déployés envoient toujours 'prix'
+          et 'prixtransport' dans leur charge utile — on ne va pas les mettre à jour tous en même
+          temps, et les refuser ferait échouer des lots entiers. Ces champs sont donc LUS ET JETÉS.
+
+        - Ce que ce cas garde : le prix du bureau survit à la synchronisation, ET la pesée est
+          valorisée avec LUI. Si l'un des deux lâchait, personne ne le verrait : la pesée s'affiche
+          avec un montant plausible, simplement calculé sur un prix que le bureau n'a pas décidé.
+    */
+    public function testUnPrixEnvoyeParLePosteEstIgnore(): void
+    {
+        $produit = $this->creerProduit($this->site, 'Hévéa', 400);
+        $planteur = $this->creerPlanteur($this->site, 'Kouassi');
+        $planteur->setPrixtransport(30);
+        $this->em->flush();
+
+        $this->synchroniser([$this->ligne('101', ['prix' => 999, 'prixtransport' => 777])]);
+        self::assertSame(1, $this->reponse()['success'] ?? null, (string) $this->client->getResponse()->getContent());
+
+        $this->em->clear();
+
+        self::assertSame(400, $this->em->find(Produit::class, $produit->getId())?->getPrix(), 'Le poste a écrasé le prix du bureau');
+        self::assertSame(30, $this->em->find(Fournisseur::class, $planteur->getId())?->getPrixtransport(), 'Le poste a écrasé le transport du bureau');
+
+        // 500 kg : la récolte au prix du bureau, le transport au sien aussi
+        $pesee = $this->pesees()[0];
+        self::assertSame(500 * 400, $pesee->getMontantdu());
+        self::assertSame(500 * 30, $pesee->getMontanttransport());
+    }
+
+    /*
+        - Le corollaire : un produit créé par le peseur naît À ZÉRO et le reste. C'était déjà vrai
+          quand le poste se taisait, c'est maintenant la règle — et c'est pourquoi la liste des
+          produits sait filtrer ceux qui attendent leur prix.
+    */
+    public function testUnProduitCreeParLePosteNaitSansPrixMemeSiLeLotEnPorteUn(): void
+    {
+        $this->synchroniser([$this->ligne('101', ['libelleproduit' => 'Cacao', 'prix' => 650])]);
+        self::assertSame(1, $this->reponse()['success'] ?? null);
+
+        $this->em->clear();
+
+        $produit = $this->em->getRepository(Produit::class)->findOneBy(['libelle' => 'Cacao']);
+        self::assertNotNull($produit, 'Le référentiel doit toujours se créer à la volée');
+        self::assertSame(0, $produit->getPrix());
+
+        // Et la pesée ne vaut rien, ce qui est préférable à un montant que personne n'a décidé
+        self::assertSame(0, $this->pesees()[0]->getMontantpayable());
+    }
+
     private function ligne(string $refDesktop, array $surcharges = []): array
     {
         return $surcharges + [

@@ -87,39 +87,49 @@ adam@gmail.com
 Socafpesage10
 
 
-La valeur du poste est **mémorisée à part**, pour que seul un vrai changement de son côté écrase ce qui a été saisi sur le web. `prixtransport` suivra ce patron tel quel — et votre phrase « il y a des **fournisseurs** pour lesquels » me fait penser qu'il se range au même endroit, sur la fiche du planteur. C'est la première question ci-dessous.
 
 
-- Lorsque les peseés arrive, si il n'y a de problème du genre le prixtransport ou le prix du produit est 0 et que côté web ça match directement, la syncrone se fait sinon on affiche la liste des syncro qui ont un soucis à l'opérateur et adminstrateur pour qu'il fasse des choix et sync les différents pesées
-
-
-Un point que je n’ai pas tranché, dites-moi s’il vous gêne : un changement de taux s’affiche sous le geste « Ouverture d’une mise en compte », faute d’un troisième type dans l’énumération. Le libellé dit exactement ce qui s’est passé, mais la colonne « Geste », elle, annonce une ouverture.
+commande utile, bd..
 
 
 
 
 
+**La fiche planteur fait 768 px de large.** Une colonne par montant — récolte, transport, retenue, payable, versé, reste — plus ticket, date, produit, net et règlement, cela fait onze colonnes : il aurait fallu faire défiler le tableau de côté pour lire une seule ligne. Je les ai donc groupés là où ils se lisent ensemble, comme dans la file du guichet :
 
+```
+Ticket   Produit   Net        Récolte            Au guichet                      Règlement
+T-4505   Hévéa     14 000 kg  5 600 000 F        5 110 000 F                     Non payée
+         11/11                400 F le kilo      + 210 000 F de transport
+                                                 − 700 000 F mis en compte
+```
+
+Le découpage suit le raisonnement du domaine plutôt que la liste des champs : **à gauche ce que la pesée vaut, à droite ce qu'on remet au planteur**, et les lignes secondaires expliquent l'écart entre les deux. C'est exactement ce qu'un planteur vient contester, son ticket à la main — il y lit 5 600 000 et on lui en compte 5 110 000.
+
+J'ai ajouté le **prix au kilo** sous la récolte, que vous n'aviez pas demandé : sans lui, le montant de la récolte est invérifiable depuis cet écran, alors que c'est une multiplication que le planteur fait de tête.  ===> Je préfère défilé de côté
+
+- Un point que je n’ai pas tranché, dites-moi s’il vous gêne : un changement de taux s’affiche sous le geste « Ouverture d’une mise en compte », faute d’un troisième type dans l’énumération. Le libellé dit exactement ce qui s’est passé, mais la colonne « Geste », elle, annonce une ouverture.
+
+- **Une limite connue de la mise en compte** : le taux est tenu sous le prix du produit à l'ouverture, mais rien ne le resserre si le prix **baisse** ensuite. Un prélèvement ouvert à 50 F sur un produit tombé à 40 F prend alors toute la récolte — le plafond `min(taux × poidsnet, montantdu)` empêche la dette, pas le guichet vide. Le refus `RETENU` le dit à l'opérateur, et il reste à l'administrateur à baisser le taux. ==> Ici on peut notifier l'admin pour qu'il modifie ou arrête les prélèvements qui ne sont plus apte
+
+- Ce que ce mode ne fait pas, et qu'il faut écrire noir sur blanc : émettre le chèque solde la pesée immédiatement. L'application ne sait pas s'il a été encaissé. C'est le même compromis que les espèces, à ceci près que le délai est réel — à surveiller si un chèque sans provision devient un cas.
 
 - Concernant la notion prix spéciale, sache qu'on peut avoir un prix spéciale pour un fournissuer conernant un produit 
 
+- 3. **Échec mobile money** : un versement remboursé doit annuler sa mise en compte. Le chemin de remboursement existe, il faudra l'étendre.
 
-
-Si le prix du produit vient vide payload, on n'utilise pas celui du web ! mais ça remplace plutôt celui du web à vide, de même pour le fournisseur !
-
-Une situation, si le destop n'envoi pas le prix du produit ou le prixtransport du fournisseur et que le web ne les est pas renseigné, qu'est ce qui ce passe pour la pesée
-
-lorsque le desktop envoi et qu'il y'a des modifications sur fourniseur et produit on doit loge
-
-J'ai vu que quand le Desktop envoi les données et que le prix du produit est vide, on ne peut pas payé le planteur mais lorsque j'ai modifié le prix du produit côté web ça a fait un recalcule et j'ai pu payé le planteur ! tu confirme le comportement !!
-
-Pour le transport du fournisseur, j'ai remarqué que je web n'agit pas dessus, le calcule se base sur celui venu du Desktop ! tu confirme le comportement !!
+- Le cas de test qui manquait au plan — « un retrait mobile échoué rend l’argent aux deux livres » — est écrit. Je l’ai éprouvé en désactivant la ligne d’annulation d’épargne : il tombe avec « L’épargne n’a pas été rendue au planteur — 50000 ≠ 200000 », puis repasse une fois la ligne remise. C’est le cas le plus coûteux du lot : les deux livres étant séparés, aucun écran ne signalerait l’écart — le total des caisses retomberait juste, seule la dette envers le planteur serait fausse.
 
 
 
 
 
 
+- Sur les tableaux de pesées, affichés date, prixtransport, prixproduit etc..
+- commit.. Le retrait de l'épargne, règlement par chèque
+
+
+commenté le tous les sites, faire ressortir à doté
 
 
 
@@ -127,6 +137,146 @@ Pour le transport du fournisseur, j'ai remarqué que je web n'agit pas dessus, l
 
 
 
+Salut Claude Code,
+
+On vas travailler sur l'application de gestion de pesées.
+
+# Consignes
+- **Ignore les fichiers `brl.*`** du projet : ce sont juste des brouillons
+- dossier
+## Ce que j'attends
+Analyse le projet pour :
+- te remettre à jour sur l'architecture générale et les modules existants
+- retrouver l'état d'avancement du projet
+- être prêt pour la suite des instructions que je vais te donner
+
+
+
+
+
+
+Analyse l'un de mes projets `C:\Users\adamo\Documents\Web\iTransport` dans lequel j'ai utilisé à peu près la même stack que ce projet, je pense que qu'il y'a des choses qui peuvent t'intéressé et n'oublie pas d'ignorer les fichiers et dossiers `brl/` car ce sont juste des brouillons.
+
+
+
+
+
+## La liste
+
+| # | Fonctionnalité | Ce que ça touche | Jours | Risque |
+|---|---|---|---|---|
+| 1 | **Desktop réduit à la pesée** — tout le traitement sur le web | Contrat de synchronisation : le poste cesse de faire autorité sur les prix et les montants. `SynchronisationService`, `calculerMontant`, les deux chemins de retarification | **3–5** | moyen — touche les tests canaris de la synchro, et se coordonne avec l'équipe Desktop |
+| 2 | **Produit et transport payés séparément ou ensmble**, transport en plusieurs fois |
+
+
+| 3 | **Tableau de bord détaillé** (à qui doit-on, etc.) | Agrégats SQL + providers de stats, cartes et tables React. Lecture seule | **3–5** | faible |
+| 5 | **Recherche et suivi** : tables mieux filtrables, libellés plus précis | Filtres par période partout, colonnes supplémentaires, libellés métier. Le socle est sain — on vient de l'éprouver écran par écran | **3–5** | faible — mais le chiffre dépend du nombre d'écrans retenus |
+| 4 | **Comptabilité** : références et **pièces jointes** aux reçus et documents | Infrastructure neuve : **aucun mécanisme de fichier n'existe aujourd'hui** dans les deux dépôts. Stockage, dépôt, types et tailles, qui a le droit de lire, rattachement à un paiement / mouvement / demande | **5–8** | moyen — le stockage et les droits de lecture sont à trancher avant de coder |
+| 9 | **Relevés imprimables** pour les établissements financiers | L'export existe pour le bilan seul (PDF + Excel). Cinq états de plus, filtrés par période, planteur, site, avec leurs totaux | **4–6** | faible — mais dépend de #2 pour séparer produit et transport |
+
+
+| 6 | **Classes hiérarchisées de planteurs**, prix par classe, prix planteur prioritaire | Réintroduit `prixspeciale`, retiré « le temps d'en revoir le mécanisme », avec une hiérarchie par-dessus. La résolution du prix passe de 1 à 3 niveaux, dans le chemin chaud de **toute** pesée — et borne aussi la mise en compte | **5–8** | **élevé** — 5 endroits décident aujourd'hui d'un prix |
+| 7 | **Prix datés** + historique consultable | Le prix cesse d'être une valeur et devient un intervalle. Une pesée se valorise au prix **de sa date**, pas au prix du jour — ce qui change le sens même de la revalorisation automatique | **5–8** | **élevé** — couplé à #6 |
+| 8 | **Transport** : forfait ou tranches de kilomètres | Aujourd'hui un seul mode, F/kg. Ajoute un mode + un barème — et **la distance n'existe nulle part** : il faut décider qui la fournit | **4–6** | moyen — bloqué tant que l'origine de la distance n'est pas tranchée |
+
+
+
+## L'ordre compte plus que les chiffres
+
+Trois enchaînements font économiser, et l'inverse fait payer deux fois :
+
+- **#1 avant #6 et #7.** Tant que le poste et le web se disputent le prix, toute règle de tarification doit être écrite deux fois. Réduire le Desktop à la pesée d'abord, c'est supprimer un des deux cas avant d'en ajouter neuf.
+- **#6 et #7 ensemble.** Ils modifient le même geste — « quel prix s'applique à cette pesée ». Faits séparément, le second réécrit le premier.
+- **#2 avant #9.** Un relevé qui distingue « paiements de produits » et « règlements de transport » suppose que l'application les distingue déjà.
+
+## Ce qui ferait bouger ces chiffres
+
+Cinq points à trancher avant de figer une estimation ferme — chacun peut déplacer son poste de plusieurs jours :
+
+2. **#8** — d'où vient la distance ? Du Desktop, de la fiche du planteur, d'une saisie au guichet ?
+3. **#4** — où vivent les pièces jointes, qui peut les lire, combien de temps les garde-t-on ?
+4. **#6** — un prix par classe **et par produit**, ou un prix par classe tout court ? Et la hiérarchie descend sur combien de niveaux ?
+5. **#9** — quels formats les banques attendent-elles réellement ?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+- Avoir un tableau de bord, plus détaillé, qui affiche du genre à qui doit-on, etc...
+- Comptabilité : renseigner les références de caisse, de chèque et d'autres justificatifs, avec la possibilité de joindre les pièces aux reçus et documents concernés. 
+- Recherche et suivi : disposer de tableaux mieux filtrables et de libellés plus précis pour les équipes administratives, comptables et la direction
+- Planteurs et fournisseurs : pouvoir les organiser en classes hiérarchisées et attribuer un prix à chaque classe. Un prix propre à un planteur doit prendre le dessus sur celui de sa classe. 
+- Prix : programmer les dates d'application des tarifs et conserver un historique consultable des prix effectivement appliqués.
+- Transport : gérer différents modes de facturation, notamment un montant fixe ou une tarification par tranches de kilomètres. 
+- Relevés : consulter et imprimer des états détaillés des pesées, paiements de produits, règlements de transport, épargnes et retraits, filtrés par période, fournisseur, site ou autre critère utile aux établissements financiers. 
+
+
+
+- Regrouper le bilan
+- releves
+    - la banque peut venir devant l'entreprise pour le relevé de note
+    - le fournisseur peut venir devant l'entreprise pour son état
+
+
+
+CategoryFournisseur
+    libelle
+    description
+    prixunitaireproduit
+
+CategoryTransportFournisseur
+    prixunitairetransport
+
+        -- Table Tranche pour l'interval de facturation pour gérer le kilométrage pour dire que tu es quitter de tel endroid à endroid
+
+        TrancheTransport
+            [] interval de kilométrage
+            prixU -- si on le choisi on multipli par le poidsnet
+            montantfixe -- !! utilise le montant fixe de la tranche
+
+TarifFournisseur
+TarifTransportfournisseur
+
+Fournisseur
+
+, de manière générique la logique du tradocument différentié via un type
+
+Tarif(categoriefournisseur, fournisseur, produit) -- prioritaire sur la table tranche
+    idproduit
+    idfournisseur
+    idcategoriefournisseur
+    prixproduit
+    prixtransport
+    datedebut
+    datefin
+    type 
+
+Priorité : pour définir les propriétés par entreprise
+
+- categoriefournisseur, tarifcategoriefournsseur, tarifournissuer : pour le produit, aussi pour le transport
+
+- Possibilité de pouvoir modifier le prix montant de la pesées en ligne, plus de modification après le premier versement sur la pesées !! je pense qu'on a abandonnée
+
+
+
+
+
+
+
+- Le margin en bas de webpesee pour le téléphone
+- Syncronisation en API Platform
+- Lorsque les peseés arrivent, s'il n'y a de problème du genre le prixtransport ou le prix du produit est 0 et que côté web ça match directement, la syncrone se fait sinon on affiche la liste des syncro qui ont un soucis à l'opérateur et adminstrateur pour qu'il fasse des choix et sync les différents pesées
+- On ne reçois que les syncronisations terminé
+- précolect du genre remise sur une pesées
 
 
 
@@ -189,10 +339,6 @@ User `siteMachine` (`OneToOne Site`, nullable, renseigné uniquement pour les co
 
 
 
-
-
-
-
 - Concernant le reliquat fournisseur, il est géré à moitié :
     ## Ce qui n'est PAS géré : le compte d'un planteur
 
@@ -237,23 +383,7 @@ c'est un ajout de périmètre à décider.
 
 
 
-Une pesée crédite l'épargne du planteur sans toucher aucune caisse -- Cette phrase me gène un peu
 
-
-
-
-
-
-
-Concernant l'agent..
-    A l'état actuelle est ce que l'agent peut valider ou refuser une demande de solde d'un opérateur (non actuelle) si oui il doit aussi pouvoir le faire pour les sorties d'argent (paiement planteur) -- Actuellement, l'agent ne peut pas verser au planteur aussi !
-
-La paie concerne les produits et le transport.
-    il y'a un transport de base et quand on dépasse ce seuil 
-
-
-3. **Échec mobile money** : un versement remboursé doit annuler sa mise en compte. Le chemin de remboursement existe, il faudra l'étendre.
-4. **Retrait** : qui l'autorise, peut-il être partiel, et passe-t-il par un mode de règlement — donc par l'une des deux caisses — comme un versement ?
 
 
 
@@ -634,3 +764,4 @@ Les trois premiers manquants font rejeter la ligne — pas le lot : les autres p
 
 - **Le cloisonnement tient en deux classes.** [Perimetre.php](Backend-Webpesee-V2/src/Security/Perimetre.php) calcule une fois par requête la liste des sites visibles (toute l'entreprise pour admin/agent, ses caisses pour un opérateur, son seul poste pour un compte machine), et [PerimetreExtension.php](Backend-Webpesee-V2/src/Doctrine/PerimetreExtension.php) l'applique à toutes les lectures API Platform — corbeille, puis entreprise, puis sites. Le soft-delete y est traité par simple héritage d'`EntityBase`, pas par une seconde extension comme en V1. [UserExtension.php](Backend-Webpesee-V2/src/Doctrine/UserExtension.php) écarte en plus les comptes machine de l'écran des utilisateurs, en filtrant sur `siteMachine` (relation) et non sur le rôle (colonne JSON).
 - **Les droits sont une table, pas une hiérarchie.** [AccesVoter.php](Backend-Webpesee-V2/src/Security/Voter/AccesVoter.php) remplace à lui seul les onze voters de V1 : une constante `DROITS[rôle][ressource] = [actions]`, puis la vérification de périmètre. Les règles que la table ne sait pas dire (« on ne suspend pas un fondateur », « un agent ne gère que des opérateurs ») vivent dans [UserGuard.php](Backend-Webpesee-V2/src/Security/UserGuard.php), avec la double surface `peutGerer()` / `assertPeutGerer()`.
+

@@ -103,12 +103,33 @@ class Paiement extends EntityBase implements SiteOwnedInterface
     #[Groups(['read:Paiement', 'read:MouvementCaisse', 'read:Operation:item'])]
     private ?string $reference = null;
 
+    /*
+        - LE TOTAL, et il le reste. C'est lui, et lui seul, que voient la caisse, la passerelle, le grand livre, le remboursement sur échec et la réconciliation : un versement est un mouvement d'argent, et un mouvement d'argent n'a qu'un montant.
+
+        - Sa VENTILATION en dessous, parce qu'une pesée se règle désormais par la récolte, par le transport, ou par les deux. Payer les deux d'un geste reste UN versement : une référence, une sortie de caisse, un seul envoi mobile money — donc un seul frais.
+
+        - INVARIANT : 'montant = montantproduit + montanttransport', toujours, sans exception. Un retrait d'épargne n'a pas de pesée et porte tout son montant sur la part produit : c'est ce qui permet de tenir l'invariant par une contrainte en base plutôt que par un commentaire.
+
+        - Les trois se posent ENSEMBLE, par 'setMontants()'. Un setter par champ laisserait écrire un total qui ne soit pas la somme de ses parts.
+    */
     #[ORM\Column]
     #[Groups(['read:Paiement', 'read:MouvementCaisse', 'read:Operation:item'])]
     private int $montant = 0;
 
+    #[ORM\Column(options: ['default' => 0])]
+    #[Groups(['read:Paiement', 'read:Operation:item'])]
+    private int $montantproduit = 0;
+
+    #[ORM\Column(options: ['default' => 0])]
+    #[Groups(['read:Paiement', 'read:Operation:item'])]
+    private int $montanttransport = 0;
+
+    /*
+        - NULLABLE depuis le retrait d'épargne : un versement ne pointe pas toujours sur une pesée. Le planteur qui vient chercher ce qu'on lui gardait est réglé par le même circuit — même référence, même passerelle, même « en vol », même remboursement sur échec — mais il n'y a aucune pesée derrière.
+        - C'est ce qui a évité de réécrire une seconde fois toute la machinerie des versements pour une poignée de retraits, avec les divergences que deux chemins finissent toujours par produire.
+    */
     #[ORM\ManyToOne(inversedBy: 'paiements')]
-    #[ORM\JoinColumn(nullable: false)]
+    #[ORM\JoinColumn(nullable: true)]
     #[Groups(['read:Paiement'])]
     private ?Operation $operation = null;
 
@@ -141,6 +162,17 @@ class Paiement extends EntityBase implements SiteOwnedInterface
     #[ORM\Column(enumType: ReseauMobile::class, nullable: true)]
     #[Groups(['read:Paiement'])]
     private ?ReseauMobile $reseau = null;
+
+    /*
+        - Le numéro du chèque remis, et rien d'autre : la SEULE référence qui permettra de rapprocher
+          ce versement du relevé bancaire. Deux chèques du même montant au même planteur sont
+          autrement indiscernables le jour où la banque est consultée.
+        - Nullable parce que les deux autres modes n'en ont pas. C'est le service qui l'exige quand
+          le mode est le chèque, comme il exige un numéro de téléphone pour le mobile money.
+    */
+    #[ORM\Column(length: 50, nullable: true)]
+    #[Groups(['read:Paiement'])]
+    private ?string $numeroCheque = null;
 
     #[ORM\Column(enumType: StatutPaiement::class, options: ['default' => 'EN_ATTENTE'])]
     #[Groups(['read:Paiement', 'read:Operation:item'])]
@@ -204,9 +236,24 @@ class Paiement extends EntityBase implements SiteOwnedInterface
         return $this->montant;
     }
 
-    public function setMontant(int $montant): static
+    public function getMontantproduit(): int
     {
-        $this->montant = $montant;
+        return $this->montantproduit;
+    }
+
+    public function getMontanttransport(): int
+    {
+        return $this->montanttransport;
+    }
+
+    /*
+        - Le seul moyen de poser un montant, et il pose les trois. Le total n'est pas un paramètre : il EST la somme, et le laisser saisir rouvrirait la porte à un versement dont les parts ne font pas le compte.
+    */
+    public function setMontants(int $produit, int $transport): static
+    {
+        $this->montantproduit = $produit;
+        $this->montanttransport = $transport;
+        $this->montant = $produit + $transport;
 
         return $this;
     }
@@ -291,6 +338,20 @@ class Paiement extends EntityBase implements SiteOwnedInterface
     public function setReseau(?ReseauMobile $reseau): static
     {
         $this->reseau = $reseau;
+
+        return $this;
+    }
+
+    public function getNumeroCheque(): ?string
+    {
+        return $this->numeroCheque;
+    }
+
+    public function setNumeroCheque(?string $numeroCheque): static
+    {
+        $numeroCheque = $numeroCheque === null ? null : trim($numeroCheque);
+
+        $this->numeroCheque = $numeroCheque === '' ? null : $numeroCheque;
 
         return $this;
     }

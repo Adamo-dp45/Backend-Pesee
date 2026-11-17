@@ -4537,3 +4537,543 @@ J'ai aussi vérifié que le piège n'était pas ailleurs : sur les 39 `render()`
 - Le téléchargement du fichier de configuration marche toujours (il porte `data-turbo="false"`, parce qu'une réponse de type fichier ne peut pas rediriger).
 
 Une remarque sur le correctif précédent, pendant que j'y étais : la fiche d'un poste n'expose pas son code en modification — « Le code n'est pas modifiable ». Le scénario par lequel j'avais reproduit vos 500 passait donc par l'API, pas par vos écrans. La dérive entre le code et l'adresse du compte machine a dû naître autrement chez vous — données plus anciennes, ou un compte resté orphelin. Le correctif tient quelle qu'en soit l'origine, puisqu'il rend la collision impossible au lieu de supposer d'où elle vient.
+
+
+
+
+
+
+
+
+
+On vas mettre en place le retrait de l'épargne.
+
+Aussi :
+- Concernant le mode de règlement, on mettre en place le mode de règlement par check
+
+
+
+
+
+
+
+
+Deux chantiers d'argent. Je lis d'abord ce qui existe, pour poser les bonnes questions.
+
+J'ai ce qu'il me faut. Trois décisions de modèle m'empêchent d'écrire le plan :
+
+Votre choix du chèque laisse une question ouverte, que l'option elle-même signalait : qui détient cette caisse bancaire.
+
+Les quatre décisions sont prises. Je passe en mode plan pour finir la lecture et vous présenter le chantier avant d'écrire quoi que ce soit.
+
+Je lance une exploration large sur l'impact d'une troisième caisse, pendant que je lis moi-même le circuit « demande puis accord » qui servira de patron au retrait.
+
+J'ai la matière pour l'essentiel. Je rédige le plan pendant que l'exploration finit de cartographier la troisième caisse.
+
+Une correction sur ma propre borne : si l'épargne est débitée à l'initiation, le solde exclut déjà les retraits en vol.
+
+Correction importante : `CAISSES` est partagé par quatre écrans, dont la recharge de l'entreprise. Une seule liste ne peut plus servir les deux niveaux.
+
+Le plan est approuvé, et l'exploration vient de confirmer mes points en ajoutant quatre pièges que je n'avais pas. Je les verse au plan avant d'attaquer.
+
+Étape 1 : la caisse bancaire. D'abord l'enum, avec la distinction de niveau qui manquait.
+
+La colonne sort en `INT` alors que ses voisines sont en `BIGINT` — un solde bancaire d'entreprise n'a pas à plafonner plus bas que les autres.
+
+Étape 2 : le mouvement bancaire, imputé à l'entreprise — le premier paiement qui ne sort pas d'un poste.
+
+Maintenant `CaisseService`, qui doit brancher sur le niveau selon la caisse du versement.
+
+Étape 3 : le mode chèque et son numéro.
+
+Étape 4 : rendre un versement possible sans pesée. Je relis le bloc exact avant de le découper.
+
+Vérifions tout de suite que le chemin des pesées n'a pas bougé, avant d'aller plus loin.
+
+55 tests du guichet au vert : le découpage n'a rien changé au comportement. Étape 5, le livre d'épargne.
+
+Étape 6 : le versement d'un retrait. Les deux livres doivent bouger dans la même transaction.
+
+Étape 7 : la demande de retrait. Je calque sur `DemandePrelevement`, en lui ajoutant le montant accordé de `DemandeSolde`.
+
+Le gabarit est clair. J'écris le dépôt et les cinq processors d'un bloc.
+
+Il me reste à brancher le versement d'un retrait accordé. Voyons comment un versement se crée par l'API.
+
+Backend structurellement complet. La migration, puis les fixtures.
+
+Les données sont en place. Écrivons les tests qui gardent les invariants neufs.
+
+Le sérialiseur est plus strict que je ne le pensais : il **lève** sur un `#[Groups]` posé sur une méthode sans préfixe reconnu.
+
+Les dix cas passent. Je lance la suite complète et j'attaque le frontend.
+
+Maintenant le frontend. Je commence par scinder la liste de caisses, qui est le piège signalé.
+
+Reste le mode chèque sur l'écran de versement, et les modèles React.
+
+Reste les écrans de retrait. Je lis le contrôleur de prélèvement pour le décalquer.
+
+Reste la table React, le modèle et l'entrée de menu.
+
+148 tests au vert. Vérifions maintenant de bout en bout dans le navigateur.
+
+Le chèque a débité la banque — 60 000 000 → 59 000 000 — sans toucher aux postes. Maintenant le retrait, de bout en bout.
+
+Le garde-fou fonctionne : un accord dort déjà pour ce planteur. Servons-le, c'est justement l'étape à vérifier.
+
+`RESEAUX` n'est pas sur le contrôleur parent. Voyons où il vit.
+
+Maintenant la contrainte côté API, pour qu'une demande bancaire pour un poste n'existe même pas.
+
+Maintenant je vérifie que l'API refuse bien, et je remets la demande 13 en physique.
+
+Tout est en place côté modèles. Lint complet du frontend et build.
+
+
+Le plan est terminé de bout en bout.
+
+**Ce qui vient d'être fait depuis le versement vérifié**
+
+Le retrait a été servi au guichet et a bien baissé les deux livres du même montant : épargne de Kouame Yao 1 020 000 → 720 000, espèces du poste 500 000 → 200 000. Message à l'écran : *« Retrait versé. L'épargne du planteur et la caisse ont baissé du même montant. »*
+
+**Les deux faux silencieux du plan, corrigés**
+
+- `DemandeSoldeController` — le `POST` collectait la caisse et ne l'envoyait pas, donc **toute** demande retombait sur `NUMERIQUE`. Vérifié : une demande déposée en espèces s'enregistre maintenant en `PHYSIQUE`.
+- `demande/traiter.html.twig` — le ternaire binaire `physique ? soldePhysique : soldeNumerique` faisait passer la bancaire pour du flotte. Le nom du champ se compose désormais depuis la caisse, et un tiret remplace le zéro quand le niveau ne tient pas cette caisse. Éprouvé en forçant une demande en `BANCAIRE` : « Caisse bancaire · poste — · entreprise 59 000 000 F », plus un avertissement qui dit qu'elle ne peut qu'être rejetée.
+
+J'ai refermé la porte en amont aussi : `DemandeSolde::caissesDUnPoste()` fait refuser la bancaire par l'API (422 avec le message métier), sinon la demande s'enregistrait, attendait un administrateur, et mourait à l'approbation.
+
+**Trois mensonges d'écran trouvés en passant**, tous corrigés : « L'entreprise tient **deux** caisses » en tête de l'écran Caisse, « de l'une de ces **deux** caisses que part le versement » sur l'écran de paiement (un chèque n'en touche aucune), et l'alerte « aucune des deux caisses ne couvre » qui ne proposait pas le chèque comme issue.
+
+**Contrôles**
+
+| | |
+|---|---|
+| `phpunit` | OK — 148 tests, 826 assertions |
+| `doctrine:schema:validate` | en phase avec le mapping |
+| `lint:twig` (157 fichiers) · `lint:container` × 2 | verts |
+| `npx tsc --noEmit` · `npm run build` | verts |
+
+Les README des deux dépôts sont à jour : §5 du backend passe à trois caisses et décrit le chèque, §7 gagne « Le retrait : un versement sans pesée » avec le tableau des deux livres au pas cadencé, et le retrait sort de « ce qui n'existe pas encore » (remplacé par l'encaissement, qui lui reste hors application). Côté web, quatre lignes de plus au tableau des pièges.
+
+Deux choses à savoir : les serveurs de dev tournent toujours (8000 / 8001), et la base de dev porte les traces des essais — un chèque de 1 000 000 F, le retrait de 300 000 F, la demande 9 annulée et la 13 créée. `doctrine:fixtures:load` remet tout à plat.
+
+
+
+
+
+
+# Retrait de l'épargne, et règlement par chèque
+
+## Contexte
+
+Deux manques que le README du backend recense lui-même comme « ce qui n'existe pas encore ».
+
+**Le retrait.** Un compte d'épargne ne fait aujourd'hui que se remplir. Le planteur qui vient
+chercher son argent est remboursé à la main, hors application : le solde affiché reste donc faux
+dès le premier remboursement, et rien ne trace qui a rendu quoi. `TypeMouvementEpargne` annonce
+déjà le cas manquant en commentaire — « `RETRAIT` viendra avec le retrait de l'épargne ».
+
+**Le chèque.** `ModeReglement` ne connaît que les espèces et le mobile money, et son propre
+commentaire prévoit la suite : « un mode ajouté plus tard (chèque, virement) se déclare dans ce
+fichier et le reste suit ». Les gros règlements se font aujourd'hui hors application.
+
+## Les quatre décisions prises
+
+| Question | Décision |
+|---|---|
+| Quelle caisse vide un chèque | une **troisième caisse, bancaire** |
+| Où vit cette caisse | à l'**entreprise seule** — les postes gardent leurs deux caisses |
+| Par où sort l'argent d'un retrait | le **versement existant, sans pesée** |
+| Qui décide d'un retrait | **demande de l'opérateur, accord de l'administrateur** |
+
+---
+
+## 1. Le chèque
+
+### Une caisse de plus, à un seul niveau
+
+```
+entreprise   PHYSIQUE · NUMERIQUE · BANCAIRE
+pont bascule PHYSIQUE · NUMERIQUE              (inchangé)
+```
+
+`TypeCaisse::BANCAIRE` s'ajoute, et **`toutes()` cesse d'être une liste unique** : les écrans d'un
+poste doivent continuer d'en montrer deux. D'où deux accesseurs plutôt qu'un —
+`TypeCaisse::toutes()` et `TypeCaisse::celles(CompteMouvement)`. C'est le point où une erreur serait
+silencieuse : un poste afficherait une caisse bancaire toujours à zéro, que personne ne pourrait
+alimenter.
+
+Le périmètre réel est plus étroit qu'il n'y paraît : **`toutes()` n'a aujourd'hui aucun appelant**
+côté backend. Les deux caisses sont énumérées en dur à trois endroits du frontend, et ce sont eux
+qu'il faut traiter séparément plutôt qu'en bloc :
+
+| Où | Ce qu'il doit devenir |
+|---|---|
+| `GestionController::CAISSES` | **se scinde en deux** — voir ci-dessous |
+| `TableMouvements.tsx` (filtres) | gagne « Banque » : le grand livre porte désormais des lignes bancaires |
+| `gestion.model.ts` (`TypeCaisse`) | gagne `'BANCAIRE'` |
+
+**Le piège est là.** Cette constante unique sert quatre écrans qui ne parlent pas du même niveau :
+
+```
+CaisseController      → recharge d'une caisse de l'ENTREPRISE   doit gagner BANCAIRE
+DemandeSoldeController → demande de solde d'un POSTE (×2)        doit rester à deux
+SiteController         → libellé d'une dotation de POSTE          doit rester à deux
+```
+
+Laissée commune, elle proposerait à un opérateur de **demander une dotation bancaire pour son pont
+bascule** — une caisse que son poste ne possède pas. Elle se scinde donc en `CAISSES_ENTREPRISE` et
+`CAISSES_SITE`, et c'est exactement ce que `TypeCaisse::celles()` exprime côté backend.
+
+`Entreprise` gagne `soldeBancaire`; `Site` ne change pas. Les deux entités font déjà un `match` sans
+défaut sur la caisse : demander son solde bancaire à un poste lèvera donc tout seul, plutôt que de
+rendre zéro. Reste à remplacer l'`UnhandledMatchError` par un message qui nomme la faute — le
+comportement est déjà bon, c'est le diagnostic qui manque.
+
+### Un paiement imputé à l'entreprise — le premier
+
+`TypeMouvement::PAIEMENT` impose `CompteMouvement::SITE`, et l'enum tient à ce que le type décide
+seul du compte et du sens. On ajoute donc deux cas plutôt que de rendre `compte()` dépendant d'un
+paramètre :
+
+```php
+case PAIEMENT_BANCAIRE     = 'PAIEMENT_BANCAIRE';     // DEBIT  sur ENTREPRISE
+case REMBOURSEMENT_BANCAIRE = 'REMBOURSEMENT_BANCAIRE'; // CREDIT sur ENTREPRISE
+```
+
+`CaisseService::debiterPourPaiement()` et `rembourserPaiement()` branchent sur la caisse du
+paiement : bancaire → verrou et provision sur l'**entreprise**, sinon sur le site comme aujourd'hui.
+
+### Dans `ModeReglement`
+
+```php
+case CHEQUE = 'CHEQUE';
+caisse()              => TypeCaisse::BANCAIRE
+passeParLaPasserelle() => false   // comme les espèces : confirmé à la saisie
+exigeUnNumero()        => false
+exigeUnNumeroDeCheque() => true   // nouveau
+```
+
+`Paiement` gagne `numeroCheque` (nullable), **obligatoire pour ce mode seulement** : c'est la seule
+référence qui permettra le rapprochement avec le relevé bancaire. Sans elle, un chèque émis est
+indistinguable d'un autre sur le relevé.
+
+> **Ce que ce mode ne fait pas**, et qu'il faut écrire noir sur blanc : émettre le chèque solde la
+> pesée immédiatement. L'application ne sait pas s'il a été encaissé. C'est le même compromis que
+> les espèces, à ceci près que le délai est réel — à surveiller si un chèque sans provision devient
+> un cas.
+
+---
+
+## 2. Le retrait de l'épargne
+
+### Un versement sans pesée
+
+`Paiement.operation` passe de `NOT NULL` à nullable. Le code y est déjà presque :
+`PaiementService::appliquerResultat()` teste déjà `if(($pesee = $paiement->getOperation()) !== null)`.
+
+Le retrait hérite ainsi, sans une ligne de plus : la référence, les trois modes de règlement, la
+passerelle mobile, l'état « en vol », le remboursement automatique sur échec, la réconciliation des
+versements perdus, et l'écran de versement.
+
+### Ce qui diffère : la borne
+
+`initier()` est aujourd'hui tout entier bâti sur la pesée — `getMontantpayable()`,
+`sommeEngagee($pesee)`. On en extrait la queue commune, inchangée dans son comportement :
+
+```
+initier(pesee, …)         borne = montantpayable − engagé sur la pesée     ┐
+                                                                            ├→ executer(…)
+initierRetrait(compte, …) borne = solde d'épargne                          ┘
+```
+
+La seconde borne n'a **rien à soustraire**, et c'est une conséquence directe du point suivant :
+l'épargne étant débitée dès l'initiation, un retrait encore en vol a déjà quitté le solde. Il n'y a
+donc pas d'équivalent de `sommeEngagee()` à écrire — le solde est la borne.
+
+`executer()` reçoit le planteur, le site, le montant, le mode : il construit le `Paiement`, débite
+sous verrou, appelle la passerelle. **Aucune de ces lignes ne change** — c'est un déplacement, pas
+une réécriture, et les tests existants du guichet le prouvent.
+
+### Les deux livres en pas cadencé
+
+Le livre d'épargne suit exactement la discipline de la caisse, et c'est ce qui rend le double
+retrait impossible :
+
+| | caisse | épargne |
+|---|---|---|
+| à l'initiation | débit (réservation) | **débit** |
+| sur échec | `REMBOURSEMENT` | **`ANNULATION_RETRAIT`** |
+| sur succès | rien de plus | rien de plus |
+
+`TypeMouvementEpargne` gagne donc `RETRAIT` (débit) et `ANNULATION_RETRAIT` (crédit). Débiter
+l'épargne seulement à la confirmation ouvrirait une fenêtre pendant laquelle le solde est encore
+entier alors que l'argent est parti : deux retraits du même solde partiraient en vol ensemble.
+
+`EpargneService::retirer()` et `annulerRetrait()`, sous le même verrou `PESSIMISTIC_WRITE` que le
+prélèvement, restent les seuls à écrire un solde d'épargne.
+
+### La demande, puis l'accord
+
+Clone de `DemandeSolde`, qui porte déjà un `montantAccorde` pouvant être inférieur au demandé — ce
+qui sert ici quand la caisse ne couvre pas tout.
+
+```
+DemandeRetrait : fournisseur, montantDemande, montantAccorde, motif,
+                 statut, demandePar, traitePar, traiteAt, motifRejet, site
+```
+
+Opérations et processors calqués sur les deux familles existantes : `Post` (CREER), `Patch`
+correction, `/approbation`, `/rejet`, `/annulation`. Une seule demande en attente par planteur.
+
+**L'accord n'est pas le versement.** Contrairement à la demande de solde — qui dote la caisse
+sur-le-champ — l'administrateur n'a ni le planteur devant lui, ni son numéro, ni le choix du mode.
+Il **autorise** ; l'opérateur verse ensuite au guichet, dans la limite accordée. Trois états donc :
+accordée, puis versée.
+
+### Droits
+
+```
+'DemandeRetrait' => ADMIN [VOIR, TRAITER] · AGENT [VOIR] · OPERATEUR [VOIR, CREER, MODIFIER]
+```
+
+Le versement lui-même reste sous `PAIEMENT_PAYER`, déjà porté par l'opérateur.
+
+---
+
+## 3. Ce qu'il faut surveiller
+
+- **`CorbeilleService`** refuse déjà la mise à la corbeille d'un planteur au solde non nul. Avec le
+  retrait, ce refus devient contournable dans le bon sens — retirer, puis supprimer — mais la règle
+  ne change pas.
+- **L'écran Caisse** affiche « l'épargne due » comme un passif. Un retrait la fait baisser ET vide
+  une caisse : les deux chiffres bougent ensemble, et c'est le seul endroit où on le verra.
+- **`ModeReglement::valeurs()`** alimente des `Assert\Choice` et des listes déroulantes des deux
+  côtés : le chèque doit y apparaître partout d'un coup, sinon il est refusé par la validation après
+  avoir été proposé à l'écran.
+- **`mode_reglement.js`** masque aujourd'hui les champs mobiles via `data-si-mobile`, un booléen. Il
+  faut un troisième état pour le numéro de chèque : l'attribut devient `data-si-mode="MOBILE_MONEY"`
+  / `"CHEQUE"`. Le module ne porte toujours aucune règle — c'est le serveur qui décide — il ne fait
+  que ranger l'écran.
+- **La recharge de la caisse bancaire est le seul moyen de l'alimenter.** Si on ajoute le chèque sans
+  ajouter `BANCAIRE` à l'écran de recharge, le mode est proposé, accepté par la validation, et
+  refusé au débit pour provision insuffisante — sans qu'aucun écran ne permette d'y remédier.
+
+---
+
+## 4. Ordre de mise en œuvre
+
+1. `TypeCaisse::BANCAIRE` + `celles()`, `Entreprise::soldeBancaire`, `getSoldeDe()` qui lève
+2. `TypeMouvement` : les deux cas bancaires ; `CaisseService` qui branche sur le niveau
+3. `ModeReglement::CHEQUE`, `Paiement::numeroCheque`
+4. `Paiement.operation` nullable ; extraction de `executer()` dans `PaiementService`
+5. `TypeMouvementEpargne::RETRAIT` / `ANNULATION_RETRAIT` ; `EpargneService::retirer()`
+6. `PaiementService::initierRetrait()`
+7. `DemandeRetrait` + processors + droits + journal
+8. Migrations, fixtures
+9. Frontend : caisse entreprise à trois colonnes, mode chèque, écrans de demande de retrait
+10. Tests
+
+## 5. Vérification
+
+1. `php vendor/bin/phpunit` — les cas existants passent **inchangés** : aucune pesée, aucun
+   versement sur pesée ne change de comportement.
+2. Cas neufs : chèque qui débite l'entreprise et non le poste · chèque refusé sans numéro ·
+   poste qui ne peut pas demander une dotation bancaire · retrait borné par le solde d'épargne ·
+   deux retraits simultanés dont un seul passe · retrait mobile échoué qui rend l'argent **aux deux
+   livres** · demande refusée tant qu'une autre attend.
+3. `doctrine:schema:validate`, `lint:twig`, `lint:container`, `npx tsc --noEmit`.
+4. Navigateur, de bout en bout : recharger la caisse bancaire, régler une pesée par chèque et
+   vérifier que le tiroir du poste n'a pas bougé ; demander un retrait en opérateur, l'accorder en
+   administrateur, verser, et vérifier que le solde d'épargne et la caisse ont baissé **du même
+   montant**.
+5. `npm run build` avant tout commit — `public/build` est suivi par git.
+
+
+
+
+
+
+
+
+
+Sur la listes des retraits, pour la colonne Planteur je ne vois que des `—` au lieu du planteur, aussi sur le traitement du retrait !
+
+Ensuite, vérifie que tout est correcte et cohérent.
+
+
+
+
+
+
+
+
+
+**L'audit.** J'ai sondé chaque filtre que les 13 écrans de liste proposent réellement, en comparant le total filtré au total nu, valeur par valeur. Un filtre qui rend toujours zéro, ou toujours le total entier, est cassé quelle qu'en soit la cause :
+
+```
+produits         actif            true=4 false=0                 <<< casse
+fournisseurs     statut           ACTIF=4 SUSPENDU=0             ok
+sites            statut           ACTIF=2 BLOQUE=1               ok
+users            statut           ACTIF=4 SUSPENDU=1             ok
+entreprises      statut           ACTIVE=1 DESACTIVEE=0          ok
+operations       statutReglement  NON_PAYE=3 PARTIEL=2 SOLDE=1   ok
+paiements        statut           5 valeurs, somme = 8 = total   ok
+paiements        modeReglement    ESPECES=3 MM=4 CHEQUE=1        ok
+mouvements       compte/caisse/sens                              ok
+demandes × 3     statut           somme = total                  ok
+bilan            mouvement, destination, provenance, client,
+                 transporteur, chauffeur, vehicule               ok
+```
+
+Les sept listes déroulantes du bilan tirent leurs valeurs de `/api/stats/referentiels`, donc de ce qui existe vraiment dans les pesées — je les ai éprouvées avec ces valeurs-là, y compris la traduction `vehicule → immatriculation` qui vit dans le contrôleur.
+
+**Un seul autre défaut, d'une autre nature.** Trois champs de recherche promettent un code et ne l'interrogeaient pas :
+
+| Écran | Le champ annonce | Ce qu'il cherchait |
+|---|---|---|
+| Produits | « Libellé **ou code**… » | `libelle` seul |
+| Planteurs | « Nom **ou code**… » | `nom` seul |
+| Ponts bascules | « **Code** ou libellé… » | `libellesite` seul |
+
+Taper `SOF030` ne rendait rien. Sur les produits, l'illusion était plus retorse : chercher `CAC` trouvait bien « Cacao » — par le **libellé**, pas par le code — donc le champ paraissait marcher jusqu'au premier code qui ne ressemble pas à son libellé.
+
+Un `SearchFilter` par colonne donne un paramètre par colonne, jamais un OU. J'ai posé le paramètre `recherche` avec ce qu'API Platform 4.3 fournit déjà — `QueryParameter` + `FreeTextQueryFilter` + `OrFilter` + `PartialSearchFilter` — sur les trois entités, et les trois contrôleurs y pointent. `SOF030` trouve Daloa, `Yao` trouve Kouame Yao par son prénom, `PAL-07` trouvera le code du poste. L'alternative était de corriger les trois libellés ; réparer m'a paru meilleur que renoncer, puisque le code est ce que l'opérateur a sous les yeux.
+
+
+
+
+
+
+
+## La liste
+
+On vas traiter le **1**
+
+Les colonnes sont bien `prix_poste` et `prixtransport_poste`. Je retire l'arbitrage.
+
+Le filtre répond. Je le branche sur l'écran.
+
+Je remplace le cas devenu caduc et j'ajoute le cas qui fige la nouvelle règle.
+
+Le bout en bout est concluant ; j'attends la suite complète.
+
+**Ce qui changeait de mains.** Le prix d'un produit et le prix de transport d'un planteur avaient deux propriétaires. Un arbitrage les départageait : `prixPoste` mémorisait la dernière valeur reçue du logiciel de pesée, et on ne réappliquait la sienne que si elle avait bougé depuis — « le dernier qui modifie l'emporte ». C'est tout ce mécanisme qui disparaît, puisque le paiement se décide sur le web et que le chiffre qui le fonde doit en venir aussi.
+
+**Côté API**
+
+- `SynchronisationService` ne lit plus `prix` ni `prixtransport`. Les champs arrivent toujours — les postes déployés ne seront pas tous mis à jour le même jour — et sont **lus et jetés**. Les refuser ferait échouer des lots entiers pour une information dont on n'a plus l'usage.
+- `Produit::prixPoste` et `Fournisseur::prixtransportPoste` disparaissent avec leurs deux méthodes d'arbitrage ; la migration `Version20261116171500` supprime les colonnes. Les prix **en vigueur** ne sont pas touchés : ce qui s'applique aujourd'hui continue de s'appliquer.
+- `findRecalculables()` n'avait qu'un appelant, cette retarification-là. Elle part, et ses garde-fous — ne pas réécrire une pesée déjà payée, ni une pesée arbitrée — rejoignent `findARevaloriser()`, qui devient le **seul** chemin de retarification.
+
+**La conséquence qu'il fallait traiter en même temps.** Tout produit créé par un peseur naît désormais à zéro, et ses pesées ne valent rien jusqu'à ce qu'on le tarife. C'était l'exception, c'est la règle. La liste des produits gagne donc un filtre **« En attente de prix »** (`prix=0`, via `NumericFilter`) — la colonne les signalait déjà en rouge, mais il fallait parcourir la liste pour les trouver.
+
+**Vérifié de bout en bout, par le vrai endpoint.** J'ai régénéré les identifiants du Pont de Soubré depuis l'écran du site, puis envoyé un lot signé par le compte machine :
+
+```
+envoyé   : Hévéa prix=9999, prixtransport=8888   ·   Anacarde (nouveau) prix=777
+accusé   : code 1, success 2          ← le lot passe, les postes actuels continuent de marcher
+après    : Hévéa=400   Anacarde=0     ← le prix du bureau tient, le nouveau naît à zéro
+           transport du planteur = 15 F/kg (inchangé)
+T9001    : 500 kg × 400 = 200 000 F dû, 500 × 15 = 7 500 F de transport
+T9002    : 0 F dû — une pesée sans prix ne vaut rien, ce qui vaut mieux qu'un montant inventé
+```
+
+Et le filtre, sur ces données réelles : `/produits?prix=0` ne rend qu'`Anacarde`.
+
+**Tests.** `OK (157 tests, 902 assertions)`. Deux cas neufs dans `SynchronisationTest` — un prix envoyé par le poste est ignoré, un produit créé par le poste naît sans prix — éprouvés en réautorisant brièvement le poste à tarifer : ils tombent avec `999 ≠ 400` et `650 ≠ 0`. Le cas de `PrixTransportTest` qui éprouvait l'arbitrage supprimé est réécrit autour de ce qui reste vrai : le transport se saisit et se corrige sur le web, et `null` (« pas de transport ») s'y distingue de `0` (« plus de transport »).
+
+J'ai aussi corrigé trois textes d'interface devenus faux, dont la bannière de la liste des produits qui annonçait encore « Le prix circule dans les deux sens […] le dernier qui modifie l'emporte ». `lint:twig`, `lint:container`, `tsc`, `npm run build` et la suite du frontend (10 tests) passent.
+
+Deux choses à savoir : la base de dev porte les traces de l'essai — deux pesées T9001/T9002 et un produit « Anacarde » à zéro, que j'ai laissés parce qu'ils montrent le filtre à l'œuvre — et les identifiants du poste de Soubré ont été régénérés, donc l'ancien fichier de configuration de ce poste ne vaut plus rien. Rien n'est commité dans aucun des deux dépôts.
+
+
+
+
+
+
+
+
+
+
+On attaque le **2** et concernant le « le produit est obligatoirement payant par rapport au transport », ici ce que je voulais dire est qu'on peut décider de payer seulement le produit ou payer seulement le transport ou encore payer tout. aussi avoir la possibilité de payer le transport en plusieurs fois vu qu'on peut le faire pour produit.
+
+
+
+
+
+Je connais déjà la plupart du circuit, mais la séparation produit/transport touche large. Je fais cartographier précisément le rayon de souffle avant d'écrire quoi que ce soit.
+
+Pendant que la cartographie tourne, je note la question de fond que cette fonctionnalité soulève : aujourd'hui une pesée dont le produit n'est pas tarifé ne paie **rien, transport compris**, et cette règle n'existait que parce qu'on ne pouvait pas régler les deux parts séparément.
+
+Une question de fond pendant que la cartographie se termine — elle décide de la forme du reste.
+
+
+
+Une pesée dont le produit n'a pas encore de prix : peut-on régler son transport tout seul ?
+Oui, le transport se paie
+Payer les deux parts d'un même geste : un seul versement, ou deux modes de règlement possibles ?
+Je n'ai pas trop compris ici, tu fais allusion au `payer tout` ! si oui alors le 1(un seul versement)
+
+
+
+Les deux relevés sont complets et font apparaître des interactions que je veux éprouver avant d'écrire le plan — notamment le verrou `montantpaye > 0` de `calculerMontant()`, qui gèlerait la revalorisation du produit dès qu'on aurait payé le seul transport.
+
+Le plan est écrit ; j'attends le rapport d'épreuve pour le corriger avant de vous le soumettre.
+
+Le rapport a trouvé un trou réel dans ma conception : une pesée non tarifée au transport payé atterrissait en « partielle » avec un reste nul et le motif « déjà soldée » — le produit devenait **invisible** au lieu d'être visiblement impayé. Je corrige le plan.
+
+Le plan est approuvé. Les étapes se suivent toutes — l'écran ne peut rien afficher avant que l'API publie les champs — donc je les enchaîne ici.
+
+Le cœur du changement. Je réécris `Operation` d'un bloc.
+
+Maintenant les deux bornes, qui remplacent la ligne que le README appelle « la seule de l'application où la borne d'un versement se décide ».
+
+La suite tourne. Je prends les écrans pendant ce temps — ils ne touchent pas la base de test.
+
+Les écrans sont faits. J'attends la suite backend avant de lancer les cas neufs.
+
+Les deux README sont à jour. J'attends la suite pour enchaîner sur les cas neufs et la vérification au navigateur.
+
+Un vrai défaut, pas un test à ajuster : le motif par part s'appuyait sur la collection des versements, que le README signale comme périmée juste après une écriture. Je fais décider le refus par les chiffres de la requête.
+
+La suite tourne avec les dix cas neufs. Je reprends dès qu'elle rend la main, puis passe à la vérification au navigateur.
+
+**Ce qui change dans le modèle.** Un `Paiement` garde `montant` comme **total** — seul chiffre que voient la caisse, la passerelle et le grand livre — et porte sa ventilation en `montantproduit` + `montanttransport`. L'invariant `montant = produit + transport` vaut pour **toute** ligne, retrait d'épargne compris (qui porte tout sur la part produit), ce qui permet de le figer par une contrainte `CHECK` plutôt que par un commentaire. La pesée suit avec `montantpayeproduit` / `montantpayetransport`, et `montantpaye` reste leur somme.
+
+Payer les deux parts d'un geste reste **un seul versement** : une référence, une sortie de caisse, un seul frais mobile.
+
+**La ligne que le README appelait « la seule de l'application où la borne d'un versement se décide » est devenue deux**, une par part, toujours sur l'engagé et non sur le confirmé. Et un refus sur une part fait échouer tout l'appel — déverser en silence sur l'autre paierait autre chose que ce que l'opérateur a saisi.
+
+**Quatre choses que la séparation imposait, et qu'on ne voyait pas depuis la surface**
+
+- `calculerMontant()` se verrouillait sur le cumul : un franc versé et plus rien ne bougeait. Payer le transport d'une pesée non tarifée aurait donc **gelé pour toujours** la valorisation de sa récolte. Le verrou est désormais par part, et porte sur l'engagé.
+- Le statut se calculait sur les variables locales et non sur les champs écrits — invisible tant que les deux coïncidaient, faux dès que les verrous divergent.
+- `calculerMontant()` refuse maintenant une pesée arbitrée. Ce garde-fou ne vivait que dans `findARevaloriser()`, donc côté web : le poste, lui, réécrivait le montant d'une pesée arbitrée à chaque renvoi. Les deux chemins tranchent pareil.
+- Le « en vol » se sommait globalement : un versement parti sur le transport fermait la récolte avec un « un versement est déjà en cours » pour une part où pas un franc n'était sorti.
+
+**Un défaut trouvé par les tests, pas par la lecture.** Le motif d'une part s'appuyait sur la collection des versements de l'entité — celle que le README signale comme périmée juste après une écriture. Résultat : une pesée entièrement engagée s'y lisait libre, et le refus tombait sur un message générique au lieu de nommer le versement en vol. Le service compose désormais le refus depuis les chiffres de **sa** requête, avec les formats de l'entité pour que les deux disent mot pour mot la même chose.
+
+**Trois chiffres déjà faux, corrigés au passage** : le lien « Verser » du bilan (`montantdu − montantpaye`, ni transport ni retenue), le « reste à payer » **imprimé** qui oubliait la retenue, et `parSite()` qui était seule à ne pas sélectionner le transport ni la retenue — un poste aux produits non tarifés y aurait affiché `montantDu: 0, montantPaye: 120 000`.
+
+**Vérifications**
+
+`OK (167 tests, 975 assertions)` — dix cas neufs dans [DeuxPartsTest.php](Backend-Webpesee-V2/tests/Caisse/DeuxPartsTest.php), et quatre cas réécrits plutôt que supprimés (dont `testUnProduitNonTarifeNePaiePasMemeLeTransport`, devenu son contraire). Frontend : 12 tests, `lint:twig`, `lint:container`, `tsc`, `npm run build`. La migration est passée, `doctrine:schema:validate` est en phase, et la reprise des données a laissé **zéro** ligne où le total diffère de la somme des parts.
+
+Au navigateur, de bout en bout :
+
+```
+T-4505   transport seul 210 000 F  → récolte 4 900 000 F toujours due, « partielle »
+         récolte en 2 fois         → 2 000 000 puis 2 900 000, « soldée »
+
+T-7701   anacarde créée par le poste, sans prix
+         transport seul 15 000 F   → « partielle », motif « Anacarde n'a pas de prix »
+                                      et NON « déjà soldée »
+         puis tarifée à 800 F/kg   → récolte 800 000 F, transport intact à 15 000 F
+```
+
+**Un écart au plan approuvé**, que je signale : je n'ai pas ajouté `statutProduit` / `statutTransport`. Les montants par part, les motifs par part et le statut global publient déjà tout ce que les écrans lisent, et deux pastilles de plus auraient dupliqué une information que la colonne « reste à payer » donne mieux. Si vous les voulez quand même, c'est une demi-journée.
+
+Deux choses à savoir : l'accusé renvoyé au poste gagne `payableproduit` et `payabletransport`, et son `montantpayable` change de sens pour une pesée non tarifée — il y annonçait zéro, il annonce désormais le transport, qui est bel et bien dû. Et la base de dev porte les traces des essais (dotation de 5 000 000 F au Pont de Soubré, pesée T-7701, identifiants du poste régénérés) ; `doctrine:fixtures:load` remet tout à plat. Rien n'est commité.

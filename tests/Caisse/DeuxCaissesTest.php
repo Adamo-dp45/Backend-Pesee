@@ -103,7 +103,8 @@ final class DeuxCaissesTest extends InvariantTestCase
         $this->appeler('POST', '/api/paiements', $operateur, [
             'operationId' => $pesee->getId(),
             'modeReglement' => 'ESPECES',
-            'montant' => 60_000,
+            'montantProduit' => 60_000,
+            'montantTransport' => 0,
         ]);
 
         self::assertSame(201, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
@@ -132,7 +133,8 @@ final class DeuxCaissesTest extends InvariantTestCase
         $this->appeler('POST', '/api/paiements', $operateur, [
             'operationId' => $pesee->getId(),
             'modeReglement' => 'ESPECES',
-            'montant' => 200_000, // La totalité de ce qui est dû
+            'montantProduit' => 200_000, // La totalité de ce qui est dû
+            'montantTransport' => 0,
         ]);
 
         self::assertSame(201, $this->client->getResponse()->getStatusCode());
@@ -166,7 +168,8 @@ final class DeuxCaissesTest extends InvariantTestCase
         $this->appeler('POST', '/api/paiements', $operateur, [
             'operationId' => $pesee->getId(),
             'modeReglement' => 'MOBILE_MONEY',
-            'montant' => 60_000,
+            'montantProduit' => 60_000,
+            'montantTransport' => 0,
         ]);
 
         self::assertSame(422, $this->client->getResponse()->getStatusCode());
@@ -190,7 +193,8 @@ final class DeuxCaissesTest extends InvariantTestCase
         $this->appeler('POST', '/api/paiements', $operateur, [
             'operationId' => $pesee->getId(),
             'modeReglement' => 'ESPECES',
-            'montant' => 60_000,
+            'montantProduit' => 60_000,
+            'montantTransport' => 0,
         ]);
 
         self::assertSame(422, $this->client->getResponse()->getStatusCode());

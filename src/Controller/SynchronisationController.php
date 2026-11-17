@@ -231,6 +231,13 @@ final class SynchronisationController extends AbstractController
             'montanttransport' => $operation->getMontanttransport(),
             'retenue' => $operation->getRetenue(),
             'montantpayable' => $operation->getMontantpayable(),
+            /*
+                - LA VENTILATION, depuis qu'on règle la récolte et le transport séparément. 'montantpayable'
+                  reste leur somme, et c'est un changement visible : une pesée dont le produit n'est pas
+                  tarifé y annonçait zéro et annonce désormais son transport, qui est bel et bien dû.
+            */
+            'payableproduit' => $operation->getPayableproduit(),
+            'payabletransport' => $operation->getPayabletransport(),
         ];
     }
 

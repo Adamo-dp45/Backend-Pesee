@@ -49,11 +49,13 @@ class PaiementProcessor implements ProcessorInterface
 
         return $this->paiements->initier(
             $pesee,
-            (int) $data->montant,
+            (int) $data->montantProduit,
+            (int) $data->montantTransport,
             $data->modeReglement ?? ModeReglement::MOBILE_MONEY, // La validation l'exige déjà ; ce repli n'est là que pour le typage
             $auteur,
             $data->numeroDestinataire,
-            $data->reseau
+            $data->reseau,
+            $data->numeroCheque
         );
     }
 }

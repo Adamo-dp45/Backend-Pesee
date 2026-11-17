@@ -64,7 +64,8 @@ final class MontantEnVolProvider implements ProviderInterface
               hydraterait ses paiements — on aurait payé la requête groupée pour rien.
         */
         foreach($lignes as $ligne) {
-            $ligne->setMontantenvol($enVol[(int) $ligne->getId()] ?? 0);
+            $parts = $enVol[(int) $ligne->getId()] ?? ['produit' => 0, 'transport' => 0];
+            $ligne->setMontantsenvol($parts['produit'], $parts['transport']);
         }
 
         return $page;

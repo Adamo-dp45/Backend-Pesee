@@ -118,35 +118,54 @@ final class PrixTransportTest extends InvariantTestCase
     }
 
     /*
-        - Une pesée dont le produit n'est pas tarifé ne vaut rien, ET NE PAIE RIEN, transport compris.
-          Régler le seul transport laisserait une pesée à moitié payée que plus personne ne rouvre, et
-          le motif doit continuer de nommer ce qu'il y a à corriger : aller tarifer le produit.
+        - LE CAS S'EST INVERSÉ le jour où la récolte et le transport se sont réglés séparément.
+          Jusque-là, une pesée non tarifée ne payait RIEN, transport compris : régler le seul
+          transport aurait laissé une pesée à moitié payée que plus personne ne rouvre.
+        - C'est précisément ce qu'on veut désormais : le planteur a brûlé son carburant que la
+          récolte ait un prix ou non. Ce qui empêche la pesée de disparaître de la file du
+          guichet n'est plus ce zéro, mais 'StatutReglement' qui refuse de la dire soldée tant
+          qu'elle n'est pas tarifée — et le motif de la part produit, qui nomme ce qu'il faut
+          corriger : aller tarifer le produit.
     */
-    public function testUnProduitNonTarifeNePaiePasMemeLeTransport(): void
+    public function testUnProduitNonTarifeLaisseSonTransportPayable(): void
     {
         $sansPrix = $this->creerProduit($this->site, 'Cacao', 0);
         $pesee = $this->creerPesee($this->site, $sansPrix, $this->planteurTransporteur());
 
-        self::assertSame(0, $pesee->getMontantpayable());
-        self::assertStringContainsString('Cacao', (string) $pesee->getMotifNonPayable());
-        self::assertStringContainsString('tarifé', (string) $pesee->getMotifNonPayable());
+        // La récolte ne vaut rien tant qu'elle n'a pas de prix, et le motif de SA part le dit
+        self::assertSame(0, $pesee->getPayableproduit());
+        self::assertStringContainsString('Cacao', (string) $pesee->getMotifNonPayableProduit());
+        self::assertStringContainsString('tarifé', (string) $pesee->getMotifNonPayableProduit());
+
+        // Le transport, lui, se paie
+        self::assertSame(self::TRANSPORT * self::POIDS, $pesee->getPayabletransport());
+        self::assertNull($pesee->getMotifNonPayableTransport());
+        self::assertTrue($pesee->estPayable(), 'La pesée doit rester payable par son transport');
+
+        // Et le payable total n'est plus zéro : c'est le transport, et lui seul
+        self::assertSame(self::TRANSPORT * self::POIDS, $pesee->getMontantpayable());
     }
 
     /*
-        - L'arbitrage poste/web, dans le sens qui compte : le logiciel de pesée ne connaît pas le
-          transport de ce planteur et n'envoie rien. La valeur saisie au bureau doit TENIR — sans
-          quoi corriger une fiche sur le web serait inutile, la prochaine synchronisation l'effaçant.
+        - LE PRIX DU TRANSPORT SE SAISIT SUR LE WEB, ET NULLE PART AILLEURS. Ce cas éprouvait
+          autrefois l'arbitrage entre les deux sources ; il ne reste qu'une source, et ce qui
+          compte désormais est qu'une valeur saisie au bureau tienne, et qu'elle se corrige.
+        - Le cas symétrique — un poste qui envoie quand même un prix — est dans
+          'SynchronisationTest' : c'est là que la charge utile arrive.
     */
-    public function testLePosteMuetNEffacePasLePrixSaisiSurLeWeb(): void
+    public function testLePrixDuTransportSeSaisitEtSeCorrigeSurLeWeb(): void
     {
         $planteur = $this->planteurTransporteur();
 
-        self::assertFalse($planteur->appliquerPrixTransportDuPoste(null));
         self::assertSame(self::TRANSPORT, $planteur->getPrixtransport());
 
-        // Une valeur explicite, elle, l'emporte — 0 compris, qui veut dire « plus de transport »
-        self::assertTrue($planteur->appliquerPrixTransportDuPoste(0));
+        // Zéro n'est pas « pas de valeur » : c'est « on ne lui paie plus de transport »
+        $planteur->setPrixtransport(0);
         self::assertSame(0, $planteur->getPrixtransport());
+
+        // Et 'null' le rend à son état le plus courant : un planteur à qui on ne paie pas de transport
+        $planteur->setPrixtransport(null);
+        self::assertNull($planteur->getPrixtransport());
     }
 
     /*

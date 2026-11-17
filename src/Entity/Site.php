@@ -2,9 +2,13 @@
 
 namespace App\Entity;
 
+use ApiPlatform\Doctrine\Orm\Filter\FreeTextQueryFilter;
+use ApiPlatform\Doctrine\Orm\Filter\OrFilter;
+use ApiPlatform\Doctrine\Orm\Filter\PartialSearchFilter;
 use ApiPlatform\Doctrine\Orm\Filter\OrderFilter;
 use ApiPlatform\Doctrine\Orm\Filter\SearchFilter;
 use ApiPlatform\Metadata\ApiFilter;
+use ApiPlatform\Metadata\QueryParameter;
 use ApiPlatform\Metadata\ApiResource;
 use ApiPlatform\Metadata\Get;
 use ApiPlatform\Metadata\GetCollection;
@@ -12,6 +16,7 @@ use ApiPlatform\Metadata\Patch;
 use ApiPlatform\Metadata\Post;
 use ApiPlatform\OpenApi\Model\Operation;
 use App\Domain\Enum\StatutSite;
+use App\Domain\Enum\CompteMouvement;
 use App\Domain\Enum\TypeCaisse;
 use App\Entity\Input\AssignerOperateurInput;
 use App\Entity\Input\MontantInput;
@@ -161,25 +166,37 @@ use Symfony\Component\Validator\Constraints as Assert;
     'operateur' => 'exact',
 ])]
 // Le tri porte sur les colonnes, donc sur chaque caisse : 'solde' est un cumul calculé, que SQL ne sait pas classer
+/*
+    - UN champ de saisie, PLUSIEURS colonnes en OU. Les écrans annoncent « Code ou libellé » dans leur
+      champ de recherche ; avec un filtre par colonne, une seule répondait et le code ne trouvait
+      jamais rien — sans message, comme s'il n'existait pas.
+    - 'FreeTextQueryFilter' rassemble les colonnes, 'OrFilter' les met en OU plutôt qu'en ET, et
+      'PartialSearchFilter' cherche le fragment sans tenir compte de la casse.
+*/
+#[QueryParameter(
+    key: 'recherche',
+    filter: new FreeTextQueryFilter(new OrFilter(new PartialSearchFilter())),
+    properties: ['libellesite', 'code'],
+)]
 #[ApiFilter(OrderFilter::class, properties: ['code', 'libellesite', 'soldePhysique', 'soldeNumerique', 'createdAt'])]
 class Site extends EntityBase implements EntrepriseOwnedInterface, CompteInterface
 {
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    #[Groups(['read:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement'])]
+    #[Groups(['read:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement', 'read:DemandeRetrait'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 50)]
     #[Assert\NotBlank(message: 'Le code du pont bascule est obligatoire')]
     #[Assert\Length(min: 2, max: 50)]
-    #[Groups(['read:Site', 'write:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement'])]
+    #[Groups(['read:Site', 'write:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement', 'read:DemandeRetrait'])]
     private ?string $code = null; // Modifiable à la création seulement : c'est la clé de rapprochement avec le poste
 
     #[ORM\Column(length: 255)]
     #[Assert\NotBlank(message: 'Le libellé du pont bascule est obligatoire')]
     #[Assert\Length(min: 2, max: 255)]
-    #[Groups(['read:Site', 'write:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement'])]
+    #[Groups(['read:Site', 'write:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement', 'read:DemandeRetrait'])]
     private ?string $libellesite = null;
 
     #[ORM\Column(length: 255, nullable: true)]
@@ -355,22 +372,41 @@ class Site extends EntityBase implements EntrepriseOwnedInterface, CompteInterfa
         return (int) $this->soldeNumerique;
     }
 
+    /*
+        - UN POSTE NE TIENT PAS DE CAISSE BANCAIRE. Le 'match' sans défaut levait déjà, mais en 'UnhandledMatchError' : une erreur de moteur, au milieu d'une transaction, sans un mot sur ce qui a été demandé. Le refus est le même, il se nomme maintenant.
+    */
     public function getSoldeDe(TypeCaisse $caisse): int
     {
+        $this->exigerUneCaisseDeSite($caisse);
+
         return match($caisse) {
             TypeCaisse::PHYSIQUE => $this->getSoldePhysique(),
             TypeCaisse::NUMERIQUE => $this->getSoldeNumerique(),
+            default => 0,
         };
     }
 
     public function setSoldeDe(TypeCaisse $caisse, int $montant): static
     {
+        $this->exigerUneCaisseDeSite($caisse);
+
         match($caisse) {
             TypeCaisse::PHYSIQUE => $this->soldePhysique = $montant,
             TypeCaisse::NUMERIQUE => $this->soldeNumerique = $montant,
+            default => null,
         };
 
         return $this;
+    }
+
+    private function exigerUneCaisseDeSite(TypeCaisse $caisse): void
+    {
+        if(!$caisse->vitAuNiveauDuSite()) {
+            throw new \LogicException(sprintf(
+                'Un pont bascule ne tient pas de %s : cette caisse est à l\'entreprise seule.',
+                strtolower($caisse->libelle())
+            ));
+        }
     }
 
     /*
@@ -379,7 +415,7 @@ class Site extends EntityBase implements EntrepriseOwnedInterface, CompteInterfa
     #[Groups(['read:Site', 'read:DemandeSolde'])]
     public function getSolde(): int
     {
-        return $this->getSoldePhysique() + $this->getSoldeNumerique();
+        return array_sum(array_map($this->getSoldeDe(...), TypeCaisse::celles(CompteMouvement::SITE)));
     }
 
     public function getLibelleCompte(): string

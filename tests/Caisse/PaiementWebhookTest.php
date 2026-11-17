@@ -166,7 +166,8 @@ final class PaiementWebhookTest extends InvariantTestCase
         $this->appeler('POST', '/api/paiements', $operateur, [
             'operationId' => $pesee->getId(),
             'modeReglement' => 'MOBILE_MONEY',
-            'montant' => 200_000,
+            'montantProduit' => 200_000,
+            'montantTransport' => 0,
         ]);
 
         self::assertSame(422, $this->client->getResponse()->getStatusCode());
@@ -259,7 +260,7 @@ final class PaiementWebhookTest extends InvariantTestCase
         $planteur = $this->creerPlanteur($site);
         $pesee = $this->creerPesee($site, $produit, $planteur, 1_000); // 1 000 kg × 200 = 200 000 F dus
 
-        $paiement = self::getContainer()->get(PaiementService::class)->initier($pesee, $montant, ModeReglement::MOBILE_MONEY, $operateur);
+        $paiement = self::getContainer()->get(PaiementService::class)->initier($pesee, $montant, 0, ModeReglement::MOBILE_MONEY, $operateur);
 
         self::assertSame(StatutPaiement::ENVOYE, $paiement->getStatut(), 'Le décor suppose un versement en vol');
 

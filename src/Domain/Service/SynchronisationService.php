@@ -20,6 +20,10 @@ use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 /*
     - Reçoit un lot de pesées d'un poste et le déverse en base. Tout le flux est ici : interprétation de la charge utile, rapprochement des référentiels, valorisation, écriture, journal, accusé de réception.
 
+    - LE POSTE PESE, IL NE TARIFE PAS. Un 'prix' ou un 'prixtransport' présent dans la charge utile est lu et jeté : la valorisation applique le prix du web. Les postes déployés continuent d'envoyer ces champs, et c'est très bien — les refuser ferait échouer des lots entiers pour une information dont on n'a plus l'usage.
+
+      Avant, les deux côtés tarifaient et un arbitrage départageait. Un prix changé sur le poste revalorisait alors les pesées déjà reçues et non payées ('findRecalculables'). Il ne reste qu'un chemin de retarification, celui du web, dans 'TarificationProcessor'.
+
     - Le SITE vient du COMPTE MACHINE, jamais du corps de la requête. C'est le correctif de fond par rapport au code d'origine, où le champ 'code' de la charge utile déterminait à lui seul chez quel client les pesées atterrissaient : n'importe quel compte authentifié pouvait écrire dans n'importe quel pont bascule. Le code reçu n'est plus qu'une vérification de cohérence.
 
     - Une seule transaction pour tout le lot, et un seul 'flush()'. Le code d'origine appelait 'flush()' jusqu'à quatre fois par ligne, soit huit cents allers-retours pour deux cents pesées.
@@ -103,7 +107,6 @@ class SynchronisationService
 
         /* 3. Application. */
         $acquittees = [];
-        $retarife = false;
 
         /*
             - Les pesées qui attendent qu'on tranche leur mise en compte. On les met de côté au lieu
@@ -117,7 +120,7 @@ class SynchronisationService
                 $existante = $existantes[$ligne['codesecret']] ?? null;
                 $operation = $existante ?? new Operation();
 
-                $retarife = $this->appliquer($operation, $ligne, $site, $produits, $fournisseurs) || $retarife;
+                $this->appliquer($operation, $ligne, $site, $produits, $fournisseurs);
 
                 if($existante === null) {
                     $this->em->persist($operation);
@@ -131,20 +134,6 @@ class SynchronisationService
                 }
             } catch(\Throwable $e) {
                 $erreurs[] = ['id' => $ligne['refDesktop'], 'message' => $e->getMessage()];
-            }
-        }
-
-        /*
-            - Un prix qui a bougé côté poste ne concerne pas que le lot courant : les pesées déjà reçues et pas encore payées portent l'ancien montant. On les recalcule, mais seulement quand un prix a réellement changé — le cas est rare, la requête ne part donc presque jamais.
-        */
-        if($retarife) {
-            foreach($this->operationRepository->findRecalculables($site) as $ancienne) {
-                $ancienne->calculerMontant();
-
-                // Une pesée qui vient d'être valorisée devient arbitrable dans le même lot : son épargne ne doit pas attendre le prochain envoi
-                if($ancienne->attendUnArbitrage()) {
-                    $aArbitrer[] = $ancienne;
-                }
             }
         }
 
@@ -208,14 +197,13 @@ class SynchronisationService
 
     /*
         - Chaque envoi porte la LIGNE ENTIÈRE, pas seulement ce qui a changé : le poste affiche et transmet un enregistrement qui s'enrichit au second passage, il ne suit pas les champs modifiés. Confirmé par l'éditeur du logiciel de pesée. C'est ce qui autorise à tout réécrire ici.
-        - Le seul champ traité différemment est le prix : 'array_key_exists' distingue « absent » de « vide », ce qu'exige l'arbitrage bidirectionnel.
+        - Les champs de prix de la charge utile ne sont pas lus : voir le commentaire de classe.
 
         @param array{brute: array<string, mixed>, refDesktop: string, codesecret: string} $ligne
         @param array<string, Produit>     $produits
         @param array<string, Fournisseur> $fournisseurs
-        @return bool vrai si un prix de référentiel a changé, donc si les anciennes pesées doivent être recalculées
      */
-    private function appliquer(Operation $operation, array $ligne, Site $site, array &$produits, array &$fournisseurs): bool
+    private function appliquer(Operation $operation, array $ligne, Site $site, array &$produits, array &$fournisseurs): void
     {
         $brute = $ligne['brute'];
 
@@ -274,29 +262,28 @@ class SynchronisationService
                 ->setPeseeAt2($terminee ? $this->horodatage($brute, 'datepesee2', 'temps2') : null);
         }
 
-        $retarife = $this->resoudreProduit($brute, $site, $produits, $produit);
-        $retarife = $this->resoudreFournisseur($brute, $site, $fournisseurs, $fournisseur) || $retarife;
+        $this->resoudreProduit($brute, $site, $produits, $produit);
+        $this->resoudreFournisseur($brute, $site, $fournisseurs, $fournisseur);
 
         $operation->setProduit($produit)->setFournisseur($fournisseur);
-        $operation->calculerMontant();
-
-        return $retarife;
+        $operation->calculerMontant(); // Avec le prix du web : c'est lui, et lui seul, qui vaut
     }
 
     /*
         - Produits et planteurs sont créés à la volée : sur l'écran de pesée, chaque champ de référentiel a son bouton « Créer », et le peseur s'en sert. Le serveur ne peut qu'enregistrer ce qui arrive ; le web complète ensuite le prix, le contact, le réseau mobile.
+        - Un produit qui naît ici naît DONC à zéro, et ses pesées ne valent rien jusqu'à ce qu'on le tarife au bureau. Le filtre « non tarifés » de la liste des produits est là pour ça.
         - Le rapprochement se fait sur la clé normalisée et non sur le libellé brut, sinon « HEVEA », « Hevea » et « Hévéa » créeraient trois produits. Voir 'Cle'.
 
         @param array<string, mixed>   $brute
         @param array<string, Produit> $produits
      */
-    private function resoudreProduit(array $brute, Site $site, array &$produits, ?Produit &$produit): bool
+    private function resoudreProduit(array $brute, Site $site, array &$produits, ?Produit &$produit): void
     {
         $produit = null;
         $libelle = $this->texte($brute, 'libelleproduit');
 
         if($libelle === null) {
-            return false;
+            return;
         }
 
         $cle = Cle::depuis($libelle);
@@ -312,22 +299,19 @@ class SynchronisationService
         if(($codeproduit = $this->texte($brute, 'codeproduit')) !== null) {
             $produit->setCodeproduit($codeproduit);
         }
-
-        // Le prix n'est réappliqué que si le poste l'a réellement changé, sinon chaque envoi écraserait la tarification faite en ligne avec une valeur pourtant identique de son côté
-        return array_key_exists('prix', $brute) && $produit->appliquerPrixDuPoste($this->entier($brute, 'prix'));
     }
 
     /**
      * @param array<string, mixed>        $brute
      * @param array<string, Fournisseur>  $fournisseurs
      */
-    private function resoudreFournisseur(array $brute, Site $site, array &$fournisseurs, ?Fournisseur &$fournisseur): bool
+    private function resoudreFournisseur(array $brute, Site $site, array &$fournisseurs, ?Fournisseur &$fournisseur): void
     {
         $fournisseur = null;
         $libelle = $this->texte($brute, 'libellefournisseur');
 
         if($libelle === null) {
-            return false;
+            return;
         }
 
         $cle = Cle::depuis($libelle);
@@ -349,9 +333,6 @@ class SynchronisationService
         if($fournisseur->getContact1() === null) {
             $fournisseur->setContact1($this->texte($brute, 'contactfournisseur') ?? $this->texte($brute, 'contactFournisseur'));
         }
-
-        // Pas de 'array_key_exists' ici, contrairement au produit : le prix de transport absent de la charge utile et le prix de transport à null sont la même chose, et la méthode refuse déjà les deux
-        return $fournisseur->appliquerPrixTransportDuPoste($this->entier($brute, 'prixtransport'));
     }
 
     /* ---- Lecture de la charge utile -------------------------------------------------------- */

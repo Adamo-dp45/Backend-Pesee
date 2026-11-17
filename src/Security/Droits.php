@@ -74,6 +74,7 @@ final class Droits
             'MouvementEpargne' => [self::VOIR],
             'DemandeSolde' => [self::VOIR, self::TRAITER],
             'DemandePrelevement' => [self::VOIR, self::TRAITER],
+            'DemandeRetrait' => [self::VOIR, self::TRAITER], // Lui seul accorde un retrait : l'argent qu'on gardait sort de la caisse
             'SynchronisationLot' => [self::VOIR],
             'Activite' => [self::VOIR], // Le journal des decisions : une lecture de supervision
         ],
@@ -89,6 +90,7 @@ final class Droits
             'MouvementEpargne' => [self::VOIR],
             'DemandeSolde' => [self::VOIR],
             'DemandePrelevement' => [self::VOIR],
+            'DemandeRetrait' => [self::VOIR],
             'SynchronisationLot' => [self::VOIR],
             'Activite' => [self::VOIR],
         ],
@@ -102,6 +104,7 @@ final class Droits
             'MouvementEpargne' => [self::VOIR],
             'DemandeSolde' => [self::VOIR, self::CREER, self::MODIFIER], // Il corrige et annule la sienne ; « tant qu'elle n'est pas traitée » est vérifié par les processors
             'DemandePrelevement' => [self::VOIR, self::CREER, self::MODIFIER], // Il a le planteur devant lui : c'est à lui qu'on demande d'épargner
+            'DemandeRetrait' => [self::VOIR, self::CREER, self::MODIFIER], // Il a le planteur devant lui, qui vient chercher son argent
         ],
     ];
 

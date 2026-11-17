@@ -12,6 +12,7 @@ use ApiPlatform\Metadata\Patch;
 use ApiPlatform\Metadata\Post;
 use ApiPlatform\OpenApi\Model\Operation;
 use App\Domain\Enum\StatutEntreprise;
+use App\Domain\Enum\CompteMouvement;
 use App\Domain\Enum\TypeCaisse;
 use App\Entity\Input\MontantInput;
 use App\Entity\Interface\CompteInterface;
@@ -182,6 +183,14 @@ class Entreprise extends EntityBase implements CompteInterface
     #[Groups(['read:Entreprise'])]
     private int $soldeNumerique = 0;
 
+    /*
+        - Le compte en banque, sur lequel les chèques sont tirés. Il n'existe qu'ICI : un pont bascule n'en tient pas, et 'TypeCaisse::celles()' dit pourquoi.
+        - Comme les deux autres, il ne s'écrit que par 'CaisseService' : aucun écran ne pose un solde.
+    */
+    #[ORM\Column(type: Types::BIGINT, options: ['default' => 0])]
+    #[Groups(['read:Entreprise'])]
+    private int $soldeBancaire = 0;
+
     #[ORM\Column(enumType: StatutEntreprise::class, options: ['default' => 'ACTIVE'])]
     #[Groups(['read:Entreprise'])]
     private StatutEntreprise $statut = StatutEntreprise::ACTIVE;
@@ -291,11 +300,17 @@ class Entreprise extends EntityBase implements CompteInterface
         return (int) $this->soldeNumerique;
     }
 
+    public function getSoldeBancaire(): int
+    {
+        return (int) $this->soldeBancaire;
+    }
+
     public function getSoldeDe(TypeCaisse $caisse): int
     {
         return match($caisse) {
             TypeCaisse::PHYSIQUE => $this->getSoldePhysique(),
             TypeCaisse::NUMERIQUE => $this->getSoldeNumerique(),
+            TypeCaisse::BANCAIRE => $this->getSoldeBancaire(),
         };
     }
 
@@ -304,18 +319,21 @@ class Entreprise extends EntityBase implements CompteInterface
         match($caisse) {
             TypeCaisse::PHYSIQUE => $this->soldePhysique = $montant,
             TypeCaisse::NUMERIQUE => $this->soldeNumerique = $montant,
+            TypeCaisse::BANCAIRE => $this->soldeBancaire = $montant,
         };
 
         return $this;
     }
 
     /*
-        - Le cumul des deux caisses. Il se LIT — sur un tableau de bord, « ce que pèse l'entreprise » — mais il ne se DÉPENSE pas : aucune dépense ne tire sur ce total, chacune va chercher sa caisse. C'est pour cela qu'il n'a pas de setter.
+        - Le cumul des TROIS caisses. Il se LIT — sur un tableau de bord, « ce que pèse l'entreprise » — mais il ne se DÉPENSE pas : aucune dépense ne tire sur ce total, chacune va chercher sa caisse. C'est pour cela qu'il n'a pas de setter.
+
+        - Il est bâti sur 'celles()' plutôt que sur une addition écrite à la main : la version codée en dur avait deux termes, et l'arrivée de la banque en aurait fait un total qui n'est plus la somme des parts affichées — l'écart se serait lu sur la même ligne, sans qu'aucune erreur ne se lève.
     */
     #[Groups(['read:Entreprise'])]
     public function getSolde(): int
     {
-        return $this->getSoldePhysique() + $this->getSoldeNumerique();
+        return array_sum(array_map($this->getSoldeDe(...), TypeCaisse::celles(CompteMouvement::ENTREPRISE)));
     }
 
     public function getLibelleCompte(): string

@@ -73,7 +73,10 @@ use Symfony\Component\Serializer\Attribute\Groups;
     'site' => 'exact',
 ])]
 #[ApiFilter(DateFilter::class, properties: ['createdAt'])]
-#[ApiFilter(OrderFilter::class, properties: ['montant', 'createdAt'])]
+/* 'id' sert de DÉPARTAGEUR : deux écritures de la même seconde sortaient dans un ordre
+   indéfini, et le relevé d'un planteur cessait de se chaîner à l'œil — un solde « après » qui
+   ne reprend pas celui de la ligne précédente passe pour une écriture perdue. */
+#[ApiFilter(OrderFilter::class, properties: ['montant', 'createdAt', 'id'])]
 class MouvementEpargne extends EntityBase implements EntrepriseOwnedInterface, SiteOwnedInterface
 {
     #[ORM\Id]

@@ -177,7 +177,8 @@ final class MiseEnCompteTest extends InvariantTestCase
         $this->appeler('POST', '/api/paiements', $this->operateur, [
             'operationId' => $pesee->getId(),
             'modeReglement' => 'ESPECES',
-            'montant' => 100_000, // Ce que vaut la pesée, et non ce qu'on peut lui verser
+            'montantProduit' => 100_000, // Ce que vaut la pesée, et non ce qu'on peut lui verser
+            'montantTransport' => 0,
         ]);
 
         self::assertSame(422, $this->client->getResponse()->getStatusCode());
@@ -187,7 +188,8 @@ final class MiseEnCompteTest extends InvariantTestCase
         $this->appeler('POST', '/api/paiements', $this->operateur, [
             'operationId' => $pesee->getId(),
             'modeReglement' => 'ESPECES',
-            'montant' => 90_000,
+            'montantProduit' => 90_000,
+            'montantTransport' => 0,
         ]);
 
         self::assertSame(201, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
@@ -212,7 +214,8 @@ final class MiseEnCompteTest extends InvariantTestCase
         $this->appeler('POST', '/api/paiements', $this->operateur, [
             'operationId' => $pesee->getId(),
             'modeReglement' => 'ESPECES',
-            'montant' => 1_000,
+            'montantProduit' => 1_000,
+            'montantTransport' => 0,
         ]);
 
         self::assertSame(422, $this->client->getResponse()->getStatusCode());

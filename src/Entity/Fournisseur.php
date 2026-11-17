@@ -2,9 +2,13 @@
 
 namespace App\Entity;
 
+use ApiPlatform\Doctrine\Orm\Filter\FreeTextQueryFilter;
+use ApiPlatform\Doctrine\Orm\Filter\OrFilter;
+use ApiPlatform\Doctrine\Orm\Filter\PartialSearchFilter;
 use ApiPlatform\Doctrine\Orm\Filter\OrderFilter;
 use ApiPlatform\Doctrine\Orm\Filter\SearchFilter;
 use ApiPlatform\Metadata\ApiFilter;
+use ApiPlatform\Metadata\QueryParameter;
 use ApiPlatform\Metadata\ApiResource;
 use ApiPlatform\Metadata\Get;
 use ApiPlatform\Metadata\GetCollection;
@@ -136,13 +140,25 @@ use Symfony\Component\Validator\Constraints as Assert;
     'site' => 'exact',
     'statut' => 'exact',
 ])]
+/*
+    - UN champ de saisie, PLUSIEURS colonnes en OU. Les écrans annoncent « Nom ou code » dans leur
+      champ de recherche ; avec un filtre par colonne, une seule répondait et le code ne trouvait
+      jamais rien — sans message, comme s'il n'existait pas.
+    - 'FreeTextQueryFilter' rassemble les colonnes, 'OrFilter' les met en OU plutôt qu'en ET, et
+      'PartialSearchFilter' cherche le fragment sans tenir compte de la casse.
+*/
+#[QueryParameter(
+    key: 'recherche',
+    filter: new FreeTextQueryFilter(new OrFilter(new PartialSearchFilter())),
+    properties: ['nom', 'prenom', 'codefournisseur'],
+)]
 #[ApiFilter(OrderFilter::class, properties: ['codefournisseur', 'nom', 'prixtransport', 'createdAt'])]
 class Fournisseur extends EntityBase implements SiteOwnedInterface
 {
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    #[Groups(['read:Fournisseur', 'read:Operation', 'read:Paiement'])]
+    #[Groups(['read:Fournisseur', 'read:Operation', 'read:Paiement', 'read:DemandeRetrait'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 100, nullable: true)]
@@ -175,7 +191,7 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
     #[ORM\Column(length: 30, nullable: true)]
     #[Assert\Length(max: 30)]
     #[NumeroMobileValide]
-    #[Groups(['read:Fournisseur', 'write:Fournisseur', 'read:Operation', 'read:Paiement'])]
+    #[Groups(['read:Fournisseur', 'write:Fournisseur', 'read:Operation', 'read:Paiement', 'read:DemandeRetrait'])]
     private ?string $contact1 = null;
 
     #[ORM\Column(length: 30, nullable: true)]
@@ -185,7 +201,7 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
     private ?string $contact2 = null;
 
     #[ORM\Column(enumType: ReseauMobile::class, nullable: true)]
-    #[Groups(['read:Fournisseur', 'write:Fournisseur', 'read:Operation', 'read:Paiement'])]
+    #[Groups(['read:Fournisseur', 'write:Fournisseur', 'read:Operation', 'read:Paiement', 'read:DemandeRetrait'])]
     private ?ReseauMobile $reseau = null;
 
     /*
@@ -193,15 +209,12 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
 
         - Ce n'est pas un prix de remplacement : la récolte garde sa valeur, le transport s'ajoute par-dessus. Voir 'Operation::calculerMontant()', où les deux restent deux nombres distincts jusqu'au bout.
 
-        - Même arbitrage poste/web que 'Produit::prix' : le poste l'envoie s'il le connaît, et sans lui c'est la valeur saisie sur le web qui tient. Un planteur n'est donc jamais bloqué parce que le logiciel de pesée ignore son transport.
+        - Même propriété que 'Produit::prix' : il se saisit sur le web, et nulle part ailleurs. Un 'prixtransport' reçu d'un poste est ignoré.
     */
     #[ORM\Column(nullable: true)]
     #[Assert\PositiveOrZero(message: 'Le prix du transport ne peut pas être négatif')]
     #[Groups(['read:Fournisseur', 'write:Fournisseur'])]
     private ?int $prixtransport = null;
-
-    #[ORM\Column(nullable: true)]
-    private ?int $prixtransportPoste = null; // Arbitre entre les deux sources, voir 'Produit::prixPoste'
 
     /*
         - Les mises en compte du planteur, UNE PAR PRODUIT : à chaque pesée, le taux du produit pesé décide de la part qui va sur son épargne au lieu de lui être remise au guichet. La grande majorité des planteurs n'en a aucune.
@@ -311,7 +324,7 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
         return $this->cle;
     }
 
-    #[Groups(['read:Fournisseur', 'read:Operation', 'read:Paiement', 'read:DemandePrelevement', 'read:MouvementEpargne'])]
+    #[Groups(['read:Fournisseur', 'read:Operation', 'read:Paiement', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:DemandeRetrait'])]
     public function getNomComplet(): string
     {
         return trim(($this->nom ?? '') . ' ' . ($this->prenom ?? ''));
@@ -386,32 +399,6 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
         return $this;
     }
 
-    /*
-        - Renvoie vrai si le prix de transport EN VIGUEUR a bougé. Copie conforme de 'Produit::appliquerPrixDuPoste()', y compris le refus du 'null'.
-
-        - Ce refus est tout l'intérêt : le poste qui ne connaît pas le transport d'un planteur n'envoie rien, et ne doit surtout pas effacer le prix saisi sur le web. Seule une valeur explicite — 0 compris, qui veut dire « plus de transport » — l'emporte.
-    */
-    public function appliquerPrixTransportDuPoste(?int $prix): bool
-    {
-        if($prix === null || $prix < 0 || $prix === $this->prixtransportPoste) {
-            return false;
-        }
-
-        $this->prixtransportPoste = $prix;
-
-        if($prix === $this->prixtransport) {
-            return false;
-        }
-
-        $this->prixtransport = $prix;
-
-        return true;
-    }
-
-    public function getPrixtransportPoste(): ?int
-    {
-        return $this->prixtransportPoste;
-    }
 
     public function getStatut(): StatutActivation
     {
@@ -446,7 +433,7 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
         - Il n'empêche plus de verser : il empêche de verser SUR UN TÉLÉPHONE. L'écran de versement s'en sert pour fermer le mode mobile, pas pour fermer le versement.
         - Le préfixe 'get' n'est pas un caprice : le sérialiseur ignore les groupes posés sur une méthode qui n'en porte pas.
     */
-    #[Groups(['read:Fournisseur', 'read:Operation', 'read:Paiement'])]
+    #[Groups(['read:Fournisseur', 'read:Operation', 'read:Paiement', 'read:DemandeRetrait'])]
     public function getMotifNonPayable(): ?string
     {
         if(($bloquant = $this->getMotifBloquant()) !== null) {
@@ -574,7 +561,7 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
         - Ce que l'entreprise garde pour ce planteur. Sur une liste, la valeur vient du provider, qui l'a obtenue en une requête groupée ; le repli ne sert qu'à la fiche.
         - Zéro pour un planteur sans compte, et c'est juste : n'avoir jamais épargné et avoir tout retiré reviennent au même pour celui qui regarde.
     */
-    #[Groups(['read:Fournisseur', 'read:DemandePrelevement'])]
+    #[Groups(['read:Fournisseur', 'read:DemandePrelevement', 'read:DemandeRetrait'])]
     public function getSoldeEpargne(): int
     {
         return $this->soldeEpargne ?? $this->compteEpargne?->getSolde() ?? 0;

@@ -48,6 +48,7 @@ final class CaisseProvider implements ProviderInterface
             $sortie->soldeEntreprise = $entreprise?->getSolde() ?? 0;
             $sortie->soldeEntreprisePhysique = $entreprise?->getSoldePhysique() ?? 0;
             $sortie->soldeEntrepriseNumerique = $entreprise?->getSoldeNumerique() ?? 0;
+            $sortie->soldeEntrepriseBancaire = $entreprise?->getSoldeBancaire() ?? 0;
 
             // L'épargne des planteurs est une dette de l'entreprise, pas une caisse : elle se lit à côté des soldes, jamais dedans
             $sortie->epargneDue = $entreprise !== null ? $this->epargnes->totalDu($entreprise) : 0;

@@ -67,41 +67,33 @@ class OperationRepository extends ServiceEntityRepository
     /*
         - Les pesées qu'un changement de tarif sur le web doit revaloriser : celles d'un produit qu'on vient de tarifer, ou d'un planteur dont on vient de changer le transport.
 
-        - Mêmes garde-fous que 'findRecalculables()', pour les mêmes raisons, et volontairement SANS filtre de site : un produit vaut la même chose sur tous les ponts bascules de l'entreprise, et un planteur n'appartient de toute façon qu'à un seul poste.
+        - DEUX GARDE-FOUS, et aucun n'est de confort. 'montantpaye = 0' écarte ce qui est déjà payé, même en partie : on ne réécrit pas le montant d'une pesée sur laquelle un planteur a touché de l'argent. 'retenue IS NULL' écarte ce qui est arbitré : une promesse a été écrite au planteur sur la base de ce montant.
 
-        - La portée est étroite exprès. Tarifer un produit ne touche que SES pesées, pas tout le poste : ce que fait la synchronisation, qui ne sait pas quel tarif a bougé et balaie donc large.
+        - Volontairement SANS filtre de site : un produit vaut la même chose sur tous les ponts bascules de l'entreprise, et un planteur n'appartient de toute façon qu'à un seul poste.
+
+        - La portée est étroite exprès : tarifer un produit ne touche que SES pesées. C'est désormais le SEUL chemin de retarification — 'findRecalculables()', qui balayait tout un poste quand un prix bougeait côté logiciel de pesée, est partie avec l'arbitrage des prix.
 
         @return list<Operation>
     */
     public function findARevaloriser(Produit|Fournisseur $cause): array
     {
+        $produit = $cause instanceof Produit;
+
+        /*
+            - LE GARDE-FOU PORTE SUR LA PART QUE LA CAUSE TOUCHE, et non sur le cumul. Tarifer un
+              produit ne réécrit que la récolte : qu'un transport ait déjà été versé sur cette pesée
+              ne regarde pas ce calcul-là. Avec le cumul, payer le transport d'une pesée non tarifée
+              la retirait pour toujours de la revalorisation — et c'est le cas que cette
+              fonctionnalité rend courant.
+        */
         $qb = $this->createQueryBuilder('o')
             ->andWhere('o.deletedAt IS NULL')
-            ->andWhere('o.montantpaye = 0')
+            ->andWhere($produit ? 'o.montantpayeproduit = 0' : 'o.montantpayetransport = 0')
             ->andWhere('o.retenue IS NULL')
+            ->andWhere($produit ? 'o.produit = :cause' : 'o.fournisseur = :cause')
             ->setParameter('cause', $cause);
 
-        $qb->andWhere($cause instanceof Produit ? 'o.produit = :cause' : 'o.fournisseur = :cause');
-
         return $qb->getQuery()->getResult();
-    }
-
-    /**
-     * Les pesées d'un site dont le montant peut encore bouger, pour un recalcul après changement de tarif. Les pesées déjà payées, même partiellement, en sont exclues.
-     *
-     * @return list<Operation>
-     */
-    public function findRecalculables(Site $site): array
-    {
-        return $this->createQueryBuilder('o')
-            ->andWhere('o.site = :site')
-            ->andWhere('o.deletedAt IS NULL')
-            ->andWhere('o.montantpaye = 0')
-            // Une pesée dont la retenue est arbitrée est dans le même état qu'une pesée déjà payée : une promesse a été écrite au planteur sur la base de ce montant, et aucun retrait n'existe pour la défaire
-            ->andWhere('o.retenue IS NULL')
-            ->setParameter('site', $site)
-            ->getQuery()
-            ->getResult();
     }
 
     /**
@@ -310,7 +302,7 @@ class OperationRepository extends ServiceEntityRepository
      *
      * @param list<int> $siteIds
      *
-     * @return list<array{siteId: int, site: string, tonnageNet: int, montantDu: int, montantPaye: int, nbPesees: int}>
+     * @return list<array{siteId: int, site: string, tonnageNet: int, montantDu: int, montantTransport: int, retenue: int, montantPaye: int, nbPesees: int}>
      */
     public function parSite(array $siteIds, ?\DateTimeImmutable $du, ?\DateTimeImmutable $au): array
     {
@@ -325,6 +317,9 @@ class OperationRepository extends ServiceEntityRepository
                 's.libellesite AS site',
                 'COALESCE(SUM(o.poidsnet), 0) AS tonnageNet',
                 'COALESCE(SUM(o.montantdu), 0) AS montantDu',
+                // Les deux que cette requête était seule à ne pas prendre, alors que 'totaux()' et 'parSiteEtProduit()' les ont
+                'COALESCE(SUM(o.montanttransport), 0) AS montantTransport',
+                'COALESCE(SUM(o.retenue), 0) AS retenue',
                 'COALESCE(SUM(o.montantpaye), 0) AS montantPaye',
                 'COUNT(o.id) AS nbPesees'
             )
@@ -338,6 +333,8 @@ class OperationRepository extends ServiceEntityRepository
             'site' => (string) $l['site'],
             'tonnageNet' => (int) $l['tonnageNet'],
             'montantDu' => (int) $l['montantDu'],
+            'montantTransport' => (int) $l['montantTransport'],
+            'retenue' => (int) $l['retenue'],
             'montantPaye' => (int) $l['montantPaye'],
             'nbPesees' => (int) $l['nbPesees'],
         ], $lignes);

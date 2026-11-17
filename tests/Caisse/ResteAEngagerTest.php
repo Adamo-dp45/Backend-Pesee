@@ -100,7 +100,7 @@ final class ResteAEngagerTest extends InvariantTestCase
 
         // Insister donne le même message, mot pour mot : l'écran annonçait bien ce que le serveur répond
         $this->appeler('POST', '/api/paiements', $operateur, ['operationId' => $pesee->getId(),
-            'modeReglement' => 'MOBILE_MONEY', 'montant' => 1_000]);
+            'modeReglement' => 'MOBILE_MONEY', 'montantProduit' => 1_000, 'montantTransport' => 0]);
 
         self::assertSame(422, $this->client->getResponse()->getStatusCode());
         self::assertSame($vue['motifNonPayable'], $this->reponse()['detail'] ?? null);
@@ -138,7 +138,7 @@ final class ResteAEngagerTest extends InvariantTestCase
     private function verser(User $operateur, Operation $pesee, int $montant): void
     {
         $this->appeler('POST', '/api/paiements', $operateur, ['operationId' => $pesee->getId(),
-            'modeReglement' => 'MOBILE_MONEY', 'montant' => $montant]);
+            'modeReglement' => 'MOBILE_MONEY', 'montantProduit' => $montant, 'montantTransport' => 0]);
 
         self::assertSame(201, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
     }

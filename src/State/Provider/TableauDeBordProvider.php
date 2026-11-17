@@ -93,6 +93,8 @@ final class TableauDeBordProvider implements ProviderInterface
                 'site' => (string) $site->getLibellesite(),
                 'tonnageNet' => 0,
                 'montantDu' => 0,
+                'montantTransport' => 0,
+                'retenue' => 0,
                 'montantPaye' => 0,
                 'nbPesees' => 0,
             ]) + ['solde' => $site->getSolde()];
