@@ -612,3 +612,92 @@ Vérifié sans toucher à l'argent : sur T-4503, dont le transport est déjà r�
 Rien d'orphelin : plus aucune référence à `paiement.index`, à `categorie.confirmation`, à `fournisseur.tarifs_confirmation` ni à `stats/tarifs`, et aucun import inutilisé dans les contrôleurs touchés.
 
 
+
+
+
+
+
+
+
+
+- On vas ajouter la possibilité de modifier le prix unitaire de la pesée vu que souvent il peuvent rajouté une prime dessus, donc je me dis que ça va faire un recalcule, aussi on ne pourra plus le modifié après le premier versement sur la pesée !
+- Souvent quand je suis connecté et que j'essaie d'accéder à une ressource ça me déconnecte et je suis obligé de me reconnecté, donc je me dis que le refreshToken ne s'exécute pas correctement or dans iTransport je n'ai pas ce problème là !
+- On vas mettre en commentaire toutes les parties mobile money vu qu'on n'a mis en place un vrai agrégateur
+- Sur la page `Tarifs`, les boutons `Changer`, `Saisir sa grille`, `Saisir ses tarifs` (pour l'opérateur `Ouvrir`, `	Voir sa grille`, `Voir ses tarifs`) ne reflètent pas une action qu'on peut cliqué, je me dis qu'on devrait mettre en couleur ! de même pour la page `Trésorerie` le `Doter`
+- Sur la page `Verser à un planteur` le lien `← Retour au..` devrait redirigé vers la page `À payer` !
+- Sur le tableau de listing des utilisateurs, on vas rajouter la recherche sur `email ou telephone` donc `nom ou email ou telephone`, aussi un filtre par rôle
+- Sur les pages enlève la tabs de `Pesées` `Versements` `Grand livre` sur les pages `Bilan des pesées`, `Versements` et `Grand livre`
+- On vas déplacer les champs de période + Appliquer(mais lui un background comme un vrai bouton) à la droite du titre, et pour les boutons `Exporter en Excel` et `Imprimer` on vas les mettre juste en bas des champs.. ! les pages concernés `Bilan des pesées`, `Versements` et `Grand livre`
+
+
+
+
+
+
+
+
+Beaucoup de choses. Une seule me demande un arbitrage avant de commencer.
+
+Le 1, avec les listes de modes commentées plutôt que supprimées. Je commence par les trois bilans.
+
+Au tour du jeton qui se perd. Je regarde comment le web le renouvelle, et ce qu'iTransport fait de différent.
+
+Je crois tenir le fil : la différence est dans `access_control`.
+
+Le mécanisme de reprise existe (cookie `rt`), mais il ne peut jamais servir. Je vérifie avant de toucher quoi que ce soit.
+
+Les configs sont jumelles. Je mesure plutôt que de deviner : je raccourcis la durée du jeton et je regarde ce qui se passe à son expiration.
+
+Now the épargne adjustment and the entity methods.
+
+Now the test file.
+
+La suite a trouvé une vraie erreur de conception dans ce que j'avais écrit : un index unique interdit une seconde ligne d'épargne sur une même pesée. Je corrige.
+
+Maintenant je corrige aussi la section du README qui décrivait l'ancien comportement, puis je relance la suite ciblée.
+
+Tout est repassé au vert. Voici ce qui a été fait depuis la coupure.
+
+## Le bug de déconnexion — trouvé, mesuré, corrigé
+
+La cause n'était ni le refreshToken ni gesdinet : le mécanisme de rattrapage **fonctionnait**, c'est la règle d'accès qui le jetait.
+
+Quand la session PHP meurt (ramassage au bout de ~24 min d'inactivité, redémarrage du serveur, navigateur fermé), le souvenir reconstruit tout : `ApiUserProvider::loadUserByIdentifier()` rappelle l'API avec le cookie `rt` et refait la session entière. Mais le jeton obtenu est un `RememberMeToken`, que `IS_AUTHENTICATED_FULLY` **refuse par définition** — vous étiez donc renvoyé au login à l'instant précis où le rattrapage venait de réussir. iTransport n'a **aucun** `IS_AUTHENTICATED_FULLY` : ni dans `access_control`, ni sur un seul contrôleur. C'était la seule différence structurelle entre les deux projets ; tout le reste (provider, authenticator, client API, config JWT, gesdinet, session) est identique au commentaire près.
+
+La contre-épreuve, mêmes cookies, session supprimée à la main :
+
+| Règle | `/pesees/a-payer` | `/bilan` | `/utilisateurs` |
+|---|---|---|---|
+| `IS_AUTHENTICATED_FULLY` | → `/connexion` | → `/connexion` | → `/connexion` |
+| `IS_AUTHENTICATED_REMEMBERED` | la page | la page | la page |
+
+Deuxième défaut, qui ne mord qu'en développement : le souvenir et le cookie `rt` étaient posés `Secure` en dur, donc **jetés** par le navigateur sur `http://localhost` — la reconnexion silencieuse n'y avait jamais fonctionné. Un seul interrupteur décide désormais, `app.cookie_secure` dans `config/services.yaml` (`false` sous `when@dev`), lu par `security.yaml`, `ApiAuthenticator` et `RefreshTokenCookieSubscriber`. On ne demande pas à `isSecure()` : derrière un reverse proxy mal déclaré il répond « non » alors que le visiteur est en HTTPS, et le jeton partirait en clair. Le `token_ttl: 45` de mesure est retiré.
+
+## Le prix unitaire modifiable — la prime
+
+`PATCH /api/operations/{id}/prix-unitaire`, et une carte « Prix au kilo de cette pesée » sur la fiche. Le montant dû se recalcule, le règlement suit, le motif part au journal.
+
+Trois décisions qui méritent votre avis :
+
+- **Fermé au premier versement sur la récolte**, versements en vol compris. Le transport déjà payé, lui, ne ferme rien — c'est le cas même qu'on veut pouvoir tarifer ensuite.
+- **`origineTarif` passe à `MANUEL`**, ce qui fige la part récolte : sans ça la prochaine tarification du produit balaierait la prime en silence.
+- **À l'administrateur seul.** L'opérateur a le planteur devant lui quand celui-ci réclame sa prime ; lui ouvrir ce champ ferait négocier le prix à la barrière. Dites-moi si vous le voulez aussi chez l'opérateur.
+
+La suite de tests a attrapé une vraie erreur de ma part : j'écrivais une **seconde** ligne d'épargne sur la pesée quand la mise en compte avait été rabotée par l'ancien prix. `mouvement_epargne.operation_id` est `UNIQUE` — c'est la première de vos quatre barrières contre le double crédit. Corrigé dans le bon sens : **l'arbitrage reste définitif**, la hausse va entièrement au guichet. Seul refus, le cas inverse — un prix qui mettrait la récolte sous ce qui est déjà mis de côté, ce qui serait un retrait déguisé.
+
+## Le mobile money fermé, et ses tests
+
+Dix cas échouaient : fermer le mode supprime le **seul** chemin qui produise un versement en vol (les espèces sont confirmées sur-le-champ). Deux ne s'en servaient qu'incidemment, passés aux espèces. Les huit autres tiennent la passerelle, le webhook et la réconciliation, qui sont toujours là : ils sont ignorés par un garde-fou qui interroge `ModeReglement::toutes()` — le jour où vous décommentez la ligne, ils reviennent d'eux-mêmes.
+
+## État
+
+```powershell
+cd C:\Users\adamo\Documents\Web\Webpesee\Backend-Webpesee-V2; php bin/phpunit
+```
+
+API 233 tests (8 ignorés), web 26 tests, assets rebâtis. Les READMEs portent la section « La prime » et les deux pièges de la déconnexion. Rien n'est commité.
+
+Deux choses pour vous : la pesée **T-4507** porte maintenant une prime à 280 F dans la base de développement (c'est mon essai de bout en bout), et les quatre contrôleurs que `sed` avait convertis en LF sont revenus en CRLF — le diff du web est passé de 2 500 à 519 lignes.
+
+
+Les huit points sont faits et vérifiés : API 233 tests (8 ignorés, mobile money fermé), web 26 tests, assets rebâtis. La suite a attrapé une vraie erreur — j'écrivais une deuxième ligne d'épargne sur une pesée, ce qu'un index unique interdit ; corrigé. Rien n'est commité

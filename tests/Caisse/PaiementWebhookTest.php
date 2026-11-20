@@ -157,6 +157,8 @@ final class PaiementWebhookTest extends InvariantTestCase
     */
     public function testUnVersementEnVolInterditDEngagerLeMemeResteAPayer(): void
     {
+        $this->exigeLeMobileMoney();
+
         // La pesée doit 200 000 F, et la caisse en contient assez pour deux : seule la règle du
         // montant ENGAGÉ peut alors refuser le second versement
         [, $pesee] = $this->engagerUnVersement(200_000, 500_000);

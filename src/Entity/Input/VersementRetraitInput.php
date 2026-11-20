@@ -20,6 +20,8 @@ final class VersementRetraitInput
 {
     #[Assert\NotNull(message: 'Le mode de règlement est obligatoire')]
     #[Groups(['write:Retrait:versement'])]
+    /* Même garde que sur un versement de pesée : un mode fermé ne s'ouvre pas par la requête. */
+    #[Assert\Choice(callback: [ModeReglement::class, 'toutes'], message: 'Ce mode de règlement n\'est pas ouvert.')]
     public ?ModeReglement $modeReglement = null;
 
     #[Assert\Length(max: 30)]

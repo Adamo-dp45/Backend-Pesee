@@ -102,6 +102,39 @@ Un risque technique que je préfère nommer tout de suite : cette application a 
 
 modules/surcouche.js vide les portails et le verrou sur turbo:before-cache. Il ne vise pas que ma modale : le sélecteur [data-slot$="-portal"] couvre les tiroirs, les panneaux, les menus déroulants et les bulles. Aucun n’a de raison d’être photographié — ils décrivent un geste en cours, pas la page.
 
+## Les messages de commit
+
+```powershell
+git -C Backend-Webpesee-V2 commit -m @'
+feat: Tarification à trois étages, transport par tranches, et les totaux des écrans d'argent
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+'@
+```
+
+```powershell
+git -C Frontend-Webpesee commit -m @'
+feat: Les écrans des tarifs, des trois bilans et de la file du guichet
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+'@
+```
+
+**Mais je dois te dire que c'est beaucoup pour un seul commit.** L'API a 49 fichiers modifiés et 44 neufs, le web 57 et 29 — et surtout ce n'est pas *une* chose : la tarification, le transport par tranches, le passage du référentiel à l'entreprise, les bilans, l'écran à payer, et un **changement de droits** qui retire à l'opérateur la création de planteurs. Ce dernier mérite d'être visible dans l'historique le jour où quelqu'un demandera « depuis quand on ne peut plus créer un planteur au guichet ? ». Noyé dans un commit de cent fichiers, il ne le sera pas.
+
+Si tu veux le découper, je propose cinq commits par dépôt, dans cet ordre :
+
+1. `feat: Catégories de planteurs et grille de tarifs à trois étages`
+2. `feat: Transport au kilo, au forfait ou par tranches de kilomètres`
+3. `feat: Le référentiel appartient à l'entreprise, plus au poste`
+4. `feat: Les trois bilans, leurs totaux et leurs exports`
+5. `feat: La file du guichet : totaux, filtres, et versement depuis la liste`
+
+Et le changement de droits à part : `refactor: Produit et Fournisseur réservés à l'administrateur`.
+
+Dis-moi si tu veux que je prépare ce découpage — c'est faisable en ajoutant les fichiers par paquets. **Je n'ai rien commité.**
+
+
 
 
 
@@ -170,65 +203,6 @@ Un barème par tranches sur un planteur sans distance est refusé à la saisie ;
 Plus sur les fournisseurs : permet de faire des documents comme un relevé de qui peut aller en banque 
 
 
-
-## Les messages de commit
-
-```powershell
-git -C Backend-Webpesee-V2 commit -m @'
-feat: Tarification à trois étages, transport par tranches, et les totaux des écrans d'argent
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-'@
-```
-
-```powershell
-git -C Frontend-Webpesee commit -m @'
-feat: Les écrans des tarifs, des trois bilans et de la file du guichet
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-'@
-```
-
-**Mais je dois te dire que c'est beaucoup pour un seul commit.** L'API a 49 fichiers modifiés et 44 neufs, le web 57 et 29 — et surtout ce n'est pas *une* chose : la tarification, le transport par tranches, le passage du référentiel à l'entreprise, les bilans, l'écran à payer, et un **changement de droits** qui retire à l'opérateur la création de planteurs. Ce dernier mérite d'être visible dans l'historique le jour où quelqu'un demandera « depuis quand on ne peut plus créer un planteur au guichet ? ». Noyé dans un commit de cent fichiers, il ne le sera pas.
-
-Si tu veux le découper, je propose cinq commits par dépôt, dans cet ordre :
-
-1. `feat: Catégories de planteurs et grille de tarifs à trois étages`
-2. `feat: Transport au kilo, au forfait ou par tranches de kilomètres`
-3. `feat: Le référentiel appartient à l'entreprise, plus au poste`
-4. `feat: Les trois bilans, leurs totaux et leurs exports`
-5. `feat: La file du guichet : totaux, filtres, et versement depuis la liste`
-
-Et le changement de droits à part : `refactor: Produit et Fournisseur réservés à l'administrateur`.
-
-Dis-moi si tu veux que je prépare ce découpage — c'est faisable en ajoutant les fichiers par paquets. **Je n'ai rien commité.**
-
-
-
-
-
-
-
-Pour le planteur, iTransport a aussi un filtre remote avec autocomplétion distante. Au-delà de quelques centaines de planteurs c’est ce qu’il faudra ; je commencerais par une liste déroulante et je garderais le remote en réserve.
-filtres par période sur les tableaux de listing de..
-sur new catégorie lien pour créer barème dans une poppup
-lien paiement vers le bilan !
-trésorerie Doter en bouton couleur
-recherche sur la liste des users nom ou email ou telephone, filtre sur role
-
-La logique concernant la suppression qu'est ce qu'il se passe et est ce que ça pose problème ! vu que moi je pense que s'il a déjà des pesées ne plus le supprimé ! Pas trop sur qu'il explique l'existant et me dise lequel est meilleur entre les 2
-
-Déplacer filtre + Appliquer sur la droite et Export impression en bas de lui (Bilan des pesées, Versements, Grand livre) (bilan de pesées seulement export imprt en bas)
-Supprimer la tabs de `Pesées` `Versements` `Grand livre`
-
-
-
-
-
-- Possibilité de pouvoir modifier le prix unitaire de la pesées en ligne là ca fait un recalcule vu que souvant il peuvent rajouté une prime dessus, plus de modification après le premier versement sur la pesées !! je pense qu'on a abandonnée :: pour pouvoir controller le prix données à la pesées
-- Souvent quand je suis connecté ça me déconnecte seule je me dis que le refreshToken ne s'exécute pas correctement
-- Produit par entreprise, mais on peut ajouter un champ qui permet à un site de faire un surplus sur le prix à l'instant t lors de la pesées
-- commenté le tous les sites, toute la partie mobile money avant qu'on ne prenne en compte : Mettre en commentaires les parties mobile money avant d'implémenté un vrai agrégateur
 Priorité : pour définir les propriétés par entreprise du genre une entreprise peut dire moi c'est le prix de la categorie qui est prioritaire par rapport au prix fournisseur etc... :: Gérer du côté super admin
 
 
@@ -241,10 +215,29 @@ Priorité : pour définir les propriétés par entreprise du genre une entrepris
 
 
 
+La logique concernant la suppression qu'est ce qu'il se passe et est ce que ça pose problème ! vu que moi je pense que s'il a déjà des pesées ne plus le supprimé ! Pas trop sur qu'il explique l'existant et me dise lequel est meilleur entre les 2
 
 
 
 
+
+
+
+Sur le page de `Grand livre`, le bloc de période.. se retrouve en bas du titre au lieu d'être à droite ! regarde dans iTransport comment les bloc d'actions sont à droite du titre
+vérifié si d'autres index unique ne pose pas de problème
+modifier aussi le prixtransport de la pesées
+Je me qu'on vas avoir une page pour la modification, aussi on vas mettre un lien dans la partie versement qui y pointe
+
+
+
+
+
+- Pour le planteur, (concernant le.. de.. on vas le mettre en place) iTransport a aussi un filtre remote avec autocomplétion distante. Au-delà de quelques centaines de planteurs c’est ce qu’il faudra ; je commencerais par une liste déroulante et je garderais le remote en réserve.
+    - filtres par période sur les tableaux de listing de..
+    - sur new catégorie lien pour créer barème dans une poppup
+    - Lien rapide
+- Produit par entreprise, mais on peut ajouter un champ qui permet à un site de faire un surplus sur le prix à l'instant t lors de la pesées
+- Lors de la création et modification de l'entreprise, si entreprise à un seule site ou plusieurs -> si un on représente le solde de l'entreprise par celui du site !! Pas trop sure
 
 Les deux fiches gardent la lecture de leur grille et mènent à la saisie
 
@@ -259,7 +252,7 @@ Les deux fiches gardent la lecture de leur grille et mènent à la saisie
 - Dans le `.sidebar-logo` de `base.html.twig` on vas afficher le nom de l'entreprise et son logo plutôt que `iTransport`
 commande utile, bd..
 
-- Lors de la création et modification de l'entreprise, si entreprise à un seule site ou plusieurs -> si un on représente le solde de l'entreprise par celui du site !! Pas trop sure
+
 
 
 

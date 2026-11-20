@@ -38,6 +38,8 @@ final class ResteAEngagerTest extends InvariantTestCase
     */
     public function testUnVersementEnVolFaitBaisserLeResteAEngagerDesLEnvoi(): void
     {
+        $this->exigeLeMobileMoney();
+
         [, $operateur, $pesee] = $this->decor();
 
         $this->verser($operateur, $pesee, 30_000);
@@ -60,6 +62,8 @@ final class ResteAEngagerTest extends InvariantTestCase
     */
     public function testLaListePorteLeMontantEnVolDeChaqueLigne(): void
     {
+        $this->exigeLeMobileMoney();
+
         [$site, $operateur, $pesee] = $this->decor();
 
         $intacte = $this->creerPesee($site, $this->produit, $this->planteur, 1_000, '2');
@@ -88,6 +92,8 @@ final class ResteAEngagerTest extends InvariantTestCase
     */
     public function testUnePeseeEntierementEngageeAnnonceUnVersementEnCoursEtNonUnSolde(): void
     {
+        $this->exigeLeMobileMoney();
+
         [$site, $operateur, $pesee] = $this->decor();
 
         $this->verser($operateur, $pesee, self::MONTANT_DU);

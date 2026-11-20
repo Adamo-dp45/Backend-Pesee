@@ -44,7 +44,13 @@ final class PaiementInput
         - Espèces ou mobile money. Obligatoire et sans défaut : c'est lui qui désigne la caisse qui se vide, et un défaut implicite aurait vidé le flotte pour des billets remis de la main à la main.
         - Les deux champs qui suivent ne valent que pour le mobile money. On les laisse facultatifs plutôt que de les interdire en espèces : un formulaire qui garde ses champs cachés remplis ne doit pas faire échouer un versement, et le service les ignore hors du mobile.
     */
+    /*
+        - LA LISTE DES MODES OUVERTS EST VÉRIFIÉE ICI. Le type de la propriété accepte tout cas de
+          l'énumération, y compris un mode fermé : sans cette contrainte, un mobile money saisi à
+          la main dans la requête passerait, et l'argent partirait vers une passerelle simulée.
+    */
     #[Assert\NotNull(message: 'Le mode de règlement est obligatoire')]
+    #[Assert\Choice(callback: [ModeReglement::class, 'toutes'], message: 'Ce mode de règlement n\'est pas ouvert.')]
     #[Groups(['write:Paiement'])]
     public ?ModeReglement $modeReglement = null;
 

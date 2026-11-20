@@ -2,6 +2,7 @@
 
 namespace App\Tests;
 
+use App\Domain\Enum\ModeReglement;
 use App\Domain\Enum\Role;
 use App\Domain\Enum\StatutOperation;
 use App\Domain\Enum\TypeCaisse;
@@ -106,6 +107,23 @@ abstract class InvariantTestCase extends WebTestCase
 
         $connexion->executeStatement('SET FOREIGN_KEY_CHECKS = 1');
         $this->em->clear();
+    }
+
+    /*
+        - CE CAS N'A DE SENS QUE SI LE MOBILE MONEY EST OUVERT À LA SAISIE. Le mode est fermé tant
+          qu'un vrai agrégateur n'est pas en place, et l'API refuse de l'écrire — or c'est le SEUL
+          chemin qui produise un versement en vol, les espèces étant confirmées sur-le-champ.
+
+        - ON SAUTE PLUTÔT QUE DE SUPPRIMER, et le garde-fou interroge 'ModeReglement::toutes()'
+          plutôt qu'un drapeau à lui : la passerelle, le webhook et la réconciliation sont toujours
+          là, et ces cas sont ce qui les tient. Le jour où la ligne commentée de l'énumération
+          rouvrira, ils reviendront d'eux-mêmes — sans que personne n'ait à se souvenir d'eux.
+    */
+    protected function exigeLeMobileMoney(): void
+    {
+        if(!in_array(ModeReglement::MOBILE_MONEY, ModeReglement::toutes(), true)) {
+            self::markTestSkipped('Le mobile money est ferme a la saisie : ce cas rouvrira avec lui.');
+        }
     }
 
     /* ---- Montage du décor ------------------------------------------------------------------- */

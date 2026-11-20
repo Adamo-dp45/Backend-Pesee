@@ -83,6 +83,44 @@ class EpargneService
         return $ecrites;
     }
 
+    /*
+        - LE PRIX DE LA PESÉE VIENT D'ÊTRE RÉÉCRIT À LA MAIN. Deux cas, et un seul écrit quelque chose.
+
+        - PAS ENCORE ARBITRÉE : le chemin normal la prend avec son prix tout neuf. C'est le cas d'une
+          pesée dont le produit n'était pas tarifé — elle ne valait rien, donc rien n'était à mettre
+          de côté, et la voilà qui vaut quelque chose.
+
+        - DÉJÀ ARBITRÉE : ON N'Y TOUCHE PAS. L'arbitrage est définitif, et ce n'est pas une
+          précaution de style : 'mouvement_epargne.operation_id' porte un index UNIQUE, la première
+          des quatre barrières contre le double crédit. Une pesée a UNE ligne d'épargne, jamais deux.
+          La hausse va donc entièrement au GUICHET : 'getPayableproduit()' la rend d'elle-même, et
+          c'est le bon résultat — la part mise de côté avait été tranchée, la prime arrive après et
+          revient au planteur en main propre.
+
+        - LE SEUL REFUS : une récolte qui vaudrait MOINS que ce qu'on a déjà mis de côté pour elle.
+          L'entreprise aurait alors gardé plus que ce qu'elle devait, et reprendre la différence sur
+          le compte du planteur serait un retrait — sa demande, l'accord d'un administrateur, jamais
+          l'effet de bord d'une correction de prix.
+    */
+    public function ajusterApresPrix(Operation $pesee): ?MouvementEpargne
+    {
+        if($pesee->getRetenue() === null) {
+            return $this->preleverSur($pesee);
+        }
+
+        $ecrite = (int) $pesee->getRetenue();
+
+        if((int) $pesee->getMontantdu() < $ecrite) {
+            throw new UnprocessableEntityHttpException(sprintf(
+                'Ce prix mettrait la récolte (%s F CFA) sous la part déjà mise en compte (%s F CFA). Il faudrait reprendre une part de son épargne, ce qui passe par une demande de retrait.',
+                number_format((int) $pesee->getMontantdu(), 0, ',', ' '),
+                number_format($ecrite, 0, ',', ' ')
+            ));
+        }
+
+        return null;
+    }
+
     /* ---- Retrait --------------------------------------------------------------------------- */
 
     /*

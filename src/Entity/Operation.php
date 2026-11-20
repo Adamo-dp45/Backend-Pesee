@@ -9,6 +9,7 @@ use ApiPlatform\Metadata\ApiFilter;
 use ApiPlatform\Metadata\ApiResource;
 use ApiPlatform\Metadata\Get;
 use ApiPlatform\Metadata\GetCollection;
+use ApiPlatform\Metadata\Patch;
 // Aliasé : 'Operation' est le nom de cette entité même
 use ApiPlatform\OpenApi\Model\Operation as OpenApiOperation;
 use App\Domain\Enum\ModeTransport;
@@ -19,8 +20,10 @@ use App\Domain\Enum\StatutPaiement;
 use App\Domain\Enum\StatutReglement;
 use App\Domain\Support\TarifApplicable;
 use App\Domain\Support\TransportApplicable;
+use App\Entity\Input\PrixUnitaireInput;
 use App\Entity\Interface\SiteOwnedInterface;
 use App\Repository\OperationRepository;
+use App\State\Processor\PrixUnitairePeseeProcessor;
 use App\State\Provider\MontantEnVolProvider;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
@@ -69,6 +72,28 @@ use Symfony\Component\Serializer\Attribute\Groups;
             openapi: new OpenApiOperation(
                 summary: 'La pesée',
                 description: 'Fiche complète, avec le détail du règlement',
+                security: [['bearerAuth' => []]]
+            )
+        ),
+        /*
+            - LA SEULE ÉCRITURE DU WEB SUR UNE PESÉE, et elle ne touche qu'un champ : le prix au
+              kilo. Les poids, le ticket et les dates viennent du pont bascule et n'en bougent plus.
+
+            - 'Patch' et non 'Post', pour la raison qui vaut partout ailleurs ici : sur un 'Post',
+              API Platform ne charge pas l'élément et 'object' serait nul dans l'expression de
+              sécurité — le périmètre de l'entreprise ne serait alors vérifié nulle part.
+        */
+        new Patch(
+            uriTemplate: '/operations/{id}/prix-unitaire',
+            security: "is_granted('MODIFIER', object)",
+            requirements: ['id' => '\d+'],
+            input: PrixUnitaireInput::class,
+            denormalizationContext: ['groups' => ['write:Operation:prix']],
+            normalizationContext: ['groups' => ['read:Operation', 'read:Operation:item', 'read:Base']],
+            processor: PrixUnitairePeseeProcessor::class,
+            openapi: new OpenApiOperation(
+                summary: 'Prix au kilo de la pesée',
+                description: 'Écrit une prime sur cette pesée seule. Elle passe avant les tarifs, recalcule le montant dû, et se ferme au premier versement sur la récolte',
                 security: [['bearerAuth' => []]]
             )
         ),
@@ -775,13 +800,84 @@ class Operation extends EntityBase implements SiteOwnedInterface
 
         @return bool vrai si quelque chose a changé
     */
+    /*
+        - LE PRIX ÉCRIT À LA MAIN, la prime. Il ne passe pas par 'calculerMontant()' et ne le
+          pourrait pas : cette méthode RÉSOUT un prix depuis les référentiels, et une prime n'y
+          figure nulle part par définition.
+
+        - L'ORIGINE PASSE À 'MANUEL' dans le même geste, et ce n'est pas décoratif : c'est elle
+          qui ferme ensuite la part récolte à toute revalorisation automatique.
+
+        - LE RÈGLEMENT SE RECALCULE ICI, parce que le payable vient de changer. Une pesée qui
+          était soldée à l'ancien prix redevient partiellement réglée au nouveau, et doit
+          reparaître dans la file du guichet.
+
+        - LA RETENUE N'EST PAS TOUCHÉE ICI : elle appartient au livre d'épargne, qui se tient sous
+          verrou et s'écrit en même temps que le compte du planteur. C'est 'EpargneService' qui
+          s'en charge, juste après.
+    */
+    public function fixerLePrixUnitaire(int $prix): static
+    {
+        $this->prixunitaire = $prix;
+        $this->origineTarif = OrigineTarif::MANUEL;
+        $this->montantdu = (int) $this->poidsnet * $prix;
+
+        $this->statutReglement = StatutReglement::pourLesParts(
+            $this->montantdu,
+            $this->getPayableproduit(),
+            $this->montantpayeproduit,
+            $this->getPayabletransport(),
+            $this->montantpayetransport,
+        );
+
+        return $this;
+    }
+
+    /*
+        - LE PRIX SE RÉÉCRIT-IL ENCORE ? La règle tient en une phrase : jusqu'au premier versement
+          sur la récolte, et pas une seconde après. Un planteur reparti avec son argent ne doit pas
+          voir le montant de sa pesée bouger dans son dos — ni à la hausse, qui créerait une dette
+          de l'entreprise que personne n'a décidée, ni à la baisse, qui en créerait une de lui.
+
+        - LES VERSEMENTS EN VOL COMPTENT COMME VERSÉS. L'argent est parti vers la passerelle et la
+          confirmation peut tomber à la seconde d'après : changer le prix pendant ce vol règlerait
+          une somme calculée sur un montant qui n'existe déjà plus.
+
+        - LE TRANSPORT NE COMPTE PAS. Un planteur peut s'être fait payer son trajet sur une pesée
+          dont la récolte n'est pas tarifée, et c'est précisément celle-là qu'on veut pouvoir
+          tarifer ensuite.
+
+        - 'poidsnet' STRICTEMENT POSITIF : sans poids il n'y a pas d'assiette, et un prix au kilo
+          sur zéro kilo ne donnerait qu'un montant nul que rien ne distinguerait d'une absence de
+          prix.
+    */
+    #[Groups(['read:Operation'])]
+    public function isPrixModifiable(): bool
+    {
+        return $this->getDeletedAt() === null
+            && $this->estTerminee()
+            && $this->produit !== null
+            && $this->fournisseur !== null
+            && ($this->poidsnet ?? 0) > 0
+            && $this->montantpayeproduit === 0
+            && $this->getMontantenvolproduit() === 0;
+    }
+
     public function calculerMontant(): bool
     {
         if($this->retenue !== null) {
             return false;
         }
 
-        $gelProduit = $this->montantpayeproduit > 0 || $this->getMontantenvolproduit() > 0;
+        /*
+            - UNE MAIN FIGE LA PART RÉCOLTE au même titre qu'un versement. Un prix écrit sur la
+              pesée est une décision prise pour ELLE : la prochaine tarification du produit la
+              balaierait sans que personne ne voie la prime partir, et le planteur toucherait
+              autre chose que ce qu'on lui avait annoncé.
+        */
+        $gelProduit = $this->montantpayeproduit > 0
+            || $this->getMontantenvolproduit() > 0
+            || $this->origineTarif === OrigineTarif::MANUEL;
         $gelTransport = $this->montantpayetransport > 0 || $this->getMontantenvoltransport() > 0;
 
         $terminee = $this->estTerminee();

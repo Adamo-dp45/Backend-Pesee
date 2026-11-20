@@ -81,7 +81,17 @@ final class Droits
                   fois. Même nature qu'un prix, mêmes mains.
             */
             'BaremeTransport' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER],
-            'Operation' => [self::VOIR],
+            /*
+                - 'MODIFIER' SUR UNE PESÉE NE VEUT DIRE QU'UNE CHOSE : écrire son prix au kilo, la
+                  prime. Rien d'autre d'une pesée ne se modifie depuis le web — les poids, le
+                  ticket et les dates viennent du pont bascule et n'en bougent plus.
+
+                - À L'ADMINISTRATEUR SEUL, comme tous les autres prix. L'opérateur du guichet a le
+                  planteur devant lui au moment où celui-ci réclame sa prime : lui donner le droit
+                  ferait négocier le prix à la barrière, ce que la refonte du référentiel a
+                  précisément voulu supprimer.
+            */
+            'Operation' => [self::VOIR, self::MODIFIER],
             'Paiement' => [self::VOIR, self::PAYER],
             'MouvementCaisse' => [self::VOIR],
             'MouvementEpargne' => [self::VOIR],

@@ -132,6 +132,8 @@ final class NumeroPlanteurTest extends InvariantTestCase
 
     public function testUnNumeroDeCirconstanceLisibleEstNormaliseAvantLEnvoi(): void
     {
+        $this->exigeLeMobileMoney();
+
         [, , $operateur, $pesee] = $this->decorAvecPesee();
 
         $this->appeler('POST', '/api/paiements', $operateur, [

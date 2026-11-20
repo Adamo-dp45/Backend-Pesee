@@ -160,6 +160,8 @@ final class DeuxCaissesTest extends InvariantTestCase
     */
     public function testUnPlanteurSansTelephoneResteReglableEnEspeces(): void
     {
+        $this->exigeLeMobileMoney();
+
         [, $operateur, $pesee] = $this->decor(sansTelephone: true);
 
         self::assertNull($pesee->getMotifNonPayable(), 'La pesée est réglable : il reste les espèces');

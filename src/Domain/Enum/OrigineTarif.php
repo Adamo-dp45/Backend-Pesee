@@ -21,6 +21,17 @@ enum OrigineTarif: string
     case PLANTEUR = 'PLANTEUR';   // Un tarif propre à ce planteur, qui l'emporte sur tout le reste
     case CATEGORIE = 'CATEGORIE'; // Le tarif de sa catégorie pour ce produit
     case PRODUIT = 'PRODUIT';     // Le prix du produit, qui vaut pour l'entreprise entière
+    /*
+        - LA QUATRIÈME ORIGINE N'EST PAS UN SAUT : elle dit qu'aucun des trois n'a décidé, et qu'un
+          administrateur a écrit le prix sur CETTE pesée. C'est le cas de la prime — une récolte
+          particulièrement propre, un planteur qu'on veut retenir — et il est par nature invisible
+          dans les référentiels : rien, ni sur le produit, ni sur la catégorie, ni sur le planteur,
+          n'expliquerait le montant.
+
+        - ELLE FIGE LA PART RÉCOLTE. Une main l'emporte sur les trois sauts, sans quoi la prochaine
+          tarification du produit effacerait la prime sans que personne ne la voie partir.
+    */
+    case MANUEL = 'MANUEL';
 
     public function libelle(): string
     {
@@ -28,6 +39,7 @@ enum OrigineTarif: string
             self::PLANTEUR => 'Tarif du planteur',
             self::CATEGORIE => 'Tarif de sa catégorie',
             self::PRODUIT => 'Prix du produit',
+            self::MANUEL => 'Prix saisi sur la pesée',
         };
     }
 
@@ -38,6 +50,7 @@ enum OrigineTarif: string
             self::PLANTEUR => 'Un tarif négocié avec ce planteur, qui l\'emporte sur celui de sa catégorie.',
             self::CATEGORIE => 'Le tarif de la catégorie à laquelle ce planteur appartient.',
             self::PRODUIT => 'Le prix du produit, celui de tous les planteurs sans tarif particulier.',
+            self::MANUEL => 'Un prix écrit à la main sur cette pesée seule, au-dessus des tarifs. Il ne bougera plus.',
         };
     }
 }

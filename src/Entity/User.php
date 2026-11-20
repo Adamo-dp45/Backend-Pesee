@@ -4,14 +4,19 @@ namespace App\Entity;
 
 use ApiPlatform\Doctrine\Orm\Filter\OrderFilter;
 use ApiPlatform\Doctrine\Orm\Filter\SearchFilter;
+use ApiPlatform\Doctrine\Orm\Filter\FreeTextQueryFilter;
+use ApiPlatform\Doctrine\Orm\Filter\OrFilter;
+use ApiPlatform\Doctrine\Orm\Filter\PartialSearchFilter;
 use ApiPlatform\Metadata\ApiFilter;
 use ApiPlatform\Metadata\ApiResource;
 use ApiPlatform\Metadata\Get;
 use ApiPlatform\Metadata\GetCollection;
 use ApiPlatform\Metadata\Patch;
 use ApiPlatform\Metadata\Post;
+use ApiPlatform\Metadata\QueryParameter;
 use ApiPlatform\OpenApi\Model\Operation;
 use App\Domain\Enum\Role;
+use App\Filter\RolePrincipalFilter;
 use App\Domain\Enum\StatutActivation;
 use App\Entity\Input\AttribuerRoleInput;
 use App\Entity\Input\ChangerMotDePasseInput;
@@ -216,6 +221,21 @@ use Symfony\Component\Validator\Constraints as Assert;
     'statut' => 'exact',
     'entreprise' => 'exact',
 ])]
+/*
+    - UNE SEULE RECHERCHE POUR QUATRE COLONNES. On cherche un compte avec ce qu'on a sous la main :
+      un nom entendu au téléphone, une adresse lue dans un message, un numéro rappelé par
+      quelqu'un. Un filtre par colonne n'en interroge qu'une, et rend une liste vide sans jamais
+      dire qu'il n'a pas regardé ailleurs.
+    - Même montage que la recherche des catégories : un 'OrFilter' sur des correspondances
+      partielles, posé sous une clé unique.
+*/
+#[QueryParameter(
+    key: 'recherche',
+    filter: new FreeTextQueryFilter(new OrFilter(new PartialSearchFilter())),
+    properties: ['nom', 'prenom', 'email', 'telephone'],
+)]
+/* Le rôle vit dans une colonne JSON : le filtre natif ne saurait pas y regarder. Voir 'RolePrincipalFilter'. */
+#[ApiFilter(RolePrincipalFilter::class)]
 #[ApiFilter(OrderFilter::class, properties: ['nom', 'email', 'createdAt'])]
 class User implements UserInterface, PasswordAuthenticatedUserInterface, EntrepriseOwnedInterface
 {
@@ -565,6 +585,32 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface, Entrepr
     public function getRolesAttribuables(): array
     {
         return $this->rolesAttribuables;
+    }
+
+    /**
+     * LES RÔLES QU'ON PEUT RENCONTRER DANS UNE LISTE DE COMPTES, pour en filtrer une.
+     *
+     * Distinct des rôles ATTRIBUABLES, et la différence compte : un agent n'encadre que des
+     * opérateurs, mais il VOIT les agents et les administrateurs de son entreprise. Lui proposer
+     * la seule liste de ce qu'il peut attribuer ferait un filtre qui tait des valeurs présentes à
+     * l'écran — on chercherait longtemps avant de soupçonner le filtre.
+     *
+     * Le compte machine en est écarté : il ne figure dans aucune liste d'utilisateurs.
+     *
+     * @return array<string, string>
+     */
+    #[Groups(['read:User:me'])]
+    public function getRolesFiltrables(): array
+    {
+        $roles = [];
+
+        foreach(Role::cases() as $role) {
+            if($role !== Role::SITE) {
+                $roles[$role->value] = $role->libelle();
+            }
+        }
+
+        return $roles;
     }
 
     /** @param array<string, string> $roles */

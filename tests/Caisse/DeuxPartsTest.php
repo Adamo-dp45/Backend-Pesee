@@ -252,6 +252,8 @@ final class DeuxPartsTest extends InvariantTestCase
     */
     public function testUnVersementEnVolSurLeTransportNeFermePasLaRecolte(): void
     {
+        $this->exigeLeMobileMoney();
+
         $pesee = $this->peseeAvecTransport();
 
         $this->appeler('POST', '/api/paiements', $this->operateur, [

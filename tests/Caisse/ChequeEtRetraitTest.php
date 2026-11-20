@@ -250,6 +250,8 @@ final class ChequeEtRetraitTest extends InvariantTestCase
     */
     public function testUnRetraitMobileEchoueRendLArgentAuxDeuxLivres(): void
     {
+        $this->exigeLeMobileMoney();
+
         $planteur = $this->planteurAvecEpargne(200_000);
         $id = $this->accorder($planteur, 150_000);
 

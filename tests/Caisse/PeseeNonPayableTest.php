@@ -42,7 +42,7 @@ final class PeseeNonPayableTest extends InvariantTestCase
 
         $this->appeler('POST', '/api/paiements', $operateur, [
             'operationId' => $pesee->getId(),
-            'modeReglement' => 'MOBILE_MONEY',
+            'modeReglement' => 'ESPECES', // Le mode ne joue aucun rôle ici : le refus tombe avant que le moindre franc ne bouge
             'montantProduit' => 20_000,
             'montantTransport' => 0,
         ]);
@@ -106,7 +106,7 @@ final class PeseeNonPayableTest extends InvariantTestCase
 
         $this->appeler('POST', '/api/paiements', $operateur, [
             'operationId' => $pesee->getId(),
-            'modeReglement' => 'MOBILE_MONEY',
+            'modeReglement' => 'ESPECES', // Le mode ne joue aucun rôle ici : le refus tombe avant que le moindre franc ne bouge
             'montantProduit' => 20_000,
             'montantTransport' => 0,
         ]);

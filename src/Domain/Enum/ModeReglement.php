@@ -58,10 +58,26 @@ enum ModeReglement: string
         return $this === self::CHEQUE;
     }
 
+    /*
+        - LES MODES OUVERTS À LA SAISIE, et c'est une liste plus courte que l'énumération.
+
+        - LE MOBILE MONEY EST FERMÉ tant qu'un vrai agrégateur n'est pas en place : la passerelle
+          actuelle est simulée, et proposer le mode ferait sortir de l'argent de la caisse pour un
+          envoi qui n'arrive nulle part. La ligne est COMMENTÉE et non supprimée — c'est elle
+          qu'on décommentera le jour de la bascule, et rien d'autre.
+
+        - LE CAS DE L'ÉNUMÉRATION RESTE, lui, et c'est indispensable : les versements déjà partis
+          le portent en base, le webhook et la réconciliation continuent de les traiter, et les
+          écrans savent toujours les nommer. Fermer un mode n'est pas effacer son histoire.
+    */
     /** @return list<self> */
     public static function toutes(): array
     {
-        return [self::ESPECES, self::MOBILE_MONEY, self::CHEQUE];
+        return [
+            self::ESPECES,
+            // self::MOBILE_MONEY, — rouvrir ici quand l'agrégateur sera en place
+            self::CHEQUE,
+        ];
     }
 
     /** Les mêmes en chaînes, pour les contraintes de validation et les listes déroulantes. */

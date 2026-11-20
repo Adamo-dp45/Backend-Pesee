@@ -385,6 +385,35 @@ indiscernables et « pourquoi mon voisin touche 500 » n'a **aucune réponse dan
 entre aussi dans la détection de changement de `calculerMontant()` : un tarif de planteur supprimé au
 profit d'un tarif de catégorie identique ne change aucun chiffre, mais change le pourquoi.
 
+### La prime : un quatrième chemin, qui n'est pas un saut
+
+Un prix au kilo peut être écrit à la main sur **une** pesée : `PATCH /api/operations/{id}/prix-unitaire`.
+C'est la prime — une récolte particulièrement propre, un planteur qu'on veut retenir. Elle ne se range
+dans aucun référentiel par nature : sur le produit elle irait à tout le monde, sur le planteur à toutes
+ses livraisons à venir.
+
+`origineTarif` passe à `MANUEL`, et ce n'est pas décoratif : c'est lui qui **ferme la part récolte** dans
+`calculerMontant()`, au même titre qu'un versement. Sans ce gel, la prochaine tarification du produit
+balaierait la prime en silence et le planteur toucherait autre chose que ce qu'on lui a annoncé.
+
+**La fermeture est au PREMIER VERSEMENT sur la récolte**, pas à l'arbitrage. `Operation::isPrixModifiable()`
+porte la règle et sort dans la charge utile : l'écran la lit pour afficher le formulaire, le processor la
+revérifie. Les versements **en vol** comptent comme versés. Le transport déjà payé, lui, ne ferme rien —
+c'est le cas même qu'on veut pouvoir tarifer ensuite : un planteur payé de son trajet sur une pesée dont
+le produit n'était pas tarifé.
+
+**L'arbitrage de la mise en compte reste définitif, et la hausse va au guichet.** Une pesée porte
+**une** ligne d'épargne — `mouvement_epargne.operation_id` est `UNIQUE`, première des quatre barrières
+contre le double crédit. La prime ne rouvre donc pas la part mise de côté : elle grossit le
+**payable**, et le planteur reçoit la différence en main propre. Le seul refus est le cas inverse —
+un prix qui mettrait la récolte **sous** ce qui est déjà mis en compte : reprendre la différence
+serait un retrait, qui passe par la demande du planteur et l'accord d'un administrateur. Une pesée
+jamais arbitrée (produit non tarifé) est, elle, arbitrée normalement une fois le prix écrit.
+
+À l'administrateur seul (`Operation => MODIFIER`). L'opérateur a le planteur devant lui quand celui-ci
+réclame sa prime : lui ouvrir ce champ ferait négocier le prix à la barrière. `PrixDeLaPeseeTest` tient
+les dix cas.
+
 ### Le transport se résout aussi, en DEUX sauts
 
 ```
