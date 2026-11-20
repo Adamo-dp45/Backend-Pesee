@@ -41,7 +41,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
 #[ORM\Index(name: 'idx_mouvement_epargne_compte_date', fields: ['compte', 'createdAt'])]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:MouvementEpargne', 'read:Base'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:MouvementEpargne', 'read:Base']],
     paginationItemsPerPage: 50,
     paginationClientItemsPerPage: true,
     order: ['createdAt' => 'DESC'],

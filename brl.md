@@ -89,73 +89,43 @@ Socafpesage10
 
 
 
-commande utile, bd..
-
-
-
-
-
-**La fiche planteur fait 768 px de large.** Une colonne par montant — récolte, transport, retenue, payable, versé, reste — plus ticket, date, produit, net et règlement, cela fait onze colonnes : il aurait fallu faire défiler le tableau de côté pour lire une seule ligne. Je les ai donc groupés là où ils se lisent ensemble, comme dans la file du guichet :
-
-```
-Ticket   Produit   Net        Récolte            Au guichet                      Règlement
-T-4505   Hévéa     14 000 kg  5 600 000 F        5 110 000 F                     Non payée
-         11/11                400 F le kilo      + 210 000 F de transport
-                                                 − 700 000 F mis en compte
-```
-
-Le découpage suit le raisonnement du domaine plutôt que la liste des champs : **à gauche ce que la pesée vaut, à droite ce qu'on remet au planteur**, et les lignes secondaires expliquent l'écart entre les deux. C'est exactement ce qu'un planteur vient contester, son ticket à la main — il y lit 5 600 000 et on lui en compte 5 110 000.
-
-J'ai ajouté le **prix au kilo** sous la récolte, que vous n'aviez pas demandé : sans lui, le montant de la récolte est invérifiable depuis cet écran, alors que c'est une multiplication que le planteur fait de tête.  ===> Je préfère défilé de côté
-
 - Un point que je n’ai pas tranché, dites-moi s’il vous gêne : un changement de taux s’affiche sous le geste « Ouverture d’une mise en compte », faute d’un troisième type dans l’énumération. Le libellé dit exactement ce qui s’est passé, mais la colonne « Geste », elle, annonce une ouverture.
-
-- **Une limite connue de la mise en compte** : le taux est tenu sous le prix du produit à l'ouverture, mais rien ne le resserre si le prix **baisse** ensuite. Un prélèvement ouvert à 50 F sur un produit tombé à 40 F prend alors toute la récolte — le plafond `min(taux × poidsnet, montantdu)` empêche la dette, pas le guichet vide. Le refus `RETENU` le dit à l'opérateur, et il reste à l'administrateur à baisser le taux. ==> Ici on peut notifier l'admin pour qu'il modifie ou arrête les prélèvements qui ne sont plus apte
 
 - Ce que ce mode ne fait pas, et qu'il faut écrire noir sur blanc : émettre le chèque solde la pesée immédiatement. L'application ne sait pas s'il a été encaissé. C'est le même compromis que les espèces, à ceci près que le délai est réel — à surveiller si un chèque sans provision devient un cas.
 
-- Concernant la notion prix spéciale, sache qu'on peut avoir un prix spéciale pour un fournissuer conernant un produit 
 
 - 3. **Échec mobile money** : un versement remboursé doit annuler sa mise en compte. Le chemin de remboursement existe, il faudra l'étendre.
 
 - Le cas de test qui manquait au plan — « un retrait mobile échoué rend l’argent aux deux livres » — est écrit. Je l’ai éprouvé en désactivant la ligne d’annulation d’épargne : il tombe avec « L’épargne n’a pas été rendue au planteur — 50000 ≠ 200000 », puis repasse une fois la ligne remise. C’est le cas le plus coûteux du lot : les deux livres étant séparés, aucun écran ne signalerait l’écart — le total des caisses retomberait juste, seule la dette envers le planteur serait fausse.
 
+Un risque technique que je préfère nommer tout de suite : cette application a pour règle qu’un POST rend toujours une redirection, et un 422 n’émet pas turbo:load. Une modale qui poste et réaffiche ses erreurs dedans est précisément le motif qui casse. Je la ferais sur un Turbo Frame, pour que l’erreur se rejoue dans le cadre sans emporter la page. C’est faisable, mais c’est le point sur lequel je serai prudent.
+
+modules/surcouche.js vide les portails et le verrou sur turbo:before-cache. Il ne vise pas que ma modale : le sélecteur [data-slot$="-portal"] couvre les tiroirs, les panneaux, les menus déroulants et les bulles. Aucun n’a de raison d’être photographié — ils décrivent un geste en cours, pas la page.
 
 
 
 
 
-- Sur les tableaux de pesées, affichés date, prixtransport, prixproduit etc..
-- commit.. Le retrait de l'épargne, règlement par chèque
+## Pourquoi je garde la grille
 
+Tu as raison sur un point et je l'ai corrigé : il manquait la **vue d'ensemble**. C'était le vrai manque, et c'est ce que l'écran fait maintenant.
 
-commenté le tous les sites, faire ressortir à doté
+Sur la saisie, je tiens la grille, pour quatre raisons.
 
+**1. Ce qu'on vient chercher, c'est le trou — pas la ligne.** Une liste de tarifs ne montre que ce qui existe. « Quels produits ne sont pas tarifés pour cette catégorie ? » y est invisible : une ligne absente ressemble à rien du tout. Or ce sont ces trous qui coûtent — le planteur est payé au prix du produit sans que personne ne l'ait décidé pour lui. La grille affiche une ligne par produit, tarifé ou non, avec le repli écrit dessous.
 
+**2. Une case vide n'est pas une suppression.** Dans un CRUD ligne à ligne, retirer un tarif est un bouton « Supprimer » : il a l'air destructeur et ne dit rien de la conséquence. Dans la grille, tu vides la case et la ligne en dessous te dit ce que le planteur touchera à la place — « Sans tarif ici : 400 F le kilo ». La conséquence est à l'écran au moment du geste.
 
+**3. L'aperçu compte les pesées revalorisées, et il ne peut pas être par ligne.** C'est la raison forte. Enregistrer un tarif revalorise des pesées, et une pesée qui acquiert une valeur est **arbitrée** : sa retenue d'épargne est figée pour toujours, sans chemin de retour. L'aperçu annonce « 1 créé, 0 modifié, 0 retiré, N pesées revalorisées » avant d'écrire. Avec un formulaire par ligne, il faudrait soit refaire cette cérémonie sur chaque création, chaque modification et chaque suppression — donc **N confirmations pour N produits**, plus de clics et non moins — soit la sauter sur un des trois chemins, et c'est ce chemin-là qui figera un jour des milliers de retenues.
 
+**4. Tarifer une catégorie, c'est fixer plusieurs produits ensemble.** La grille est une transaction, un aperçu, une décision. Ligne à ligne, tu peux t'arrêter au milieu — et la moitié manquante paie au prix du produit en silence. C'est exactement la panne qu'on cherche à rendre visible.
 
+J'ajoute que choisir le produit dans une liste déroulante est une version dégradée du même geste : tu choisis à l'aveugle, sans voir lesquels sont déjà tarifés ni à quel prix, et rien n'empêche deux lignes sur le même produit. La grille ne peut pas produire de doublon.
 
+Ce que je te concède : **le deuxième clic**. L'aperçu coûte un aller-retour. C'est le seul que je ne retirerai pas, quelle que soit la forme qu'on donne à l'écran.
 
-Salut Claude Code,
+Si tu préfères quand même les formulaires, je les fais — mais je garderai l'aperçu sur chaque écriture, donc le deux-temps restera.
 
-On vas travailler sur l'application de gestion de pesées.
-
-# Consignes
-- **Ignore les fichiers `brl.*`** du projet : ce sont juste des brouillons
-- dossier
-## Ce que j'attends
-Analyse le projet pour :
-- te remettre à jour sur l'architecture générale et les modules existants
-- retrouver l'état d'avancement du projet
-- être prêt pour la suite des instructions que je vais te donner
-
-
-
-
-
-
-Analyse l'un de mes projets `C:\Users\adamo\Documents\Web\iTransport` dans lequel j'ai utilisé à peu près la même stack que ce projet, je pense que qu'il y'a des choses qui peuvent t'intéressé et n'oublie pas d'ignorer les fichiers et dossiers `brl/` car ce sont juste des brouillons.
 
 
 
@@ -168,87 +138,135 @@ Analyse l'un de mes projets `C:\Users\adamo\Documents\Web\iTransport` dans leque
 | 1 | **Desktop réduit à la pesée** — tout le traitement sur le web | Contrat de synchronisation : le poste cesse de faire autorité sur les prix et les montants. `SynchronisationService`, `calculerMontant`, les deux chemins de retarification | **3–5** | moyen — touche les tests canaris de la synchro, et se coordonne avec l'équipe Desktop |
 | 2 | **Produit et transport payés séparément ou ensmble**, transport en plusieurs fois |
 
+| 6 | **Classes hiérarchisées de planteurs**, prix par classe, prix planteur prioritaire | La résolution du prix passe de 1 à 3 niveaux, dans le chemin chaud de **toute** pesée — et borne aussi la mise en compte |
+-   => un prix par classe **et par produit**, ou un prix par classe tout court ? Et la hiérarchie descend sur combien de niveaux ?
+| 8 | **Transport** : forfait ou tranches de kilomètres | Aujourd'hui un seul mode, F/kg. Ajoute un mode + un barème — et **la distance n'existe nulle part** : il faut décider qui la fournit | **4–6** | moyen — bloqué tant que l'origine de la distance n'est pas tranchée |
+-   => **#8** — d'où vient la distance ? Du Desktop, de la fiche du planteur, d'une saisie au guichet ?
+
+Un barème par tranches sur un planteur sans distance est refusé à la saisie ; quand c’est sa catégorie qui bascule après coup, la pesée et la fiche le disent au lieu de figer un zéro muet. Et getTransportApplique() répond « qui touche quoi » en suivant les deux sauts — la colonne lisait baremeTransport, donc le sien, et annonçait « Aucun » à des planteurs parfaitement réglés par leur catégorie.
+
+| 7 | **Prix datés** + historique consultable | Le prix cesse d'être une valeur et devient un intervalle. Une pesée se valorise au prix **de sa date**, pas au prix du jour — ce qui change le sens même de la revalorisation automatique | **5–8** | **élevé** — couplé à #6 |
+- Prix : programmer les dates d'application des tarifs et conserver un historique consultable des prix effectivement appliqués.
+- **#6 et #7 ensemble.** Ils modifient le même geste — « quel prix s'applique à cette pesée ». Faits séparément, le second réécrit le premier.
+
+| 5 | **Recherche et suivi** : tables mieux filtrables, libellés plus précis | Filtres par période partout, colonnes supplémentaires, libellés métier. Le socle est sain — on vient de l'éprouver écran par écran | **3–5** | faible — mais le chiffre dépend du nombre d'écrans retenus |
+
+
+
+
+
+
+
+
+
+
+
+
 
 | 3 | **Tableau de bord détaillé** (à qui doit-on, etc.) | Agrégats SQL + providers de stats, cartes et tables React. Lecture seule | **3–5** | faible |
-| 5 | **Recherche et suivi** : tables mieux filtrables, libellés plus précis | Filtres par période partout, colonnes supplémentaires, libellés métier. Le socle est sain — on vient de l'éprouver écran par écran | **3–5** | faible — mais le chiffre dépend du nombre d'écrans retenus |
-| 4 | **Comptabilité** : références et **pièces jointes** aux reçus et documents | Infrastructure neuve : **aucun mécanisme de fichier n'existe aujourd'hui** dans les deux dépôts. Stockage, dépôt, types et tailles, qui a le droit de lire, rattachement à un paiement / mouvement / demande | **5–8** | moyen — le stockage et les droits de lecture sont à trancher avant de coder |
+
 | 9 | **Relevés imprimables** pour les établissements financiers | L'export existe pour le bilan seul (PDF + Excel). Cinq états de plus, filtrés par période, planteur, site, avec leurs totaux | **4–6** | faible — mais dépend de #2 pour séparer produit et transport |
-
-
-| 6 | **Classes hiérarchisées de planteurs**, prix par classe, prix planteur prioritaire | Réintroduit `prixspeciale`, retiré « le temps d'en revoir le mécanisme », avec une hiérarchie par-dessus. La résolution du prix passe de 1 à 3 niveaux, dans le chemin chaud de **toute** pesée — et borne aussi la mise en compte | **5–8** | **élevé** — 5 endroits décident aujourd'hui d'un prix |
-| 7 | **Prix datés** + historique consultable | Le prix cesse d'être une valeur et devient un intervalle. Une pesée se valorise au prix **de sa date**, pas au prix du jour — ce qui change le sens même de la revalorisation automatique | **5–8** | **élevé** — couplé à #6 |
-| 8 | **Transport** : forfait ou tranches de kilomètres | Aujourd'hui un seul mode, F/kg. Ajoute un mode + un barème — et **la distance n'existe nulle part** : il faut décider qui la fournit | **4–6** | moyen — bloqué tant que l'origine de la distance n'est pas tranchée |
-
-
-
-## L'ordre compte plus que les chiffres
-
-Trois enchaînements font économiser, et l'inverse fait payer deux fois :
-
-- **#1 avant #6 et #7.** Tant que le poste et le web se disputent le prix, toute règle de tarification doit être écrite deux fois. Réduire le Desktop à la pesée d'abord, c'est supprimer un des deux cas avant d'en ajouter neuf.
-- **#6 et #7 ensemble.** Ils modifient le même geste — « quel prix s'applique à cette pesée ». Faits séparément, le second réécrit le premier.
-- **#2 avant #9.** Un relevé qui distingue « paiements de produits » et « règlements de transport » suppose que l'application les distingue déjà.
-
-## Ce qui ferait bouger ces chiffres
-
-Cinq points à trancher avant de figer une estimation ferme — chacun peut déplacer son poste de plusieurs jours :
-
-2. **#8** — d'où vient la distance ? Du Desktop, de la fiche du planteur, d'une saisie au guichet ?
-3. **#4** — où vivent les pièces jointes, qui peut les lire, combien de temps les garde-t-on ?
-4. **#6** — un prix par classe **et par produit**, ou un prix par classe tout court ? Et la hiérarchie descend sur combien de niveaux ?
-5. **#9** — quels formats les banques attendent-elles réellement ?
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-- Avoir un tableau de bord, plus détaillé, qui affiche du genre à qui doit-on, etc...
-- Comptabilité : renseigner les références de caisse, de chèque et d'autres justificatifs, avec la possibilité de joindre les pièces aux reçus et documents concernés. 
-- Recherche et suivi : disposer de tableaux mieux filtrables et de libellés plus précis pour les équipes administratives, comptables et la direction
-- Planteurs et fournisseurs : pouvoir les organiser en classes hiérarchisées et attribuer un prix à chaque classe. Un prix propre à un planteur doit prendre le dessus sur celui de sa classe. 
-- Prix : programmer les dates d'application des tarifs et conserver un historique consultable des prix effectivement appliqués.
-- Transport : gérer différents modes de facturation, notamment un montant fixe ou une tarification par tranches de kilomètres. 
 - Relevés : consulter et imprimer des états détaillés des pesées, paiements de produits, règlements de transport, épargnes et retraits, filtrés par période, fournisseur, site ou autre critère utile aux établissements financiers. 
+Plus sur les fournisseurs : permet de faire des documents comme un relevé de qui peut aller en banque 
 
 
 
-- Regrouper le bilan
-- releves
-    - la banque peut venir devant l'entreprise pour le relevé de note
-    - le fournisseur peut venir devant l'entreprise pour son état
+## Les messages de commit
+
+```powershell
+git -C Backend-Webpesee-V2 commit -m @'
+feat: Tarification à trois étages, transport par tranches, et les totaux des écrans d'argent
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+'@
+```
+
+```powershell
+git -C Frontend-Webpesee commit -m @'
+feat: Les écrans des tarifs, des trois bilans et de la file du guichet
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+'@
+```
+
+**Mais je dois te dire que c'est beaucoup pour un seul commit.** L'API a 49 fichiers modifiés et 44 neufs, le web 57 et 29 — et surtout ce n'est pas *une* chose : la tarification, le transport par tranches, le passage du référentiel à l'entreprise, les bilans, l'écran à payer, et un **changement de droits** qui retire à l'opérateur la création de planteurs. Ce dernier mérite d'être visible dans l'historique le jour où quelqu'un demandera « depuis quand on ne peut plus créer un planteur au guichet ? ». Noyé dans un commit de cent fichiers, il ne le sera pas.
+
+Si tu veux le découper, je propose cinq commits par dépôt, dans cet ordre :
+
+1. `feat: Catégories de planteurs et grille de tarifs à trois étages`
+2. `feat: Transport au kilo, au forfait ou par tranches de kilomètres`
+3. `feat: Le référentiel appartient à l'entreprise, plus au poste`
+4. `feat: Les trois bilans, leurs totaux et leurs exports`
+5. `feat: La file du guichet : totaux, filtres, et versement depuis la liste`
+
+Et le changement de droits à part : `refactor: Produit et Fournisseur réservés à l'administrateur`.
+
+Dis-moi si tu veux que je prépare ce découpage — c'est faisable en ajoutant les fichiers par paquets. **Je n'ai rien commité.**
 
 
 
-CategoryFournisseur
-    libelle
-    description
-    prixunitaireproduit
 
-CategoryTransportFournisseur
-    prixunitairetransport
 
-        -- Table Tranche pour l'interval de facturation pour gérer le kilométrage pour dire que tu es quitter de tel endroid à endroid
 
-        TrancheTransport
-            [] interval de kilométrage
-            prixU -- si on le choisi on multipli par le poidsnet
-            montantfixe -- !! utilise le montant fixe de la tranche
 
-TarifFournisseur
-TarifTransportfournisseur
+Pour le planteur, iTransport a aussi un filtre remote avec autocomplétion distante. Au-delà de quelques centaines de planteurs c’est ce qu’il faudra ; je commencerais par une liste déroulante et je garderais le remote en réserve.
+filtres par période sur les tableaux de listing de..
+sur new catégorie lien pour créer barème dans une poppup
+lien paiement vers le bilan !
+trésorerie Doter en bouton couleur
+recherche sur la liste des users nom ou email ou telephone, filtre sur role
 
-Fournisseur
+La logique concernant la suppression qu'est ce qu'il se passe et est ce que ça pose problème ! vu que moi je pense que s'il a déjà des pesées ne plus le supprimé ! Pas trop sur qu'il explique l'existant et me dise lequel est meilleur entre les 2
 
-, de manière générique la logique du tradocument différentié via un type
+Déplacer filtre + Appliquer sur la droite et Export impression en bas de lui (Bilan des pesées, Versements, Grand livre) (bilan de pesées seulement export imprt en bas)
+Supprimer la tabs de `Pesées` `Versements` `Grand livre`
+
+
+
+
+
+- Possibilité de pouvoir modifier le prix unitaire de la pesées en ligne là ca fait un recalcule vu que souvant il peuvent rajouté une prime dessus, plus de modification après le premier versement sur la pesées !! je pense qu'on a abandonnée :: pour pouvoir controller le prix données à la pesées
+- Souvent quand je suis connecté ça me déconnecte seule je me dis que le refreshToken ne s'exécute pas correctement
+- Produit par entreprise, mais on peut ajouter un champ qui permet à un site de faire un surplus sur le prix à l'instant t lors de la pesées
+- commenté le tous les sites, toute la partie mobile money avant qu'on ne prenne en compte : Mettre en commentaires les parties mobile money avant d'implémenté un vrai agrégateur
+Priorité : pour définir les propriétés par entreprise du genre une entreprise peut dire moi c'est le prix de la categorie qui est prioritaire par rapport au prix fournisseur etc... :: Gérer du côté super admin
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Les deux fiches gardent la lecture de leur grille et mènent à la saisie
+
+
+| 4 | **Comptabilité** : références et **pièces jointes** aux reçus et documents | Infrastructure neuve : **aucun mécanisme de fichier n'existe aujourd'hui** dans les deux dépôts. Stockage, dépôt, types et tailles, qui a le droit de lire, rattachement à un paiement / mouvement / demande | **5–8** | moyen — le stockage et les droits de lecture sont à trancher avant de coder |
+- Comptabilité : renseigner les références de caisse, de chèque et d'autres justificatifs, avec la possibilité de joindre les pièces aux reçus et documents concernés.
+3. **#4** — où vivent les pièces jointes, qui peut les lire, combien de temps les garde-t-on ?
+
+
+
+
+- Dans le `.sidebar-logo` de `base.html.twig` on vas afficher le nom de l'entreprise et son logo plutôt que `iTransport`
+commande utile, bd..
+
+- Lors de la création et modification de l'entreprise, si entreprise à un seule site ou plusieurs -> si un on représente le solde de l'entreprise par celui du site !! Pas trop sure
+
+
+
+
+
+- 
+On m'a parler d'un truc pour le faire de manière générique, du genre on a une table Tarif qui gère les différentes types de tarification, qui est différencié par une propriété `type` et qui est prioritaire à la table tranche !
 
 Tarif(categoriefournisseur, fournisseur, produit) -- prioritaire sur la table tranche
     idproduit
@@ -259,28 +277,25 @@ Tarif(categoriefournisseur, fournisseur, produit) -- prioritaire sur la table tr
     datedebut
     datefin
     type 
+TrancheTransport
+    [] interval de kilométrage
+    prixU -- si on le choisi on multipli par le poidsnet
+    montantfixe -- !! utilise le montant fixe de la tranche
+CategoryFournisseur
+    libelle
+    description
+    prixunitaireproduit
+CategoryTransportFournisseur
+    prixunitairetransport
+TarifFournisseur
+TarifTransportfournisseur
 
-Priorité : pour définir les propriétés par entreprise
-
-- categoriefournisseur, tarifcategoriefournsseur, tarifournissuer : pour le produit, aussi pour le transport
-
-- Possibilité de pouvoir modifier le prix montant de la pesées en ligne, plus de modification après le premier versement sur la pesées !! je pense qu'on a abandonnée
-
-
-
-
-
-
-
-- Le margin en bas de webpesee pour le téléphone
 - Syncronisation en API Platform
 - Lorsque les peseés arrivent, s'il n'y a de problème du genre le prixtransport ou le prix du produit est 0 et que côté web ça match directement, la syncrone se fait sinon on affiche la liste des syncro qui ont un soucis à l'opérateur et adminstrateur pour qu'il fasse des choix et sync les différents pesées
 - On ne reçois que les syncronisations terminé
-- précolect du genre remise sur une pesées
 
-
-
-
+Dans la partie Frontend.., pour le Dashbord je veux qu'il soit au style réel de Shadcn (→ ui.shadcn.com) en (HTML, Css, etc...), responsive, moderne, etc...
+- Tu n'a pas mis de sidebar dans le Dashbord ! Quand je dis que je veux que le tableau de bord soit au style réel de [shadcn/ui](https://ui.shadcn.com) je faisais allusion au [sidebar-07 de shadcn/ui](https://ui.shadcn.com/view/new-york-v4/sidebar-07) !
 
 
 
@@ -670,8 +685,6 @@ Deux points à traiter avant ce jour-là : `notificationAuthentique()` renvoie `
 
 
 
-
-
 - 
 | Produit / Fournisseur | Résolution **par libellé dans le périmètre du site, avec auto-création** | Via clé unique..
 | Rôle Agent | **Superviseur global en lecture** sur toute l'entreprise + gestion des opérateurs |
@@ -764,4 +777,3 @@ Les trois premiers manquants font rejeter la ligne — pas le lot : les autres p
 
 - **Le cloisonnement tient en deux classes.** [Perimetre.php](Backend-Webpesee-V2/src/Security/Perimetre.php) calcule une fois par requête la liste des sites visibles (toute l'entreprise pour admin/agent, ses caisses pour un opérateur, son seul poste pour un compte machine), et [PerimetreExtension.php](Backend-Webpesee-V2/src/Doctrine/PerimetreExtension.php) l'applique à toutes les lectures API Platform — corbeille, puis entreprise, puis sites. Le soft-delete y est traité par simple héritage d'`EntityBase`, pas par une seconde extension comme en V1. [UserExtension.php](Backend-Webpesee-V2/src/Doctrine/UserExtension.php) écarte en plus les comptes machine de l'écran des utilisateurs, en filtrant sur `siteMachine` (relation) et non sur le rôle (colonne JSON).
 - **Les droits sont une table, pas une hiérarchie.** [AccesVoter.php](Backend-Webpesee-V2/src/Security/Voter/AccesVoter.php) remplace à lui seul les onze voters de V1 : une constante `DROITS[rôle][ressource] = [actions]`, puis la vérification de périmètre. Les règles que la table ne sait pas dire (« on ne suspend pas un fondateur », « un agent ne gère que des opérateurs ») vivent dans [UserGuard.php](Backend-Webpesee-V2/src/Security/UserGuard.php), avec la double surface `peutGerer()` / `assertPeutGerer()`.
-

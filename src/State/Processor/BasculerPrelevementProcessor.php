@@ -71,9 +71,19 @@ class BasculerPrelevementProcessor implements ProcessorInterface
             throw new UnprocessableEntityHttpException('Ce produit est introuvable.');
         }
 
-        // Les référentiels sont LOCAUX : « Cacao » existe une fois par pont bascule, avec son prix. Un prélèvement sur le cacao d'un autre poste ne se déclencherait sur aucune pesée d'ici
-        if($produit->getSite()?->getId() !== $planteur->getSite()?->getId()) {
-            throw new UnprocessableEntityHttpException('Ce produit n\'appartient pas au pont bascule de ce planteur.');
+        /*
+            - Le produit doit être celui de l'ENTREPRISE du planteur. Il n'appartient plus à un poste
+              en propre, si bien qu'un planteur de Soubré peut être prélevé sur un produit que seul
+              Gagnoa pèse — c'est le même produit, au même prix. Franchir l'ENTREPRISE reste exclu :
+              le prélèvement ne se déclencherait sur aucune de ses pesées.
+
+            - Et c'est bien ici que ça se joue : on résout le produit par 'find()', qui ne passe pas
+              par le cloisonnement de l'API. Rien d'autre sur ce chemin ne regarde le périmètre.
+        */
+        $entrepriseDuPlanteur = $planteur->getSite()?->getEntreprise();
+
+        if($entrepriseDuPlanteur === null || $produit->getEntreprise()?->getId() !== $entrepriseDuPlanteur->getId()) {
+            throw new UnprocessableEntityHttpException('Ce produit n\'appartient pas à l\'entreprise de ce planteur.');
         }
 
         $taux = ($data->taux ?? 0) > 0 ? (int) $data->taux : null;
@@ -93,7 +103,7 @@ class BasculerPrelevementProcessor implements ProcessorInterface
             $enCours->arreter($auteur)->setUpdatedBy($auteur?->getId());
         }
         else {
-            if(($motif = TauxPrelevement::motifDuRefus($produit, $taux)) !== null) {
+            if(($motif = TauxPrelevement::motifDuRefus($planteur, $produit, $taux)) !== null) {
                 throw new UnprocessableEntityHttpException($motif);
             }
 

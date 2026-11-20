@@ -40,7 +40,7 @@ use App\State\Provider\CorbeilleVideProvider;
             provider: CorbeilleProvider::class,
             input: false,
             output: CorbeilleOutput::class,
-            normalizationContext: ['groups' => ['read:Corbeille'], 'skip_null_values' => false],
+            normalizationContext: ['groups' => ['read:Corbeille']],
             openapi: new Operation(
                 summary: 'La corbeille',
                 description: 'Produits et planteurs supprimés, tous clients confondus. Filtres : ?type[]=produit&entreprise=3',

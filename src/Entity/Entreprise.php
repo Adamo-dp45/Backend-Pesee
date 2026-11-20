@@ -42,7 +42,7 @@ use Symfony\Component\Validator\Constraints as Assert;
 #[UniqueEntity(fields: ['codeentreprise'], message: 'Ce code entreprise est déjà utilisé')]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:Entreprise', 'read:Base'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:Entreprise', 'read:Base']],
     denormalizationContext: ['groups' => ['write:Entreprise']],
     paginationItemsPerPage: 25,
     paginationClientItemsPerPage: true,

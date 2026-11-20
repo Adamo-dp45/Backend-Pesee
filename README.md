@@ -68,11 +68,15 @@ l'idempotence absorbe. On préfère un renvoi inutile à une pesée acquittée m
 
 ### Ce que le poste ne décide pas
 
-**Le poste pèse ; il ne tarife pas.** Le prix d'un produit et le prix du transport d'un planteur
-se fixent sur le web, qui est aussi l'endroit où l'on paie — une seule source pour le chiffre qui
+**Le poste pèse ; il ne tarife pas.** Le prix d'un produit et le transport d'un planteur se
+fixent sur le web, qui est aussi l'endroit où l'on paie — une seule source pour le chiffre qui
 fonde un versement. Les logiciels de pesée déployés envoient toujours `prix` et `prixtransport`
 dans leur charge utile : ces champs sont **lus et jetés**. Les refuser ferait échouer des lots
 entiers pour une information dont on n'a plus l'usage.
+
+> Et le référentiel qu'on leur **renvoie** garde `prixtransport`, désormais toujours `null` :
+> la colonne n'existe plus sur le planteur, mais une clé qui disparaît d'une charge utile casse
+> un logiciel déployé qu'on ne met pas à jour à la demande. Un `null` qu'il ignore ne casse rien.
 
 > Les deux côtés ont longtemps fait autorité, départagés par détection de changement sur un
 > `prixPoste` qui mémorisait le dernier envoi. L'arbitrage est parti avec sa raison d'être. Ce
@@ -84,6 +88,35 @@ pesées ne valent rien tant que personne ne l'a tarifé au bureau. C'était déj
 se taisait ; c'est désormais la règle. La liste des produits sait filtrer **ceux qui attendent
 leur prix** (`?prix=0`), et la colonne des prix affiche « Aucun prix » en rouge — sans quoi on les
 découvrirait au guichet.
+
+### À quel niveau vit chaque référentiel
+
+**Le produit est à l'ENTREPRISE ; le planteur est au POSTE.** Un libellé reçu d'un poste se
+rapproche des produits de son entreprise, et un produit inconnu y naît. Les ponts bascules d'un
+même client pèsent donc le même cacao au même prix, et chacun reçoit la liste entière — y compris
+les produits qu'il ne pèse jamais. Le peseur choisit dans sa liste, il ne la subit pas.
+
+> Ça n'a pas toujours été le cas : chaque poste tenait son propre « Cacao », avec son propre prix.
+> C'était tenable tant qu'un prix était un seul nombre. Avec des tarifs portés par l'entreprise, il
+> aurait fallu viser « le cacao de Soubré » puis « celui de Gagnoa » et les tenir d'accord à la
+> main — la duplication même qu'on cherchait à supprimer.
+
+Le **planteur**, lui, livre à une barrière précise, et deux hommes du même nom à deux postes sont
+deux hommes. L'unicité suit le périmètre de chacun : `UniqueParEntreprise` sur le produit,
+`UniqueParSite` sur le planteur — deux déclinaisons d'un même `UniqueParPerimetreValidator`, qui
+ne compare qu'aux lignes **vivantes** pour qu'une ligne à la corbeille n'interdise pas de recréer.
+
+**Ce que ça change pour un opérateur** : il voit tous les produits de son entreprise, et toujours
+ses seuls planteurs. `tests/Securite/CloisonnementTest` tient les deux moitiés de la phrase.
+
+**Et il n'en écrit plus aucun.** L'opérateur tarifait les produits et créait des planteurs, du
+temps où le référentiel était à son poste. Depuis qu'il appartient à l'entreprise, un prix saisi
+à une barrière vaut à toutes les autres, et une fiche corrigée l'est pour tout le monde :
+`Produit` et `Fournisseur` sont passés en LECTURE pour lui. Ce que ça coûte au guichet, et qu'il
+faut savoir : un planteur qui se présente pour la première fois ne se crée plus depuis le web par
+l'opérateur, et un numéro de téléphone faux ne se corrige plus par lui. **Le poste, lui, continue
+de les créer en synchronisant** : il porte `ROLE_SITE`, absent de la table des droits, et ne passe
+pas par le voter.
 
 ### Ce qui se fige, et pourquoi
 
@@ -156,6 +189,54 @@ suivante. Un écart signale immédiatement une écriture passée hors du service
 n'offre volontairement **aucun ajustement libre** : tout mouvement va d'un compte à un autre,
 l'argent ne se crée jamais.
 
+### Ce que les bilans agrègent, et où
+
+Quatre ressources de lecture, toutes sous `/stats`, toutes calculées **par la base** :
+
+| | Ce qu'elle rend |
+|---|---|
+| `/stats/production` | Le croisement site × produit : ce qui a été pesé, ce qu'il vaut, ce qui reste dû |
+| `/stats/paiements` | Ce qui est **sorti** vers les planteurs : confirmé, en vol, remboursé, par mode et par poste |
+| `/stats/caisses` | Ce qui a **bougé** en caisse : entrées et sorties, par caisse, par cause, par poste |
+| `/stats/a-payer` | Ce que la **file du guichet** pèse : reste, déjà versé, en vol, pesées en attente |
+
+**Un agrégat ne se recompose jamais depuis les pages d'une collection.** L'API plafonne une page à
+`pagination_maximum_items_per_page` et tronque en silence : un total additionné côté web serait
+faux dès la cent-unième ligne, sans la moindre erreur. C'est exactement ce qui était arrivé à
+l'export du bilan.
+
+**`/stats/a-payer` parle la même langue que la collection**, et ce n'est pas un détail de
+confort : il lit `fournisseur`, `produit`, `site`, `numticket` et `peseeAt2[after]/[before]` —
+exactement les noms des filtres de `/api/operations`. Le web envoie donc le MÊME tableau de
+paramètres aux deux appels et ne peut pas filtrer la liste d'un côté et le total de l'autre. Un
+total qui décrirait une autre sélection que la liste ne lève rien : il affiche un chiffre faux.
+
+> **La règle du reste y est écrite deux fois**, en SQL et dans `Operation::getResteapayerproduit()`.
+> C'est assumé et c'est borné : les `max(0, …)` par part interdisent de sortir le clamp de la
+> somme — `SUM(max(0, a - b))` n'est pas `max(0, SUM(a) - SUM(b))`, et un trop-perçu sur une pesée
+> épongerait la créance d'une autre. `TotauxAPayerTest` tient les deux versions d'accord sur les
+> cas limites : produit sans prix, retenue supérieure au dû, tarif baissé après un versement.
+> Même dispositif que `sommerLesVersementsEnVol()` et sa requête groupée.
+
+> **Un piège DQL au passage** : `CASE WHEN … THEN a - b END` ne s'analyse pas — le parseur lit le
+> premier terme et bute sur le signe moins. L'arithmétique sort du `CASE`, qui ne rend plus que 0
+> ou 1 : `(a - b) * CASE WHEN a - b > 0 THEN 1 ELSE 0 END`.
+
+**Trois familles de versements qui ne s'additionnent pas** : le `REUSSI` a changé de main,
+l'`EN_ATTENTE`/`ENVOYE` a quitté la caisse sans réponse de la passerelle et peut encore revenir,
+l'`ECHOUE`/`ANNULE` est revenu. Un total unique serait faux dans les deux sens à la fois. Les
+retraits d'épargne sont comptés **dans** le versé, pas à côté : ce sont les versements sans pesée.
+
+**Le bilan des caisses donne des FLUX, pas des soldes.** Les soldes du jour sont sur
+`/stats/caisse` (au singulier). Un montant de mouvement est toujours positif — c'est `sens` qui
+porte la direction — d'où deux colonnes partout, jamais une somme signée. Et une dotation y
+apparaît **deux fois**, une par compte : elle sort de l'entreprise et entre dans le poste. Rien ne
+traverse sans ces deux écritures.
+
+> Ces providers écrivent leur DQL à la main et ne passent donc **pas** par les extensions de
+> cloisonnement. Chacun applique `Perimetre::siteIds()` lui-même, et n'ouvre les écritures du
+> compte de l'entreprise qu'à ceux qui ne sont pas opérateurs — même découpage que `/stats/caisse`.
+
 ### Les trois chiffres d'un poste
 
 Un opérateur ne peut pas dépenser tout ce que son solde affiche :
@@ -173,7 +254,7 @@ Une pesée porte **trois** montants, et les confondre est la faute la plus coût
 | | Ce que c'est | Qui le voit |
 |---|---|---|
 | `montantdu` | la **récolte seule** : `poidsnet x prix du produit` | le ticket du planteur, la production, le bilan |
-| `montanttransport` | le **transport**, `poidsnet x prix du planteur`, payé EN PLUS pour ceux qui livrent eux-mêmes | les écrans d'argent |
+| `montanttransport` | le **transport**, ce que son barème donne (§7), payé EN PLUS pour ceux qui livrent eux-mêmes | les écrans d'argent |
 | `montantpayable` | `montantdu + montanttransport - retenue` | le guichet, et lui seul |
 
 Et depuis qu'on règle les deux parts séparément, le payable se lit lui-même en **deux** :
@@ -188,18 +269,19 @@ montantpayable   = la somme des deux, et rien d'autre
 - Le transport ne s'additionne **nulle part ailleurs** que dans le payable. L'ajouter au montant dû
   gonflerait la valeur de la récolte dans la production et le bilan, et surtout **élargirait
   l'assiette de la mise en compte** : on prélèverait l'épargne du planteur sur son propre transport.
-- Les deux prix sont **figés** sur la pesée (`prixunitaire`, `prixtransport`) à côté des montants :
-  un chiffre qu'on ne sait pas réexpliquer est inexplicable devant un planteur qui conteste.
+- Ce qui a produit chaque montant est **figé** sur la pesée à côté de lui : un chiffre qu'on ne
+  sait pas réexpliquer est inexplicable devant un planteur qui conteste. Pour la récolte,
+  `prixunitaire` et `origineTarif` ; pour le transport, `modeTransport`, `origineTransport`,
+  `distanceTransport`, `trancheTransport` et, au kilo seulement, `prixtransport`.
 - Une pesée dont le produit n'est pas tarifé (`montantdu <= 0`) **paie quand même son transport**.
   C'était l'inverse tant qu'une pesée se réglait d'un bloc — régler le seul transport aurait laissé
   une pesée à moitié payée que plus personne ne rouvre. Ce qui l'empêche aujourd'hui de disparaître
   de la file du guichet n'est plus ce zéro, mais `StatutReglement`, qui **refuse de la dire soldée**
   tant qu'elle n'est pas tarifée, et le motif de sa part produit, qui nomme ce qu'il faut corriger.
 
-Le **prix du transport** vit sur la fiche du planteur, et se saisit sur le web comme le prix d'un
-produit — §4. `null` veut dire « on ne lui paie pas de transport », ce qui est le cas de la
-plupart des planteurs ; `0` veut dire « on ne lui en paie plus ». Les deux se distinguent à
-l'écran, et il faut qu'ils se distinguent dans le code.
+Le **transport** ne se lit plus sur la fiche du planteur : il se résout par un barème, et les
+trois façons de le facturer n'ont plus de nombre commun — §7. « Aucun barème » veut toujours dire
+« on ne lui paie pas de transport », ce qui reste le cas de la plupart des planteurs.
 
 ### Un versement
 
@@ -275,6 +357,130 @@ au retrait    │ compte : 10 000 → 0      │ caisse : − 10 000
 - La retenue est **plafonnée au montant dû**, donc à la **récolte seule** : un prélèvement ne crée
   jamais de dette, et il ne mord pas sur le transport — le planteur a avancé le carburant.
 
+### Le prix se RÉSOUT, il ne se lit pas
+
+Un prix n'est plus un nombre posé sur le produit. Il se résout en **trois sauts**, du plus précis au
+plus général, et le premier qui répond l'emporte :
+
+```
+TarifFournisseur   le tarif négocié avec CE planteur
+  ?? TarifCategorie   le tarif de sa catégorie pour ce produit
+     ?? Produit::$prix   le prix du produit, celui de tout le monde
+```
+
+`TarifApplicable::pour()` porte la règle, et c'est le **seul** endroit où elle est écrite. Elle est
+statique et **ne requête rien** : elle lit le graphe déjà chargé, ce qui permet de l'appeler dans la
+boucle de synchronisation, qui traite des lots de deux cents pesées.
+
+**Chaque saut est un PRIX COMPLET, jamais un écart.** « Le cacao vaut 500 F pour cette catégorie »,
+et non « +30 F » : un écart oblige à relire le prix de base pour savoir ce qu'on paie, et il se
+périme en silence le jour où ce prix bouge.
+
+**Une catégorie ne tarife pas tout, et c'est voulu.** Les cultures qu'elle laisse vides retombent sur
+le prix du produit. L'absence de ligne est la seule façon d'exprimer « rien de particulier » — d'où
+l'interdiction d'un tarif à zéro, qui serait lu comme un prix et mettrait ces pesées à néant.
+
+La pesée fige `origineTarif` à côté de `prixunitaire`. Sans elle, deux pesées à 470 F sont
+indiscernables et « pourquoi mon voisin touche 500 » n'a **aucune réponse dans les données**. Elle
+entre aussi dans la détection de changement de `calculerMontant()` : un tarif de planteur supprimé au
+profit d'un tarif de catégorie identique ne change aucun chiffre, mais change le pourquoi.
+
+### Le transport se résout aussi, en DEUX sauts
+
+```
+Fournisseur::$baremeTransport        le barème négocié avec CE planteur
+  ?? CategorieFournisseur::$baremeTransport    celui de sa catégorie
+     ?? aucun                              on ne lui paie pas de transport
+```
+
+`TransportApplicable::pour()` porte la règle, comme `TarifApplicable` porte celle du prix :
+statique, sans requête, appelable dans la boucle de synchronisation.
+
+Un barème facture de **trois façons**, et c'est tout l'objet du changement :
+
+| `ModeTransport` | Ce qu'il donne | Ce qu'il exige |
+|---|---|---|
+| `AU_KILO` | `prixAuKilo x poidsnet` | un prix au kilo |
+| `FORFAIT` | `montant`, quel que soit le tonnage | un montant |
+| `TRANCHES` | le montant de la tranche qui contient `Fournisseur::$distanceKm` | au moins une tranche, **et une distance sur le planteur** |
+
+> Le prix au kilo était la seule façon de payer, et il payait mal : le camion d'un planteur qui
+> apporte deux cents kilos a fait la même route que celui qui en apporte dix tonnes, et touchait
+> cinquante fois moins. Les anciennes valeurs sont devenues des barèmes `AU_KILO`, un par prix
+> distinct et par entreprise : aucun montant n'a bougé à la reprise.
+
+**Les bornes d'une tranche sont semi-ouvertes `[min, max[`**, la dernière à `max = null`, et une
+validation de classe vérifie la collection **entière**. Quatre façons de produire un montant faux
+sans qu'une seule erreur n'apparaisse, et aucune n'est visible depuis une seule ligne :
+
+- un **trou** — « 0 à 20 » puis « 30 à 50 » : un planteur à 25 km ne trouve rien ;
+- un **chevauchement** — deux montants pour une distance, départagés par l'ordre de la requête ;
+- **aucune tranche ouverte** — tout ce qui dépasse la dernière borne ne trouve rien ;
+- un **départ ailleurs qu'à zéro** — un planteur à 3 km d'une suite qui commence à 5.
+
+Chacune donne un transport à zéro, qui se fige sur la pesée puis s'arbitre.
+`tests/Transport/BaremesTest` tient les quatre, plus la borne exacte : **20 appartient à la tranche qui COMMENCE à
+20**, et à elle seule.
+
+**Les deux silences fermés.** Un barème par tranches sur un planteur sans distance ne peut rien
+donner. Le rattachement est donc **refusé** sur la fiche du planteur (`verifierSonTransport`) ;
+mais sa catégorie peut passer aux tranches après coup sans que personne ne rouvre cette fiche, et
+là aucun refus n'est possible — la pesée le **dit** alors, par `getMotifTransportIncalculable()`,
+au lieu de figer un zéro muet. Côté planteur, `getTransportApplique()` et le filtre
+`sansTransport` répondent à « qui ne touche rien ? » en suivant les deux sauts : `baremeTransport
+IS NULL` seul aurait rendu tous les planteurs qu'une catégorie règle déjà.
+
+La pesée fige **le libellé** de la tranche retenue, pas une clé étrangère : rééditer le barème ne
+doit pas rendre une borne qui n'existe plus.
+
+### Où se LISENT les grilles
+
+| | Ce que ça rend |
+|---|---|
+| `GET /categorie_fournisseurs` | Chaque catégorie **avec sa grille** : elles se comptent sur les doigts d'une main |
+| `GET /fournisseurs/tarifes?avecTarifPropre=true` | Les planteurs tarifés à part, avec leurs lignes |
+| `GET /fournisseurs/{id}/tarifs` | La grille RÉSOLUE d'un planteur : le prix, son origine, et le repli |
+
+**Pourquoi une opération à part pour les planteurs** et non un champ de plus sur `/fournisseurs` :
+la grille se lit à travers une relation, donc la publier sur la collection ordinaire ferait une
+requête par ligne sur **toutes** les listes de planteurs — listes déroulantes de filtres comprises,
+qui les chargent tous. Les catégories n'ont pas ce problème : il y en a cinq.
+
+**`avecTarifPropre` et non `exists[tarifs]`** : le filtre natif ne regarde que l'existence d'une
+ligne, pas son état. Un planteur dont le seul tarif a été RETIRÉ y répondrait encore oui, la liste
+se remplirait de planteurs sans aucun tarif en vigueur, et on cesserait de la croire.
+`App\Filter\AvecTarifPropreFilter` fait un `EXISTS` sur les lignes vivantes — un `EXISTS` et non
+une jointure, qui rendrait le planteur autant de fois qu'il a de tarifs.
+
+### Ce qu'un changement de tarif déclenche, et pourquoi c'est sans retour
+
+Tarifer revalorise les pesées **non payées** et **non arbitrées**. Une pesée qui acquiert ainsi une
+valeur est aussitôt arbitrée : sa retenue d'épargne est figée, et `figerLaRetenue()` lève au second
+appel. **Il n'existe aucun chemin d'annulation.**
+
+D'où la saisie **groupée** de la grille, et son **aperçu** : `POST …/tarifs` sans `confirmer`
+recalcule tout et rend le bilan — créés, modifiés, inchangés, retirés — **plus le nombre de pesées
+qui seraient revalorisées**, sans écrire une ligne. L'écran l'annonce, et ne rappelle qu'après un
+oui.
+
+Trois règles de cette saisie méritent d'être lues avant d'y toucher :
+
+| Règle | Ce qu'elle évite |
+|---|---|
+| Un renvoi **à l'identique** compte comme « inchangé » et ne déclenche **rien** | L'écran renvoie la grille entière ; compter les cases intactes relancerait la revalorisation de toute la catégorie à chaque enregistrement, et chaque passe peut arbitrer. |
+| Le même produit **deux fois** dans un lot est refusé **avant** la première écriture | La seconde case écraserait la première sans qu'on sache laquelle a gagné. |
+| La sélection se resserre **sur le produit touché** | Sans cela, un tarif sur le cacao revaloriserait aussi l'hévéa et la palme de tous les planteurs de la catégorie. |
+
+**Le garde-fou de la revalorisation suit la PART, pas le type de la cause.** Il se choisissait sur
+`$cause instanceof Produit` : un `Fournisseur` gardait le transport. C'était vrai tant qu'un planteur
+ne portait qu'un prix de transport ; il touche aujourd'hui la **récolte** par son tarif propre et par
+sa catégorie. L'appelant passe donc un `PartPesee` — il est le seul à savoir ce qu'il change.
+
+**`TauxPrelevement` se borne sur le prix APPLICABLE AU PLANTEUR**, pas sur celui du produit. Avec le
+prix du produit : un planteur mieux payé se voyait refuser un taux légitime, et un planteur moins
+bien payé se voyait **accepter** un taux qui absorbait toute sa récolte. Le second est le cas grave,
+et il était silencieux.
+
 ### Un prélèvement PAR PRODUIT
 
 Un planteur n'a pas un taux, il a **une ligne `Prelevement` par culture** : 20 F par kilo de cacao,
@@ -331,13 +537,17 @@ doit pas mettre le payable à zéro sur une pesée dont le planteur a déjà la 
 aucun retrait pour défaire.
 
 **Un seul chemin de retarification**, celui du web : `TarificationProcessor` appelle
-`findARevaloriser()`, qui recalcule les pesées de ce produit ou de ce planteur puis ouvre leur
-mise en compte dans la foulée. Il a longtemps manqué : l'écran qu'on ouvre précisément pour
+`findARevaloriser()`, qui recalcule les pesées de la cause donnée — un produit, un planteur, une
+catégorie ou un barème de transport — puis ouvre leur mise en compte dans la foulée. Il a longtemps manqué : l'écran qu'on ouvre précisément pour
 tarifer un produit créé à la volée ne faisait que journaliser, et ses pesées restaient à zéro.
 
 > Il y en avait deux. `findRecalculables()` balayait tout un poste quand un prix bougeait côté
 > logiciel de pesée ; elle est partie avec l'arbitrage des prix (§4). La portée de celle qui reste
 > est étroite exprès : tarifer un produit ne touche que **ses** pesées.
+
+La branche du barème redit la règle de résolution en DQL, et son `baremeTransport IS NULL` n'est
+pas décoratif : sans lui, changer le barème d'une catégorie revaloriserait aussi les pesées de ses
+planteurs qui en ont un à eux, et que ce changement ne concerne pas.
 
 ### Qui ouvre
 
@@ -408,9 +618,14 @@ Si l'un d'eux saute, c'est de l'argent qui se perd ou qui se crée.
 5. **Un versement est borné par les payables**, jamais par le montant dû — et par part : celui de
    la récolte, celui du transport, chacun contre ce qui est déjà engagé sur lui.
 6. **Un trop-perçu ne devient pas une dette du planteur** : `max(0, …)` partout.
-7. **Le cloisonnement passe par les interfaces** `EntrepriseOwnedInterface` / `SiteOwnedInterface`,
-   jamais par un `where` écrit à la main.
-8. **Le frontend ne recopie aucune règle.**
+7. **Tout classement se départage par un identifiant.** Deux lignes ex æquo sortent sinon dans un
+   ordre que le plan d'exécution décide, et il change d'un appel à l'autre : sur une liste coupée
+   par `setMaxResults`, l'une entre et l'autre disparaît, sans que rien ne l'explique.
+8. **Le cloisonnement passe par les interfaces** `EntrepriseOwnedInterface` / `SiteOwnedInterface`,
+   jamais par un `where` écrit à la main. `Produit` et `CategorieFournisseur` portent la première,
+   `Fournisseur` la seconde — c'est là, et nulle part ailleurs, que se lit le niveau d'un
+   référentiel.
+9. **Le frontend ne recopie aucune règle.**
 
 ---
 
@@ -421,8 +636,9 @@ Si l'un d'eux saute, c'est de l'argent qui se perd ou qui se crée.
 | **`SearchFilter` sur un booléen** | Il compare des **chaînes** à ce que porte la colonne. Sur un `bool`, seul `=1` répond ; `=true` et `=false` — ce que les écrans envoient — ne correspondent à rien, et la liste se **vide sur les deux choix** sans la moindre erreur. `BooleanFilter` est fait pour ça. Le cas vécu : le filtre « Actif / Désactivé » des produits. |
 | **Un champ de recherche, plusieurs colonnes** | Un `SearchFilter` par colonne donne un paramètre par colonne, jamais un OU. Les écrans qui annoncent « Nom **ou code** » n'en interrogeaient qu'une, et le code ne trouvait jamais rien. Le paramètre `recherche` (`QueryParameter` + `FreeTextQueryFilter` + `OrFilter` + `PartialSearchFilter`) les met en OU : voir `Produit`, `Fournisseur`, `Site`. |
 | **Un filtre qui ne filtre pas ne lève rien** | Il rend une liste vide, ou entière, et l'écran l'affiche. Le contrôle qui les débusque tous tient en une comparaison : total filtré contre total nu, valeur par valeur — toujours zéro, ou toujours le total, et c'est cassé. `tests/Api/FiltresDeListeTest` fige les deux cas rencontrés. |
+| **Une collection sérialisée porte les lignes RETIRÉES** | Une suppression logique laisse la ligne en base — c'est voulu, savoir qui a retiré le tarif hévéa d'une catégorie et quand est la question qu'on posera le jour où un planteur verra sa paie baisser. Mais la VALORISATION l'écarte (`tarifPour()` teste `deletedAt`), alors que `#[Groups]` posé sur la collection la publiait entière : on retirait un tarif de catégorie, l'écran de saisie continuait de l'afficher, et les planteurs étaient payés au prix du produit. Deux lectures du même état qui se contredisent, sans une erreur. Le groupe va sur un getteur qui FILTRE, avec `#[SerializedName]` pour garder le nom de la clé — `getTarifsVivants()` sur `CategorieFournisseur` ET sur `Fournisseur`, qui portait le même défaut en silence. À vérifier sur toute collection `OneToMany` d'entités à suppression logique. |
 | **Cache du sérialiseur** | Un getter `#[Groups]` tout neuf sort **absent du JSON**, sans la moindre erreur. `cache:clear` ne suffit pas toujours : supprimer `var/cache/dev` à la main. Pareil pour `--env=test` avant PHPUnit. |
-| **Relation sérialisée vide** | Une relation ne s'embarque que si une propriété de la cible porte le groupe de lecture du **parent** (`read:DemandePrelevement` sur `Fournisseur::getNomComplet()`). Sinon on n'obtient que l'IRI, l'écran affiche un tiret, et rien ne lève. **À faire pour CHAQUE champ qu'un écran lit à travers la relation**, pas seulement le nom : `DemandeRetrait` a montré les deux moitiés du piège — la colonne Planteur vide, et, plus discret, le formulaire de versement qui se pré-remplissait à blanc faute de `contact1` et `reseau`. Les formes partagées côté web (`SiteBref`, `UserBref`) fixent le minimum : `id`, `code`, `libellesite`, `nomComplet`. |
+| **Relation sérialisée vide** | Une relation ne s'embarque que si une propriété de la cible porte le groupe de lecture du **parent** (`read:DemandePrelevement` sur `Fournisseur::getNomComplet()`). Sinon on n'obtient que l'IRI, l'écran affiche un tiret, et rien ne lève. **À faire pour CHAQUE champ qu'un écran lit à travers la relation**, pas seulement le nom : `DemandeRetrait` a montré les deux moitiés du piège — la colonne Planteur vide, et, plus discret, le formulaire de versement qui se pré-remplissait à blanc faute de `contact1` et `reseau`. Les formes partagées côté web (`SiteBref`, `UserBref`) fixent le minimum : `id`, `code`, `libellesite`, `nomComplet`. Deux autres dormaient sur `MouvementCaisse` et `Paiement` : `initiePar` ne rendait que son IRI et un `createdAt` égaré, `demandeSolde` pas même un identifiant. Le contrôle est mécanique et côté web : comparer les clés SERVIES par une page aux champs déclarés dans `assets/react/models/`. |
 | **Un `#[Groups]` sans préfixe `get`** | Les groupes posés sur une méthode qui n'est ni `get…`, ni `is…`, ni `has…` sont **ignorés en silence**. `estActif()` serait absent du JSON, et l'écran afficherait tout comme arrêté : d'où `Prelevement::getActif()` à côté de lui. |
 | **`Operation` ambigu** | `ApiPlatform\OpenApi\Model\Operation` masque l'entité. Aliaser : `use App\Entity\Operation as Pesee;`. |
 | **`??` ne protège pas un appel** | `$a[$k]?->m() ?? 0` lève quand même « Undefined array key » : `??` n'étend ses semblants d'`isset` qu'aux chaînes de propriétés. Lire la case à part. |
@@ -442,14 +658,18 @@ src/
   Doctrine/              PerimetreExtension (cloisonnement), UserExtension (comptes machine)
   Domain/
     Enum/                Les vocabulaires fermés. Chaque enum porte SA règle (TypeMouvement::sens()…)
+    Support/             Les règles de RÉSOLUTION, statiques et sans requête : TarifApplicable
+                         (le prix), TransportApplicable (le transport), TauxPrelevement
     Service/
       Caisse/            CaisseService, PaiementService, réconciliation
       Epargne/           EpargneService
       SynchronisationService.php
   Entity/                Les entités. Les règles qui ne dépendent que de l'objet vivent ICI
     Input/ Output/       Les DTO des opérations personnalisées
+  Filter/                Les filtres d'API qu'aucun filtre livré n'exprime (SansTransportFilter)
   Repository/            Les requêtes. Les requêtes GROUPÉES y vivent aussi (éviter les N+1)
   Security/              Droits, Perimetre, UserGuard, AccesVoter
+  Validator/             UniqueParPerimetre et ses trois déclinaisons (site, entreprise, périmètre)
   State/
     Processor/           Ce qui écrit : validation métier + effet
     Provider/            Ce qui lit : enrichissement groupé d'une page
@@ -471,10 +691,12 @@ tests/Caisse/ReconciliationTest    les versements restés en vol
 tests/Caisse/ResteAEngagerTest     un versement en vol baisse le reste à engager, pas le payé
 tests/Caisse/PeseeNonPayableTest   un montant nul N'EST PAS une pesée soldée   ← le canari
 tests/Caisse/PrixTransportTest     le transport s'ajoute au payable, jamais au montant dû
+tests/Transport/BaremesTest        les trois modes, les quatre bornes fausses, les deux silences
 tests/Caisse/DeuxPartsTest         récolte et transport se règlent séparément, chacun avec sa borne
 tests/Caisse/DemandeSoldeTest      une seule demande en attente par poste
 tests/Caisse/ChequeEtRetraitTest   le chèque vide la banque et non le poste, le retrait les deux livres
 tests/Api/FiltresDeListeTest       un filtre qui ne filtre pas ne lève rien : actif, et la recherche par code
+tests/Api/ChampsNulsTest           un champ nul sort à null, même là où une opération pose son propre contexte
 tests/Epargne/MiseEnCompteTest     le prélèvement ne touche aucune caisse, ne crédite qu'une fois
 tests/Epargne/DemandePrelevementTest  l'ouverture, le rejet, l'arrêt, le taux sous le prix
 tests/Site/IdentifiantsPosteTest   le poste reçoit un identifiant qui ouvre vraiment, et qui ne bouge pas
@@ -539,11 +761,15 @@ du taux, et un cas qui veut éprouver le plafond doit pouvoir poser un taux dél
 
 ## 13. Ce qui n'existe pas encore
 
+> Les fonctionnalités prévues, ce qu'il faut avoir tranché avant chacune et les écarts connus
+> vivent dans [A-FAIRE.md](A-FAIRE.md). Cette section-ci ne garde que ce qui manque à
+> l'application telle qu'elle est.
+
 - **L'encaissement d'un chèque.** L'émission solde la pesée ; rien ne dit si le chèque a été
   présenté, ni s'il est revenu impayé. Le numéro est là pour le rapprochement à la main.
-- **Le prix négocié par planteur** (`prixspeciale`), qui remplaçait le prix du produit. Retiré avec
-  le prix du transport, le temps d'en revoir le mécanisme. La migration **supprime les valeurs** :
-  les exporter avant de migrer une base de production.
+- **Le prix négocié par planteur** (`prixspeciale`), qui remplaçait le prix du produit pour TOUTES
+  ses cultures. Il est revenu, mais **par produit** : `TarifFournisseur`, qui vise une culture et
+  laisse les autres au prix commun. C'est ce que l'ancien ne savait pas dire.
 - **Un planteur sur plusieurs postes.** Une même personne livrant à deux ponts bascules existe comme
   **deux** planteurs, sans lien. Avec de l'épargne, cela se voit.
 

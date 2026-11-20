@@ -65,19 +65,27 @@ final class JournalActiviteTest extends InvariantTestCase
         self::assertCount(0, $this->activites());
     }
 
-    public function testLePrixDuTransportDUnPlanteurEstTraceDeLaMemeFacon(): void
+    /*
+        - LE TRANSPORT SE TRACE COMME UN PRIX, et ce n'est plus un nombre mais un BARÈME. Le
+          libellé doit donc nommer le barème d'avant et celui d'après — « aucun » quand il n'y
+          en avait pas, jamais « 0 F », qui laisserait croire à un transport gratuit.
+    */
+    public function testLeBaremeDeTransportDUnPlanteurEstTraceDeLaMemeFacon(): void
     {
         $planteur = $this->creerPlanteur($this->site);
+        $bareme = $this->creerBaremeAuKilo($this->entreprise, 250, 'Au kilo 250');
 
-        $this->appeler('PATCH', '/api/fournisseurs/' . $planteur->getId(), $this->admin, ['prixtransport' => 250]);
-        self::assertSame(200, $this->client->getResponse()->getStatusCode());
+        $this->appeler('PATCH', '/api/fournisseurs/' . $planteur->getId(), $this->admin, [
+            'baremeTransport' => '/api/bareme_transports/' . $bareme->getId(),
+        ]);
+        self::assertSame(200, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
 
         $activite = $this->derniere();
 
         self::assertSame(TypeActivite::FOURNISSEUR_TARIFE, $activite->getType());
-        // Aucun prix de transport auparavant : le libellé doit le dire, pas afficher « 0 F »
-        self::assertStringContainsString('aucun prix', (string) $activite->getLibelle());
-        self::assertStringContainsString('250 F', (string) $activite->getLibelle());
+        // Aucun barème auparavant : le libellé doit le dire, pas afficher « 0 F »
+        self::assertStringContainsString('aucun', (string) $activite->getLibelle());
+        self::assertStringContainsString('Au kilo 250', (string) $activite->getLibelle());
     }
 
     public function testLeBlocageDUnPosteEstTraceDansLesDeuxSens(): void

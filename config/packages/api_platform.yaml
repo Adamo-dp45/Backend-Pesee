@@ -11,6 +11,13 @@ api_platform:
         # une seule requête hydrate alors toute la table et fait tomber le serveur. Le web se limite
         # déjà à 100, mais l'API est ouverte à tout porteur de jeton, compte machine compris.
         pagination_maximum_items_per_page: 100
+
+        # Un champ NUL sort à null au lieu d'être OMIS : le web tourne en 'strict_variables', et une clé
+        # absente y lève une 500 sur les seules fiches incomplètes. Posé ici une fois plutôt que sur
+        # chaque ressource — celle qu'on oubliait renvoyait des clés absentes, que TypeScript lit
+        # 'undefined'. Corollaire côté web : '{% if x.champ is defined %}' est désormais toujours vrai.
+        normalization_context:
+            skip_null_values: false
     eager_loading:
         max_joins: 50 # Vu qu'une entité peut porter plus de 4 relations or 'ApiPlatform' a une limite de jointures de l'eager-loading '30' par défaut
 

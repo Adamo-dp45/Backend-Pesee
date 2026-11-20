@@ -215,4 +215,123 @@ class PaiementRepository extends ServiceEntityRepository
 
         return $parSite;
     }
+
+    /*
+        - LE BILAN DES VERSEMENTS d'une période, en UNE requête. Groupé par mode de règlement ET par
+          statut, parce que les deux ventilations qu'on vient chercher s'en déduisent : « combien
+          est sorti en espèces » et « combien est encore en vol ».
+
+        - Additionner des pages de la liste donnerait un autre chiffre : l'API en rend cent au plus,
+          et le total serait faux sans qu'aucune erreur ne le dise.
+
+        - Les retraits d'épargne se reconnaissent à l'absence de pesée. Ils sortent de la même
+          caisse et portent tout leur montant sur la part produit : sans cette colonne, ils
+          gonfleraient le « versé aux planteurs » de la période sans qu'on sache pourquoi.
+
+        @param list<int> $siteIds
+
+        @return list<array{mode: string, statut: string, nombre: int, montant: int, produit: int, transport: int, retraits: int, montantRetraits: int}>
+     */
+    public function bilanParModeEtStatut(array $siteIds, ?\DateTimeImmutable $du, ?\DateTimeImmutable $au): array
+    {
+        if($siteIds === []) {
+            return [];
+        }
+
+        $lignes = $this->basePeriode($siteIds, $du, $au)
+            ->select(
+                'p.modeReglement AS mode',
+                'p.statut AS statut',
+                'COUNT(p.id) AS nombre',
+                'COALESCE(SUM(p.montant), 0) AS montant',
+                'COALESCE(SUM(p.montantproduit), 0) AS produit',
+                'COALESCE(SUM(p.montanttransport), 0) AS transport',
+                'COALESCE(SUM(CASE WHEN p.operation IS NULL THEN 1 ELSE 0 END), 0) AS retraits',
+                'COALESCE(SUM(CASE WHEN p.operation IS NULL THEN p.montant ELSE 0 END), 0) AS montantRetraits'
+            )
+            ->groupBy('mode')
+            ->addGroupBy('statut')
+            ->getQuery()
+            ->getArrayResult();
+
+        return array_map(static fn(array $l) => [
+            'mode' => self::valeur($l['mode']),
+            'statut' => self::valeur($l['statut']),
+            'nombre' => (int) $l['nombre'],
+            'montant' => (int) $l['montant'],
+            'produit' => (int) $l['produit'],
+            'transport' => (int) $l['transport'],
+            'retraits' => (int) $l['retraits'],
+            'montantRetraits' => (int) $l['montantRetraits'],
+        ], $lignes);
+    }
+
+    /*
+        - Le même bilan, vu par pont bascule : qui a versé quoi. Le statut reste dans le groupement,
+          sans quoi un poste dont les versements sont tous en vol afficherait le même total qu'un
+          poste qui a réellement payé.
+
+        @param list<int> $siteIds
+
+        @return list<array{siteId: int, site: string, statut: string, nombre: int, montant: int}>
+     */
+    public function bilanParSite(array $siteIds, ?\DateTimeImmutable $du, ?\DateTimeImmutable $au): array
+    {
+        if($siteIds === []) {
+            return [];
+        }
+
+        $lignes = $this->basePeriode($siteIds, $du, $au)
+            ->join('p.site', 's')
+            ->select(
+                'IDENTITY(p.site) AS siteId',
+                's.libellesite AS site',
+                'p.statut AS statut',
+                'COUNT(p.id) AS nombre',
+                'COALESCE(SUM(p.montant), 0) AS montant'
+            )
+            ->groupBy('siteId')
+            ->addGroupBy('site')
+            ->addGroupBy('statut')
+            ->orderBy('site', 'ASC')
+            ->getQuery()
+            ->getArrayResult();
+
+        return array_map(static fn(array $l) => [
+            'siteId' => (int) $l['siteId'],
+            'site' => (string) $l['site'],
+            'statut' => self::valeur($l['statut']),
+            'nombre' => (int) $l['nombre'],
+            'montant' => (int) $l['montant'],
+        ], $lignes);
+    }
+
+    /* Base commune des agrégats : le périmètre, et la période sur la date de création du versement. */
+    /** @param list<int> $siteIds */
+    private function basePeriode(array $siteIds, ?\DateTimeImmutable $du, ?\DateTimeImmutable $au): \Doctrine\ORM\QueryBuilder
+    {
+        $qb = $this->createQueryBuilder('p')
+            ->andWhere('p.site IN (:sites)')
+            ->setParameter('sites', $siteIds);
+
+        if($du !== null) {
+            $qb->andWhere('p.createdAt >= :du')->setParameter('du', $du);
+        }
+
+        if($au !== null) {
+            $qb->andWhere('p.createdAt <= :au')->setParameter('au', $au);
+        }
+
+        return $qb;
+    }
+
+    /*
+        - Doctrine rend un champ 'enumType' tantôt converti, tantôt brut selon le mode d'hydratation.
+          Les agrégats passent par 'getArrayResult()', où la conversion n'est pas garantie : lire
+          '->value' sans précaution casse le jour où elle ne l'est plus.
+    */
+    private static function valeur(mixed $valeur): string
+    {
+        return $valeur instanceof \BackedEnum ? (string) $valeur->value : (string) $valeur;
+    }
 }

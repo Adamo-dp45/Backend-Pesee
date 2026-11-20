@@ -41,7 +41,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
 #[ORM\Index(name: 'idx_paiement_fournisseur', fields: ['fournisseur'])]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:Paiement', 'read:Base'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:Paiement', 'read:Base']],
     paginationItemsPerPage: 25,
     paginationClientItemsPerPage: true,
     order: ['createdAt' => 'DESC'],

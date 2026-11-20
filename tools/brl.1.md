@@ -5077,3 +5077,1083 @@ T-7701   anacarde créée par le poste, sans prix
 **Un écart au plan approuvé**, que je signale : je n'ai pas ajouté `statutProduit` / `statutTransport`. Les montants par part, les motifs par part et le statut global publient déjà tout ce que les écrans lisent, et deux pastilles de plus auraient dupliqué une information que la colonne « reste à payer » donne mieux. Si vous les voulez quand même, c'est une demi-journée.
 
 Deux choses à savoir : l'accusé renvoyé au poste gagne `payableproduit` et `payabletransport`, et son `montantpayable` change de sens pour une pesée non tarifée — il y annonçait zéro, il annonce désormais le transport, qui est bel et bien dû. Et la base de dev porte les traces des essais (dotation de 5 000 000 F au Pont de Soubré, pesée T-7701, identifiants du poste régénérés) ; `doctrine:fixtures:load` remet tout à plat. Rien n'est commité.
+
+
+
+
+
+
+
+
+
+
+
+
+
+Deux dépôts, donc deux commits. Un découpage en quatre — un par chantier — n'est pas faisable proprement : `Operation.php`, `PaiementService.php`, `AppFixtures.php`, `OperationRepository.php`, les deux `README.md`, `TableProduits.tsx` et `PaiementController.php` sont chacun touchés par plusieurs chantiers, et les séparer donnerait des commits intermédiaires qui ne passent pas les tests.
+
+## `Backend-Webpesee-V2`
+
+```
+Règlement par part, retrait, chèque, et fin du prix venu du poste
+
+Quatre chantiers menés à la suite. Ils se partagent trop de fichiers pour être
+séparés en quatre commits : Operation, PaiementService, AppFixtures, le dépôt
+des pesées et le README sont touchés par plusieurs d'entre eux.
+
+RÈGLEMENT PAR PART. Une pesée vaut deux choses — la récolte, et le transport
+que le planteur a avancé de sa poche — et elles se confondaient au guichet
+dans un seul chiffre. On règle désormais l'une, l'autre, ou les deux, chacune
+en plusieurs fois. Un Paiement garde 'montant' comme total, seul chiffre que
+voient la caisse, la passerelle et le grand livre, et porte sa ventilation ;
+l'invariant « le total est la somme des parts » vaut pour toute ligne, retrait
+compris, et une contrainte CHECK le fige. La ligne que le README appelait « la
+seule de l'application où la borne d'un versement se décide » est devenue deux.
+
+Trois pièges fermés au passage, qu'aucun écran n'aurait signalés :
+calculerMontant() se verrouillait sur le cumul, donc payer le transport d'une
+pesée non tarifée aurait gelé pour toujours la valorisation de sa récolte ; le
+statut se calculait sur les variables locales et non sur les champs écrits ; le
+« en vol » se sommait globalement et fermait une part où rien n'était parti.
+
+RETRAIT DE L'ÉPARGNE. Un compte ne faisait que se remplir, et le planteur était
+remboursé hors application. Le retrait emprunte le versement existant —
+Paiement.operation devient nullable — avec demande de l'opérateur et accord de
+l'administrateur. L'accord n'écrit aucun mouvement : l'argent ne bouge qu'au
+guichet, où les deux livres baissent dans la même transaction. Un échec de la
+passerelle les rend tous les deux.
+
+RÈGLEMENT PAR CHÈQUE. Une troisième caisse, bancaire, à l'entreprise SEULE : un
+pont bascule ne tient pas de carnet de chèques. C'est le premier paiement
+imputé à l'entreprise, d'où deux cas de plus dans TypeMouvement plutôt qu'un
+compte passé en paramètre — le type décide seul du compte et du sens.
+
+LE POSTE NE TARIFE PLUS. Le logiciel de pesée pèse ; le prix du produit et du
+transport se fixe sur le web, qui est aussi l'endroit où l'on paie. Les prix
+reçus dans un lot sont lus et jetés — les refuser ferait échouer des lots
+entiers pour une information dont on n'a plus l'usage. L'arbitrage
+bidirectionnel et ses deux colonnes disparaissent, et il ne reste qu'un chemin
+de retarification.
+
+FILTRES DE LISTE. 'actif' était déclaré dans un SearchFilter, qui compare des
+chaînes : sur un booléen, les deux choix vidaient la liste des produits sans la
+moindre erreur. Et le champ de recherche annonçait « ou code » en
+n'interrogeant qu'une colonne.
+
+167 tests, 975 assertions. Trois migrations, dont une reprise de données qui
+impute les versements d'avant — la récolte d'abord jusqu'à son payable, le
+surplus au transport, ordonnée par id puisque created_at est nullable.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+```
+
+## `Frontend-Webpesee`
+
+```
+Les écrans du règlement par part, du retrait, du chèque et des filtres
+
+Le pendant des quatre chantiers de l'API, mêmes raisons de ne pas les séparer :
+PaiementController, TableProduits et le README sont touchés par plusieurs.
+
+LE GUICHET A DEUX CHAMPS, un par part, chacun pré-rempli de son reste et
+effaçable à zéro — « on n'y touche pas ». Les deux restes s'affichent en face
+avec, pour chaque part fermée, la raison que l'API donnerait. Aucun montant
+n'est recalculé ici : les restes viennent de l'API, qui seule connaît la
+retenue, le déjà versé et le déjà engagé de chaque part. Le reçu détaille les
+deux parts sous le total, la file du guichet et le bilan aussi.
+
+RETRAIT ET CHÈQUE. Les écrans de demande, d'accord et de versement d'un
+retrait ; la caisse de l'entreprise passe à trois soldes, le mode chèque
+demande son numéro, et data-si-mode remplace le booléen data-si-mobile.
+
+FILTRES. La liste des produits sépare enfin actifs et désactivés, et gagne un
+filtre « en attente de prix » — depuis que le poste ne tarife plus, tout
+produit créé par un peseur naît à zéro. La recherche par code fonctionne sur
+les produits, les planteurs et les ponts bascules.
+
+TROIS CHIFFRES QUI ÉTAIENT FAUX, et que la séparation des parts aurait rendus
+pires. Le lien « Verser » du bilan se décidait sur « dû moins payé », sans le
+transport ni la retenue : une pesée dont seule la récolte était soldée perdait
+son lien. Le « reste à payer » IMPRIMÉ oubliait la retenue. Et l'écran de
+traitement d'une demande de solde tranchait par un ternaire binaire, donc toute
+caisse non physique y passait pour du flotte.
+
+Supprime tests/Security/AccesVoterTest : il figeait la table de droits recopiée
+que la refonte a retirée du frontend, et appelait des classes qui n'existent
+plus. La suite est verte pour la première fois — 12 tests, dont quatre neufs
+qui lisent le texte du reçu, un document qui ne passe par aucun écran.
+
+public/build reconstruit : l'hébergeur n'a pas npm.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+```
+
+Si vous préférez quand même un historique en quatre temps, dites-le — il faudrait alors que je reprenne les chantiers un par un dans des commits séparés, en acceptant que les trois premiers ne passent pas les tests seuls.
+
+
+
+
+
+
+
+
+
+
+
+
+Les principes qui tiennent tout :
+- **Les droits sont définis à un seul endroit**, `Droits::TABLE`. L'API les publie à plat via `/api/me`, et le frontend se contente de vérifier qu'un droit figure dans la liste.
+- **Un solde ne change que par son service** : `CaisseService` pour les caisses, `EpargneService` pour l'épargne. Chaque mouvement enchaîne sur le précédent (`soldeAvant` = `soldeApres` de la ligne d'avant).
+- **Le poste de pesée pèse mais ne fixe pas les prix.** Les prix qu'il envoie sont ignorés ; ils se fixent sur le web. La synchronisation est tout ou rien, et un lot renvoyé ne compte qu'une fois.
+
+## Modules existants
+
+- **Administration** : entreprises, comptes, profil, mot de passe oublié, corbeille.
+- **Référentiels** : ponts bascules (avec leur compte machine et leurs identifiants), produits, planteurs.
+- **Synchronisation du poste** : `/api/synchronisation` et les anciens référentiels en POST (`/client`, `/destination`…).
+- **Pesées** : la fiche, la file « à payer », le bilan avec export PDF et Excel.
+- **Caisse en trois types** : physique, numérique et bancaire. La bancaire n'existe qu'au niveau de l'entreprise. S'y ajoutent les dotations, les recharges et le grand livre.
+- **Paiements** : espèces, mobile money (avec webhook et réconciliation) et chèque. Un même versement règle **séparément** la récolte et le transport.
+- **Mise en compte (épargne)** : un prélèvement par produit, les demandes de prélèvement, et le retrait en trois temps (l'opérateur demande, l'administrateur accorde, l'opérateur verse).
+- **Demandes de solde**, **journal des activités**, **tableau de bord et statistiques** (`/api/stats/*`).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Catégories de planteurs, et barèmes de transport
+
+## Contexte
+
+Un prix se résout aujourd'hui **en un seul saut**. La récolte vaut `Produit::$prix`, le transport
+vaut `Fournisseur::$prixtransport` francs par kilo, et `Operation::calculerMontant()` lit l'un et
+l'autre directement. Tous les planteurs d'un poste sont donc payés au même prix pour un même
+produit, et tout transport se facture de la même façon.
+
+**Ce qu'on veut** : des **catégories de planteurs** porteuses de leurs propres tarifs, un tarif
+propre à un planteur qui l'emporte sur celui de sa catégorie — pour la récolte **comme** pour le
+transport — et trois façons de facturer un transport au lieu d'une seule : au kilo, au forfait, ou
+par tranches de kilomètres.
+
+C'est aussi le retour du `prixspeciale` retiré en novembre « le temps d'en revoir le mécanisme ».
+Il revient **par produit**, là où l'ancien remplaçait le prix de tous.
+
+## Les décisions prises
+
+| Question | Décision |
+|---|---|
+| Hiérarchie des catégories | **Liste plate**, pas d'arbre |
+| Périmètre d'une catégorie | **L'entreprise** |
+| Périmètre d'un **produit** | **L'entreprise aussi** — il appartient au poste aujourd'hui |
+| Tarif d'une catégorie | Un **prix complet** par produit, pas un écart |
+| Distance d'un trajet | Sur la **fiche du planteur**, en kilomètres |
+| Ce qu'une tranche donne | **Un montant** — « sans tranche » est le forfait, « par tranche » le barème |
+| Le prix au kilo d'aujourd'hui | **Supprimé** : il devient un barème de mode « au kilo » |
+| Quand un prix de produit change | Un **simple avertissement**, aucun report automatique |
+| Reprise des données | **Aucune** : la base se vide et se recharge, l'application n'est pas en production |
+
+---
+
+## Trois étapes, livrées et vérifiées séparément
+
+Elles n'ont pas le même profil de risque, et la première est un préalable aux deux autres. Les
+livrer d'un bloc reviendrait à ajouter une couche de résolution tout en déplaçant un référentiel
+et en supprimant une colonne que le poste lit encore.
+
+---
+
+# Étape 1 — Le produit remonte du poste à l'entreprise
+
+C'est le **préalable**. Une catégorie est à l'entreprise ; si le produit reste au poste, un tarif de
+catégorie désigne « le cacao de Soubré » et il faut en tenir un par poste — la duplication même que
+la catégorie doit supprimer.
+
+Ce changement renverse un principe écrit en plusieurs endroits du README : « les référentiels sont
+locaux ». Il reste vrai du **planteur**, il cesse de l'être du **produit**.
+
+### Ce qui change
+- `Produit` passe de `SiteOwnedInterface` à `EntrepriseOwnedInterface` ; sa relation `site` devient
+  `entreprise`. `PerimetreExtension` le cloisonne alors par la branche entreprise
+  (`src/Doctrine/PerimetreExtension.php:121`), ce qui donne à **l'opérateur la vue de tous les
+  produits de son entreprise** — c'est voulu.
+- `UniqueParSite` ne sait pas valider une entité sans `getSite()` : il **retourne en silence**
+  (`src/Validator/UniqueParSiteValidator.php:19`). Il faut un **`UniqueParEntreprise`** jumeau, en
+  gardant la ligne qui ajoute `deletedAt IS NULL` — c'est elle qui fait coexister corbeille et
+  unicité.
+- `ProduitRepository::parCle(Site)` → `parCle(Entreprise)` ; `SynchronisationService` rapproche
+  désormais un libellé reçu du poste avec le référentiel de l'**entreprise**.
+- Le référentiel produits redescendu au poste (`SynchronisationController.php:100-110`) devient
+  celui de l'entreprise : chaque poste voit tous les produits, y compris ceux qu'il ne pèse jamais.
+- Le filtre `site` de la liste des produits disparaît ; `produitsTarifes()` côté web
+  (`FournisseurController.php:237`) cesse de filtrer par poste.
+- `CorbeilleService` : la jointure `e.site` (`:215`) et le contrôle d'homonyme (`:157`) sont
+  écrits pour une entité au site. Ils doivent devenir conditionnels par type.
+
+### Migration
+Un simple changement de schéma : `produit.site_id` → `produit.entreprise_id`. **Pas de reprise** —
+la base se vide, les fixtures rechargent. Les fixtures doivent créer les produits sur l'entreprise,
+et le poste de Bouaké ne crée plus « son » Anacarde.
+
+### Vérification
+Suite complète, puis au navigateur : peser sur deux postes le même produit et vérifier qu'il n'en
+existe qu'un ; vérifier qu'un opérateur voit les produits de l'entreprise et toujours **ses seuls**
+planteurs.
+
+---
+
+# Étape 2 — Catégories de planteurs, et tarif par catégorie
+
+```
+CategorieFournisseur   entreprise, libellé, clé
+  └─ TarifCategorie    produit, prix
+
+Fournisseur            + categorie?
+  └─ TarifFournisseur  produit, prix        ← l'emporte sur celui de sa catégorie
+```
+
+`TarifCategorie` et `TarifFournisseur` partagent leur forme par une `MappedSuperclass`. Elles
+suivent le gabarit de `Prelevement` (`src/Entity/Prelevement.php`) : fille d'un parent qui la porte,
+pas de ressource API à elle seule, jamais sérialisée sur une liste, `cascade: ['persist']` et
+`OrderBy` sur la collection du parent.
+
+### La résolution, à un seul endroit
+```
+prix de la récolte = tarif du planteur pour ce produit
+                  ?? tarif de sa catégorie pour ce produit
+                  ?? Produit::$prix
+```
+Elle vit dans un service de domaine — `TarifApplicable` — sur le modèle de `TauxPrelevement`, « le
+seul endroit où la règle est écrite ». `Operation::calculerMontant()` le reçoit en **argument
+obligatoire et non nullable** : un appelant qui l'oublierait obtiendrait sinon un prix nul en
+silence, pas une erreur.
+
+### Les quatre conséquences qu'on ne voit pas depuis la surface
+
+**1. `TauxPrelevement` borne sur le mauvais prix.** Il lit `Produit::getPrix()`
+(`src/Domain/Support/TauxPrelevement.php:34`) et ne connaît pas le planteur. Avec un tarif de
+catégorie supérieur, un taux légitime est refusé ; avec un tarif inférieur, un taux est **accepté**
+puis la retenue absorbe toute la récolte — le planteur repart du guichet avec zéro, sans exception,
+et `figerLaRetenue()` rend l'arbitrage irréversible. Sa signature doit prendre le planteur. Quatre
+appelants, plus deux endroits côté web (`FournisseurController.php:237-248`, qui écarte en prime
+les produits à `prix <= 0`, et `fournisseur/show.html.twig:100`).
+
+**2. `findARevaloriser()` choisit son garde-fou sur le TYPE PHP de la cause**
+(`OperationRepository.php:91`) : un `Fournisseur` ⇒ `montantpayetransport = 0`. Or un tarif de
+planteur touche la **récolte**. Une pesée dont le transport est déjà payé serait exclue, et sa
+récolte jamais revalorisée — exactement le cas qu'on a rendu courant hier. Le garde-fou doit suivre
+**la part touchée**, pas le type de la cause.
+
+**3. Sept gestes revalorisent, au lieu d'un.** Tarifer un produit · créer, changer ou supprimer un
+tarif de catégorie · idem pour un tarif de planteur · changer la catégorie d'un planteur. Les deux
+derniers touchent **les deux parts** de toutes ses pesées. Chacun demande sa requête de sélection ;
+une seule (`Produit`) est couverte aujourd'hui.
+
+**4. Le volume, et l'irréversibilité.** Un tarif de catégorie touche toutes les pesées de tous ses
+planteurs, sur tous les postes. `TarificationProcessor` charge tout en mémoire, revalorise, puis
+appelle `preleverSurLot()` qui prend un verrou par compte d'épargne — le tout **synchrone, dans un
+PATCH HTTP**. Une pesée qui acquiert une valeur est arbitrée, et `figerLaRetenue()` lève au second
+appel : **il n'existe aucun chemin d'annulation**. Un tarif saisi de travers fige définitivement les
+retenues de milliers de pesées. L'écran doit donc **annoncer le nombre de pesées concernées et
+demander confirmation avant d'écrire**, sur le modèle des confirmations qui nomment déjà le chiffre
+(`SuppressionLogiqueProcessor.php:43-48`).
+
+**5. Le N+1 sur le chemin le plus chaud.** `SynchronisationService` appelle `calculerMontant()` par
+pesée sur des lots de 200, avec ses deux relations préchargées. La résolution doit être préchargée
+par lot elle aussi — catégories, tarifs, sinon c'est une requête par pesée.
+
+### Ce qu'il faut figer sur la pesée
+`origineTarif` (PLANTEUR / CATEGORIE / PRODUIT) à côté de `prixunitaire` : sans elle, deux pesées à
+470 F sont indiscernables et « pourquoi mon voisin touche 500 » n'a aucune réponse dans les données.
+**Et elle doit entrer dans la détection de changement de `calculerMontant()`** (`:733-736`), sinon un
+tarif de planteur supprimé au profit d'un tarif de catégorie identique laisse une origine fausse.
+
+### L'avertissement de tarif obsolète
+Il demande une date des deux côtés. `Produit` n'en a pas : son `updatedAt` bouge aussi quand on
+corrige un libellé. Il faut une colonne **`prixModifieAt`**, posée par `TarificationProcessor` là où
+il répond déjà à « le prix a-t-il bougé » (`:137`).
+
+### Droits, corbeille, cloisonnement
+- `Droits.php` n'a aucune ligne pour ces entités : sans elles, `actions()` renvoie `[]` et c'est
+  **403 pour tout le monde, GET compris**. ADMIN `VOIR/CREER/MODIFIER/SUPPRIMER`, AGENT `VOIR`,
+  OPERATEUR `VOIR` — son formulaire planteur a besoin de la liste.
+- Supprimer une catégorie encore référencée doit être **refusé avec un motif qui nomme le nombre de
+  planteurs**, et la corbeille doit la déclarer non purgeable : `motifNonPurgeable()` ne compte que
+  des pesées, qu'une catégorie n'a jamais — elle passerait pour purgeable et la purge détacherait
+  ses planteurs en silence.
+
+---
+
+# Étape 3 — Barèmes de transport, et tranches
+
+```
+BaremeTransport   entreprise, libellé, mode, prixAuKilo?, montant?
+  └─ Tranche      kmMin, kmMax?, montant
+
+Fournisseur       + distanceKm?, + baremeTransport?     − prixtransport
+```
+
+```php
+enum ModeTransport {
+    case AU_KILO;   // prixAuKilo × poidsnet      — ce que fait l'application aujourd'hui
+    case FORFAIT;   // montant                    — le voyage, quel que soit le tonnage
+    case TRANCHES;  // le montant de la tranche qui contient la distance du planteur
+}
+```
+
+Résolution : `barème du planteur ?? barème de sa catégorie ?? aucun → pas de transport`.
+
+Un barème de catégorie ne porte **que** `EntrepriseOwnedInterface`. Lui donner `SiteOwnedInterface`
+le rendrait invisible à l'opérateur (`PerimetreExtension.php:154`), puisqu'il n'a pas de site.
+
+### Les bornes d'une tranche
+Quatre façons de produire un montant faux sans lever : chevauchement, trou, borne exacte ambiguë,
+distance au-delà de la dernière tranche. D'où : bornes **semi-ouvertes `[min, max[`**, dernière
+tranche à `max = null`, et une **validation de classe sur la collection entière** — ni trou ni
+chevauchement. Une contrainte de champ ne voit qu'une tranche à la fois.
+
+### Les deux silences à fermer
+- **TRANCHES sans distance** : le poste crée les planteurs avec un libellé et rien d'autre, donc
+  `distanceKm` est nullable. Pas de distance ⇒ aucune tranche ⇒ 0 F figé puis arbitré. Il faut un
+  refus au moment où le barème est rattaché, **et** un motif sur la part transport plutôt qu'un zéro
+  muet — la récolte a déjà le sien depuis hier.
+- **« Pas de barème » contre « j'ai oublié d'en mettre un »** : aujourd'hui `prixtransport = null`
+  veut dire « on ne lui paie pas de transport, et c'est le cas de la plupart ». Les deux états
+  doivent rester distinguables à l'écran — un filtre « planteurs sans barème », sur le modèle du
+  filtre « produits en attente de prix ».
+
+### Ce qu'il faut figer sur la pesée
+`prixtransport` est un prix au kilo : il ne survit qu'à `AU_KILO` et devient `null` sur deux modes
+sur trois. Il faut donc figer **`modeTransport`** — sans lui, « forfait à 0 » et « aucun barème »
+sont la même ligne en base — **la distance effectivement utilisée**, **les bornes et le montant de
+la tranche retenue** sous forme de libellé (une clé étrangère rendrait une borne qui n'existe plus
+après édition), et **`origineTransport`** (PLANTEUR / CATEGORIE / AUCUN).
+
+Toute la branche transport de `calculerMontant()` est à réécrire : elle ne calcule aujourd'hui un
+montant que si un prix au kilo existe (`:731`), et ne sait pas exprimer un forfait.
+
+### Le contrat avec le poste
+Retirer `Fournisseur::prixtransport` fait **disparaître une clé du JSON** que le logiciel de pesée
+lit (`SynchronisationController.php:120`) : la garder à `null` plutôt que de la supprimer. Et
+`versLigneBilan()` renvoie `prixtransport` à côté de `montanttransport` (`:230`) — un poste qui
+recalcule l'un par l'autre affichera 0 F de transport sur un montant réel.
+
+### Ce qui part avec `prixtransport`, dans le même commit
+`Fournisseur.php:155` (`OrderFilter`), `FournisseurController.php:23` et `:175`,
+`gestion.model.ts:50`, `TableFournisseurs.tsx:70-76`, `FournisseurFormType.php:61`,
+`fournisseur/_form.html.twig:28`, `fournisseur/show.html.twig:42`.
+
+---
+
+## Vérification, à chaque étape
+
+1. `php vendor/bin/phpunit`. Les cas existants d'abord : `PrixTransportTest` repose entièrement sur
+   le prix au kilo et doit être **réécrit autour d'un barème sans changer ce qu'il garde** ;
+   `DeuxPartsTest`, `MiseEnCompteTest` et `DemandePrelevementTest` reposent sur le prix du produit.
+2. Cas neufs : les trois sauts de la résolution · un planteur sans catégorie · un tarif de catégorie
+   qui l'emporte sur le prix du produit · un tarif de planteur qui l'emporte sur sa catégorie · le
+   taux de mise en compte borné par le prix **applicable au planteur** · les trois modes de
+   transport · une distance hors de toute tranche · des tranches qui se chevauchent ou laissent un
+   trou · chacun des sept gestes de revalorisation.
+3. `doctrine:schema:validate`, `lint:twig`, `lint:container`, `npx tsc --noEmit`.
+4. Les trois balayages mécaniques de la session : modèles TypeScript contre charges utiles réelles,
+   filtres contre totaux, et les invariants d'argent en SQL sur la base vivante.
+5. Navigateur, de bout en bout : tarifer une catégorie et vérifier qu'une pesée de l'un de ses
+   planteurs change de valeur sans toucher à celles des autres ; régler un transport au forfait,
+   puis par tranches, et vérifier que le montant figé reste réexplicable sur la fiche de la pesée.
+6. `npm run build` avant tout commit — `public/build` est suivi par git.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+On vas mettre en place la fonctionnalité **6 - Classes hiérarchisées de planteurs**, du genre on aura des catégories de fournisseurs, on aura un tarif pour chaque catégorie de fournisseurs, aussi on aura un tarif propre à un fournisseur qui est prioritaire à celui de sa catégorie. (Pour le cas du produit et du transport).
+
+Aussi, on vas mettre en place la fonctionnalité **8 - Transport : forfait ou tranches de kilomètres**, du genre gérer différents modes de facturation, notamment un montant fixe ou une tarification par tranches de kilomètres ! aussi je me dis qu'on aura une entité Tranche ici !
+
+
+
+
+
+
+Deux fonctionnalités qui se croisent sur le même chemin : la résolution d'un prix, parcourue à chaque pesée. Je passe en mode plan.
+
+Les deux agents cartographient pendant ce temps. Quatre points décident de la forme du reste — et je sais déjà qu'**aucune notion de distance n'existe aujourd'hui** dans l'application.
+
+
+Les catégories de planteurs : une liste plate, ou un arbre où une catégorie hérite de sa parente ?
+Une liste plate
+Le tarif qu'une catégorie porte pour un produit : un prix complet, ou un écart sur celui du produit ?
+Le 1 (un prix complet), mais on pourrait mettre en place une suggestion au cas où le prix du produit change
+La distance d'un trajet, qui n'existe nulle part aujourd'hui : où se saisit-elle ?
+Je dirai le 1, aussi je croyais qu'on allais crée une entité Tranche avec les propriétés pour l'intervalle de kilométrage, etc...
+Une tranche de kilomètres donne quoi, exactement ?
+D'après ce qu'on m'a expliqué, du genre on peut définir un montant sans tranche ou un montant par tranche !
+
+
+
+Les deux cartographies sont arrivées, et vos réponses tranchent l'essentiel : liste plate, prix complets, distance sur la fiche du planteur, et une tranche qui donne **un montant** — « sans tranche » étant le forfait, « par tranche » le barème. Trois points restent ouverts.
+
+
+Une catégorie de planteurs appartient à quoi ?
+À l'entreprise
+Le prix du transport au kilo qui existe aujourd'hui sur chaque fiche de planteur : qu'en fait-on ?
+Explique moi cette partie, aussi c'est quoi le barème dont tu parle
+Quand le prix d'un produit change, jusqu'où va la suggestion sur les tarifs de catégorie ?
+Un simple avertissement
+
+
+**Ce qu'est un barème, et pourquoi la question se pose**
+
+Aujourd'hui, le transport d'un planteur est **un seul nombre** sur sa fiche : `prixtransport`, en francs par kilo. Le calcul tient en une ligne — `poids net × prix au kilo`. Kouame Yao est à 15 F/kg : il livre 14 000 kg, il touche 210 000 F de transport.
+
+Ce que vous demandez ajoute deux autres façons de facturer :
+
+- **un montant fixe** — 25 000 F le voyage, que le camion porte 5 ou 14 tonnes ;
+- **un montant par tranche de kilomètres** — 10 000 F jusqu'à 20 km, 18 000 F de 20 à 40, 25 000 F de 40 à 60.
+
+Un transport cesse donc d'être *un nombre* : c'est **une façon de calculer**. Un mode, plus la ou les valeurs qui vont avec. C'est ça que j'appelle un **barème** — la petite fiche qui dit « voici comment se paie ce transport-là ». Et un barème « par tranches » porte des `Tranche`, l'entité dont vous parliez : chacune avec son intervalle de kilomètres et son montant.
+
+```
+Barème « Au kilo 15 F »    au kilo       15 F/kg
+Barème « Camion 10 t »     forfait       25 000 F
+Barème « Hors zone »       par tranches     0 – 20 km   10 000 F
+                                           20 – 40 km   18 000 F
+                                           40 – 60 km   25 000 F
+```
+
+Un barème se pose sur une **catégorie** et, s'il le faut, sur un **planteur** — celui du planteur l'emportant, exactement comme pour le prix d'un produit.
+
+**La question** est donc : le `prixtransport` d'aujourd'hui disparaît-il dans ce mécanisme — le cas simple devenant un barème « au kilo » comme les autres — ou le garde-t-on à côté pour le cas simple, les barèmes ne servant qu'au forfait et aux tranches ?
+
+
+
+Le prix au kilo d'aujourd'hui : il devient un barème, ou il reste un champ à côté ?
+On s'en sépare
+
+
+
+Tout est tranché. Je fais éprouver la conception avant de l'écrire — la dernière fois, cette passe a trouvé un trou réel.
+
+Le plan est ébauché ; j'attends le rapport d'épreuve pour la partie la plus risquée — la surface de revalorisation — avant de vous le soumettre.
+
+Le rapport a trouvé un trou en amont de tout le reste, et il faut le trancher avant que j'écrive le plan.
+
+**Un produit appartient à un pont bascule** — « Cacao » existe une fois par poste, avec son propre prix ; c'est la colonne vertébrale du modèle. Mais vous avez placé les catégories **au niveau de l'entreprise**. Un « tarif produit par catégorie » désigne donc forcément le cacao *d'un poste donné* : la catégorie « Coopérative » porterait une ligne pour le cacao de Soubré, une autre pour celui de Gagnoa.
+
+
+Une catégorie est à l'entreprise, un produit à un poste : comment les tarifs se rejoignent-ils ?
+Ici, on vas plutôt lié le produit à l'entreprise plutôt qu'à un site
+
+
+Ce choix déplace la colonne vertébrale du modèle — « les référentiels sont locaux, un produit par poste avec son propre prix » — et il devient un préalable aux deux fonctionnalités. Je vérifie ce qu'il implique sur les données réelles avant de vous poser la dernière question.
+
+Les doublons existent déjà : dans la base de développement, « Anacarde » vit sur deux postes à **310 F** et **800 F** le kilo. C'est la dernière question, et elle porte sur de l'argent qu'on ne peut pas défaire.
+
+
+En rattachant les produits à l'entreprise, deux postes peuvent avoir le même produit à deux prix. Que fait la migration ?
+L'application n'est pas encore en production, on peut vider la base données pour y mettre de nouvelle données
+
+
+Tout est tranché, et la base qui se vide supprime la partie la plus risquée : aucune reprise de données.
+
+Entendu, on s'arrête là.
+
+Le plan est écrit et enregistré — `C:\Users\adamo\.claude\plans\optimized-questing-rain.md`. Il survit à la session, vous n'avez qu'à me demander de l'ouvrir la prochaine fois.
+
+**Ce qu'il contient**, en trois étapes livrées et vérifiées séparément :
+
+1. **Le produit remonte du poste à l'entreprise** — le préalable, puisqu'une catégorie est à l'entreprise. Sans lui, un tarif de catégorie désignerait « le cacao de Soubré » et il faudrait en tenir un par poste.
+2. **Catégories et tarifs** — liste plate, avec libellé et description, tarif complet par produit, et le tarif propre au planteur qui l'emporte.
+3. **Barèmes de transport** — au kilo, forfait ou tranches, avec l'entité `Tranche` et la distance sur la fiche du planteur ; le prix au kilo d'aujourd'hui disparaît.
+
+Toutes vos décisions y sont consignées, et l'épreuve de la conception a sorti cinq choses qui ne se voyaient pas depuis la surface — dont la plus coûteuse : `TauxPrelevement` borne le taux de mise en compte sur le prix **du produit**, pas sur celui qui s'applique au planteur. Avec un tarif de catégorie plus bas, un taux passerait la validation puis absorberait toute la récolte — le planteur repart du guichet avec zéro, sans la moindre erreur, et l'arbitrage est irréversible.
+
+Rien n'a été implémenté, et rien n'est commité de la session précédente non plus.
+
+
+
+
+Ouvre le plan
+
+
+Le plan est ouvert dans le panneau à côté. Il tient en trois étapes, livrées et vérifiées séparément :
+
+**Étape 1 — le produit remonte du poste à l'entreprise.** Le préalable : une catégorie est à l'entreprise, donc si le produit reste au poste, un tarif de catégorie désigne « le cacao de Soubré » et il faut en tenir un par poste. Ce changement renverse un principe écrit en plusieurs endroits du README — « les référentiels sont locaux » — qui reste vrai du planteur et cesse de l'être du produit.
+
+**Étape 2 — catégories et tarifs.** Liste plate à l'entreprise, avec libellé et description, un prix complet par produit, et le tarif propre au planteur qui l'emporte. La résolution à deux sauts vit à un seul endroit et `calculerMontant()` la reçoit en argument obligatoire.
+
+**Étape 3 — barèmes de transport.** Au kilo, forfait ou tranches, avec l'entité `Tranche` et la distance sur la fiche du planteur. Le prix au kilo d'aujourd'hui disparaît, et avec lui sept fichiers côté web.
+
+Les cinq points que l'épreuve de la conception a sortis sont dans l'étape 2, sous « Les quatre conséquences qu'on ne voit pas depuis la surface ». Le plus coûteux reste le premier : `TauxPrelevement` borne le taux sur le prix **du produit** et ne connaît pas le planteur — avec un tarif de catégorie plus bas, un taux passe la validation puis la retenue absorbe toute la récolte, sans exception, et l'arbitrage est irréversible.
+
+Dites-moi par où vous voulez commencer — ou ce que vous voulez changer avant.
+
+
+
+
+
+
+J'accepte le plan
+
+Je commence par l'étape 1 — le produit remonte à l'entreprise. Les trois étapes s'enchaînent, chacune ayant besoin de la précédente, donc je les fais à la suite ici.
+
+Je transforme l'entité.
+
+Plutôt qu'un jumeau à 90 % — le genre de copie qui diverge en silence — je remonte la logique dans une contrainte de périmètre dont les deux héritent.
+
+Je m'arrête un instant : le dépôt porte des modifications qui ne sont pas les miennes.
+
+Rien de cassé : c'est un refactor délibéré — `skip_null_values` remonté dans `api_platform.yaml` — et il ne croise pas mes fichiers. J'ai en revanche dû remettre **56 fichiers en LF** : quelque chose les avait convertis en CRLF alors que git les garde en LF, et le commit aurait porté 56 diffs entiers.
+
+Je reprends : la migration, puis les fixtures.
+
+La migration générée renomme `site_id` en `entreprise_id` — elle garderait les **identifiants de postes** comme identifiants d'entreprises. Je la réécris en vraie traduction.
+
+LF et UTF-8 intacts. Maintenant les fixtures.
+
+Deux contrôles de cohérence comparaient le poste du produit à celui du planteur. Ils doivent changer de niveau.
+
+La traduction est exacte : chaque produit porte l'entreprise de toutes ses pesées, sans fusion abusive. Je recharge.
+
+`make` n'existe pas ici — je déroule la recette à la main.
+
+Pendant que la suite tourne, les README.
+
+Pendant ce temps, la corbeille : un produit n'a plus de poste, et `texte(null)` afficherait `—` comme une donnée manquante.
+
+Une seule rupture, et c'est celle attendue : la corbeille affirmait qu'un produit porte le code de son poste.
+
+Une configuration de prévisualisation existait déjà hors des dépôts. Je démarre les deux serveurs.
+
+Le POST passe. Je teste maintenant le validateur d'unicité, qui est neuf.
+
+Un faux silencieux : le compteur de pesées d'un produit n'est borné par aucun périmètre. Avant, un produit n'avait qu'un poste ; maintenant il en a plusieurs.
+
+Le compteur est entreprise-large à dessein — il sert à dire si une suppression est sans conséquence. Je le note.
+
+Le cas positif passe. Maintenant le refus : un produit d'une autre entreprise.
+
+Il manque le cas qui fait tout l'intérêt de l'étape : deux postes envoyant le même libellé.
+
+Mes deux exécutions phpunit se marchent dessus sur la même base de test. J'arrête celle de fond et je relance une seule fois.
+
+Le modèle TS était faux, et la charge réelle le montre : `entreprise` sort en objet `{createdAt}`, pas en IRI.
+
+Pré-existant et sans gravité pour `site`/`entreprise` ailleurs. Mais sur un produit, l'objet ne contient **que** `createdAt` : aucune information. Je le passe en écriture seule.
+
+La suite tourne encore. J'attends son verdict avant de conclure.
+
+Un reliquat : `Site` porte encore le groupe de lecture du produit, qui n'a plus de relation vers lui.
+
+Tout est vert côté web et sur le schéma. J'attends le verdict de la suite backend, lancée seule.
+
+Suite verte — mais elle a démarré **avant** mes deux derniers changements de groupes de sérialisation. Je la relance sur le code final, cache de test vidé.
+
+**Étape 1 terminée** : le produit est remonté du pont bascule à l'entreprise.
+
+**Ce qui a bougé depuis la reprise**
+
+- **Migration** `Version20261118080553` — la version générée par Doctrine renommait `site_id` en `entreprise_id`, ce qui aurait gardé des **identifiants de postes** comme identifiants d'entreprises. Réécrite en vraie traduction (colonne nullable → `UPDATE` par jointure sur `site` → `NOT NULL` → `DROP site_id`). Vérifiée sur la base peuplée avant purge : chaque produit portait bien l'entreprise de **toutes** ses pesées, sans fusion abusive.
+- **Fixtures** — les quatre produits de SOCAF sont désormais à l'entreprise, visibles depuis Soubré, Gagnoa et Daloa.
+- **Deux contrôles que j'avais manqués** : `BasculerPrelevementProcessor` et `DemandePrelevementProcessor` comparaient le poste du produit à celui du planteur. Ils comparent maintenant les **entreprises** — et c'est le seul garde-fou sur ce chemin, puisque `find()` ne passe pas par le cloisonnement.
+- **Web** : filtre et colonne « Pont bascule » retirés de la liste des produits, formulaire de création passé à l'entreprise, `produitsTarifes()` ne filtre plus par poste, sous-titres des fiches réécrits.
+- **Tests** : un cas neuf sur la synchronisation (deux postes d'un même client → **un** produit, **deux** planteurs) et un sur le cloisonnement (l'opérateur voit les produits de son entreprise, ses seuls planteurs). `CorbeilleTest` ajusté : un produit n'a plus de contexte à nommer.
+
+**Deux faux silencieux attrapés en cours de route**
+
+1. La charge utile réelle rendait `entreprise` en objet **`{createdAt}`** — aucun champ d'`Entreprise` ne porte `read:Produit`, seul `read:Base` tombait dans les groupes actifs. Une clé par ligne qui ne dit rien. Passée en écriture seule, et `Site` ne porte plus `read:Produit` (métadonnée morte). Le modèle TypeScript que j'avais écrit était faux ; c'est la charge réelle qui l'a montré.
+2. Le compteur de pesées d'un produit est **entreprise-large** et doit le rester : le borner au poste du lecteur afficherait « 0 » d'un produit pesé ailleurs, et la suppression paraîtrait sans conséquence. C'est écrit dans le code maintenant.
+
+**Deux choses à savoir**
+
+- L'arbre portait des modifications qui ne sont pas de moi : `skip_null_values` remonté par quelqu'un dans `config/packages/api_platform.yaml` et retiré de chaque ressource, plus `tests/Api/ChampsNulsTest.php`. Rien ne croise l'étape 1, je l'ai pris tel quel. J'ai en revanche dû remettre **56 fichiers en LF** — quelque chose les convertit en CRLF alors que git les garde en LF, et le commit aurait porté 56 diffs entiers pour rien.
+- Le POST d'un produit accepte encore l'IRI d'une **autre** entreprise : la sécurité de l'opération est au niveau classe, pas objet. C'est le cas depuis toujours, à l'identique pour `Site` et `Fournisseur` — je ne l'ai donc pas corrigé ici, ça mérite une passe sur les trois plutôt qu'un correctif glissé dans cette étape.
+
+Les deux serveurs de prévisualisation tournent encore (API sur 8000, web sur 8001) si vous voulez regarder.
+
+L'étape 1 du plan est terminée : le produit appartient à l'entreprise, le planteur reste au pont bascule. Backend 171 tests / 1132 assertions, web 15 tests, lints et schéma verts, et vérifié au navigateur sous trois rôles. Rien n'est committé dans l'un ou l'autre dépôt.
+
+On enchaîne sur l'étape 2 du plan, les catégories de planteurs ?
+
+
+
+
+
+
+
+
+Oui, on attaque l'étape 2 et sache que iTransport n'est pas forcément la référence à suivre, c'est juste pour que y tire des notions qui peuvent t'intéressé.
+
+Et concernant le désaccord à arbitrer, je me dis qu'on n'est pas obligé de garder une clé étrangère vers le tarif comme ça a été fait pour le bagage !
+
+
+
+
+Noté sur les deux points : iTransport reste une source d'idées, pas un modèle, et pas de clé étrangère vers le tarif — on fige l'explication, ce qui était le choix du plan.
+
+Le dépôt garde déjà le garde-fou par part — c'est le **choix de la part par le type de la cause** qui ne tient plus. Je lis les deux derniers morceaux.
+
+Tout est en place pour concevoir. J'écris les entités.
+
+Une deuxième entité a le même besoin que `Produit` : je généralise le processeur plutôt que de le recopier.
+
+La migration générée est juste. J'ajoute l'en-tête du projet et une reprise qui est, elle, démontrable.
+
+La reprise est exacte. Maintenant les fixtures, pour que le jeu de démonstration montre les trois sauts.
+
+Les trois sauts sont dans les données. Maintenant le taux de mise en compte, qui se borne encore sur le mauvais prix.
+
+Maintenant la revalorisation. Le garde-fou doit suivre **la part touchée**, que le type de la cause ne détermine plus.
+
+Le piège connu : le heredoc avale un niveau d'antislash. Je passe par un fichier.
+
+Reste le cœur risqué : la saisie groupée de la grille, avec le bilan et le nombre de pesées annoncé **avant** d'écrire.
+
+Maintenant les droits et la corbeille — sans quoi c'est 403 pour tout le monde, lecture comprise.
+
+Le même piège : `produit` ne rend que `createdAt`. Le groupe de la catégorie manque sur le produit.
+
+Le chemin complet fonctionne. Je vérifie les refus.
+
+Tout le mécanisme est démontré en vrai. J'écris les tests qui le tiennent.
+
+19 cas verts du premier coup. Je vérifie que le plus critique a des dents.
+
+Les dents sont là : l'ancien code **acceptait** un taux de 300 F sur un planteur payé 200 F.
+
+Pendant que la suite tourne, les écrans. Je prends `ProduitController` comme gabarit.
+
+Un détail de cohérence : l'opérateur tarifie déjà les produits, donc classer un planteur lui revient aussi. Je corrige le commentaire que j'avais écrit.
+
+Le piège déjà rencontré : un commentaire Twig dans un littéral de hachage. Je le remonte.
+
+Deux représentations de la même chose dans la charge utile : je ne garde que le libellé.
+
+Turbo avale une réponse 200 à un POST — le piège déjà noté. L'aperçu ne **lit** que : j'en fais un GET, ce qui est aussi plus juste.
+
+Une faute d'accord dans mon gabarit : « 1 pesée **vont** être revalorisée ». Je corrige.
+
+Le thème de formulaire ajoute « (optionel) » tout seul : mes libellés le doublaient.
+
+Deux ruptures réelles (des tests qui affirment l'ancien libellé) et six erreurs de verrou MySQL dues à mes exécutions concurrentes. Je traite les deux.
+
+**Étape 2 terminée.** Un prix ne se lit plus sur le produit, il se résout en trois sauts : le tarif propre du planteur, celui de sa catégorie, le prix du produit — et la pesée fige lequel des trois a répondu.
+
+**Ce qui existe maintenant**
+
+`CategorieFournisseur` à l'entreprise, avec sa description ; `TarifCategorie` et `TarifFournisseur` partageant une classe mère ; `TarifApplicable`, statique et sans la moindre requête, pour pouvoir tourner dans la boucle de synchronisation. Le jeu de démonstration montre les trois origines côte à côte : Traoré touche 450 F sur l'hévéa par sa catégorie et 200 F sur la palme par son tarif propre, tout le monde reste au prix du produit.
+
+**Les trois pièges que le plan avait repérés, et ce qu'ils sont devenus**
+
+Le **taux de mise en compte** se bornait sur le prix du produit. Le cas grave était silencieux : pour un planteur dont la catégorie paie moins cher, un taux entre les deux était accepté, puis la retenue absorbait toute sa récolte — sans retour, l'arbitrage ne se rejoue pas. Un test le tient, et je l'ai vérifié en rétablissant l'ancien code : il acceptait bien 300 F sur un planteur payé 200.
+
+Le **garde-fou de la revalorisation** choisissait sa colonne sur le type PHP de la cause. Un `Fournisseur` touche désormais la récolte, pas seulement le transport : c'est l'appelant qui dit la part, via un `PartPesee`.
+
+Le **volume et l'irréversibilité** : la grille se saisit d'un bloc, et l'enregistrement passe par un aperçu qui annonce le nombre de pesées concernées avant d'écrire une ligne. Trois règles reprises d'iTransport y sont : un renvoi à l'identique compte « inchangé » et ne déclenche rien, un produit en double est refusé avant la première écriture, et la sélection se resserre sur le produit touché.
+
+**Deux écarts au plan, assumés**
+
+`calculerMontant()` ne reçoit pas la résolution en argument. Le plan le voulait pour qu'aucun appelant ne l'oublie ; avec un résolveur statique qui lit le graphe, il n'y a plus rien à oublier. Et pas de clé étrangère vers le tarif sur la pesée, comme vous l'avez tranché — c'est l'origine figée qui explique.
+
+**Un détail où je m'étais trompé** : j'avais écrit dans `Droits.php` que classer un planteur revenait à l'administrateur seul. C'est faux — le champ passe par la modification de la fiche, et l'opérateur l'a, comme il a déjà le prix du transport et même le prix d'un produit. J'ai corrigé le commentaire plutôt que d'inventer une restriction que le projet n'applique nulle part ailleurs.
+
+**Vérifié au navigateur** : la grille en deux temps de bout en bout (aperçu → confirmation → écriture, avec la pesée revalorisée de 450 à 520 F), le classement d'un planteur, et la même fiche en lecture seule pour une opératrice. La fiche de pesée affiche maintenant « 520 F le kilo · Tarif de sa catégorie ».
+
+Backend **191 tests, 1232 assertions**, web **15 tests**, lints et schéma verts, tout en LF.
+
+
+L'étape 2 est terminée : catégories de planteurs, tarifs par catégorie et par planteur, résolution en trois sauts figée sur la pesée. Backend 191 tests / 1232 assertions, web 15 tests, lints verts, et vérifié au navigateur sous deux rôles. Rien n'est committé.
+
+On enchaîne sur l'étape 3, les barèmes de transport et les tranches ?
+
+
+
+
+
+
+
+
+
+Pour le prix d'un produit pour un planteur `TarifFournisseur`, je ne vois pas les écrans le concernant !
+
+Aussi, d'après mon analyse concernant `iTransport` :
+
+```
+J'avais trouvé un défaut dans Webpesee en comparant que j'ai résolu :
+
+**La liste des planteurs est coupée à 100, sans erreur.** L'API refuse de renvoyer plus de 100 lignes par appel (`pagination_maximum_items_per_page: 100`). Or les formulaires de demande de retrait et de mise en compte en demandent 200 ([DemandeRetraitController.php:268](Frontend-Webpesee/src/Controller/DemandeRetraitController.php:268), [DemandePrelevementController.php:215](Frontend-Webpesee/src/Controller/DemandePrelevementController.php:215)). Au-delà du 100ᵉ planteur, les suivants n'apparaissent pas. C'est la même chose pour les produits ([FournisseurController.php:241](Frontend-Webpesee/src/Controller/FournisseurController.php:241)) et les entreprises.
+
+## D'autres choses que j'avais remarquées
+
+| Notion | Ce que Transport fait | Dans Webpesee |
+|---|---|---|
+| **Tests en transaction annulée** | Chaque test tourne dans une transaction qu'on annule à la fin, avec des points de sauvegarde pour les transactions imbriquées. La suite est passée de 65 s à 5 s. | Webpesee vide toutes les tables avant chaque test ([InvariantTestCase.php:99](Backend-Webpesee-V2/tests/InvariantTestCase.php:99)). C'est pour ça que la suite est si lente. |
+| **Liste de choix avec recherche à la frappe** | La liste interroge l'API pendant la saisie au lieu de tout charger d'avance. | Absent. C'est la correction durable du défaut n°1. |
+| **Sauvegarde de la base** | Une commande `app:sauvegarder-base`, sans mot de passe en clair, avec rotation des anciennes copies. | Absent, alors que le grand livre et l'épargne sont des dettes envers les planteurs. |
+
+**d'autres règles de conception** :
+- **`null` ≠ 0** : « je n'ai pas le droit de savoir » ne s'affiche pas comme « il n'y en a pas » ;
+- **la somme d'une ventilation égale le total**, et tout classement se départage par l'identifiant. [OperationRepository.php](Backend-Webpesee-V2/src/Repository/OperationRepository.php) trie le tonnage sans départage.
+
+**Petits points, vérifiés aussi :**
+- `CaisseService` refuse une provision insuffisante à l'intérieur d'une transaction, ce qui ferme Doctrine pour le reste de la requête. Je n'ai pas constaté de panne, seulement le risque.
+```
+
+
+Ensuite, vérifie que tout est correcte et cohérent avant qu'on attaque l'étape 3
+
+
+
+
+
+
+
+
+
+Vous avez raison : l'API du tarif propre existe et est testée, mais je n'ai pas construit l'écran. Je commence par lire votre correction de pagination pour ne pas la casser.
+
+Un bug de la même famille, que je viens de trouver : **l'export de pesées est tronqué à 100 lignes en silence.**
+
+Difficile à compter sur un PDF. Je corrige, puis je compare les deux tailles.
+
+Le xlsx est compressé. Plutôt qu'une mesure jetable, j'écris le test de non-régression — en suivant celui que vous avez déjà fait pour `all()`.
+
+Le test a des dents : l'ancien export rendait **100 lignes sur 238**. Maintenant l'écran du tarif propre — avec la logique partagée, pour ne pas en avoir deux versions.
+
+La liste déroulante de mise en compte affiche encore **le prix du produit**, alors que la borne est désormais le prix du planteur. Elle ment. Je regarde comment le projet sert ce genre de lecture.
+
+`read: false` désactive justement le provider. Je l'enlève.
+
+Exactement ce qu'il faut : la palme retomberait à **160 F**, pas 145. Je branche le web dessus.
+
+Trois textes affirment encore que la borne est « le prix du produit ». Avec les catégories, c'est faux.
+
+Tout concorde maintenant. Je déroule la grille du planteur de bout en bout.
+
+La grille du planteur fonctionne de bout en bout. Je passe au balayage de cohérence — en commençant par la colonne qui manque à la liste des planteurs.
+
+Maintenant les trois balayages. D'abord les modèles TypeScript contre les charges réelles.
+
+Un écart est le mien (`prixModifieAt`), deux sont dans la zone que je viens de toucher. Le reste est antérieur.
+
+Les deux modèles de la zone sont alignés. Maintenant les invariants SQL, sur données propres.
+
+Les quinze invariants tiennent, dont les douze neufs. Je lance la suite backend et vérifie les filtres pendant ce temps.
+
+Fausse alerte sur les fichiers — mon motif de recherche était mal échappé. En revanche le nouveau point d'entrée n'a pas de test : je le couvre.
+
+Un vrai 500 que la suite n'a pas attrapé : une catégorie à la corbeille fait exploser **tout l'écran**, pas seulement sa ligne.
+
+Deuxième garde runtime manquée dans la même intégration : la restauration et la purge refusaient toute catégorie.
+
+Les trois chemins marchent. J'écris les cas qui les tiennent — trois bugs qu'aucun test n'avait vus.
+
+Faux positif : deux exécutions phpunit se marchaient dessus. **24 cas verts.** Je lance la suite complète, seule.
+
+Dernier point de votre liste que je peux traiter vite : le tri sans départage.
+
+Trois tris sans départage, dont un qui pagine. Le dépôt a déjà la règle ailleurs (`addOrderBy('o.id')`).
+
+**Les écrans manquants existent.** La fiche du planteur porte maintenant « Ses tarifs propres », par exactement le même chemin que la grille d'une catégorie : un partiel de grille, un écran de confirmation et un `GrilleTarifaireHelper` partagés. Vérifié de bout en bout — l'hévéa de Traoré est passé de 450 F (sa catégorie) à 480 F (son tarif), et sa pesée a suivi.
+
+**Votre correction de pagination** est en place et je l'ai respectée. Elle m'a surtout servi de guide : **le même bug vivait ailleurs**.
+
+`ExportService` demandait 500 lignes par page à une API qui en rend 100, et sortait de sa boucle « quand la page n'est pas pleine » — une comparaison de 100 à 500, jamais vraie. L'export du bilan s'arrêtait donc **après la première page**. Sur 238 pesées filtrées, le fichier en contenait 100, colonnes de montants comprises, sans un mot d'avertissement. J'ai semé 130 pesées pour le prouver, écrit `ExportPaginationTest`, puis vérifié qu'il échoue contre l'ancien code : « actual size 100 matches expected size 238 ».
+
+**Le balayage a sorti trois autres défauts, tous les miens :**
+
+La liste déroulante de mise en compte affichait « Hévéa — 400 F le kilo » en annonçant ce prix comme la borne du taux. Depuis les catégories, l'API en acceptait 449. Trois textes d'écran disaient la même chose. J'ai ajouté `GET /api/fournisseurs/{id}/tarifs` — l'API résout, le web affiche — et la grille montre désormais ce que **vider une case donnerait vraiment** : retirer le tarif palme de Traoré le laisse à 160 F, pas à 145.
+
+Une catégorie mise à la corbeille provoquait un **500 sur tout l'écran**, pas seulement sur sa ligne : le compteur de pesées ne sait compter que produits et planteurs. Et sa restauration comme sa purge répondaient **404** — la liste des types acceptés était recopiée en `instanceof` à côté de celle qui fait foi. Deux refus parfaitement muets, trouvés à la main, maintenant tenus par des cas de test.
+
+J'ai aussi traité le départage de tri que vous aviez noté : `dernieresPesees()` coupait à N sans départager, donc deux pesées de la même seconde entraient ou disparaissaient au hasard d'un rafraîchissement. C'est un invariant du README maintenant.
+
+**Les balayages** : modèles TypeScript alignés sur les charges réelles (il reste 15 champs non déclarés sur `Pesee`, antérieurs à mon travail — je les signale sans y toucher) ; **15 invariants SQL** à zéro violation, dont 12 neufs sur les tarifs ; filtres et tris des catégories vérifiés contre les totaux, cloisonnement compris.
+
+Backend **196 tests / 1269 assertions**, web **19 tests**, lints, schéma et fins de ligne verts.
+
+Ce que je n'ai **pas** fait de votre liste iTransport : les tests en transaction annulée (le gain le plus rentable — la suite met 14 minutes), l'autocomplétion distante, la commande de sauvegarde, et le risque `CaisseService` que vous décrivez comme non constaté.
+
+
+Les écrans du tarif propre au planteur existent, par le même chemin que ceux d'une catégorie. Le balayage a sorti quatre défauts réels, tous corrigés et couverts : export tronqué à 100 lignes, borne du taux annoncée à tort, corbeille en 500 sur une catégorie, restauration et purge en 404. Backend 196 tests, web 19.
+On attaque l'étape 3, les barèmes de transport et les tranches ?
+
+
+
+
+
+
+
+
+
+Oui, étape 3
+
+
+
+
+Étape 3. Je commence par lire tout ce que le transport touche aujourd'hui.
+
+J'ai le contrat complet. Les enums d'abord.
+
+La résolution du transport, sur le modèle de celle du prix.
+
+Les fixtures : trois barèmes, un par mode, en préservant les montants des scénarios de caisse.
+
+La migration générée **renomme** `prixtransport` en `distance_km` : un prix de 15 F deviendrait une distance de 15 km. Je l'écris en vraie reprise.
+
+La reprise est exacte. Je recharge les fixtures pour voir les trois modes.
+
+Le mode forfait n'est démontré par personne. Je mets Koffi en coopérative — ça montre aussi le second saut.
+
+Pendant que la suite tourne, les écrans. Je recense ce que le web lit du transport.
+
+Le contrôleur Stimulus `collection` n'existe pas — je l'invente encore. Je l'écris pour de bon.
+
+J'ai trouvé un bug que j'avais introduit : en retirant une méthode morte, j'ai emporté `iriCategorie()` avec — appelée à deux endroits, elle n'existe plus.
+
+Probablement le cache de métadonnées du sérialiseur — le piège documenté. Je le vide.
+
+C'était bien le cache. Je retire la trace et relance tout.
+
+Pendant ce temps, les tests de l'étape — à commencer par les quatre façons de produire un montant faux.
+
+The suite is at 63/196. Let me check my new test file against what the base case actually offers.
+
+Pendant que la suite tourne, le filtre qui manque encore au plan — distinguer « pas de barème » de « j'ai oublié ».
+
+Le suite avance. Pendant ce temps, l'écran qui pose la question.
+
+Les READMEs, maintenant que l'étape est stabilisée.
+
+Un contrôleur Stimulus pour un seul écran, alors que le README documente l'inverse — je le ramène à la convention.
+
+196 tests verts. Au tour des nouveaux.
+
+Tous verts du premier coup — je vérifie qu'ils mordent. D'abord le filtre, qui n'a encore aucun cas.
+
+Maintenant la preuve qu'ils mordent : je casse quatre règles, une à une.
+
+Les invariants d'argent sur la base vivante, étendus au transport.
+
+Les deux serveurs tournent. Vérification au navigateur — d'abord le barème par tranches, dont le JavaScript vient de changer de forme.
+
+The barème list is right. Maintenant le formulaire — c'est son JavaScript que je viens de refaire.
+
+Le `form_end` rendait la collection une seconde fois, sous les boutons. Je marque le champ comme rendu.
+
+Je crée un barème par tranches de bout en bout, pour éprouver le module.
+
+Le refus arrive en toutes lettres. Je corrige le trou et j'enregistre.
+
+Enregistré. La fiche du barème :
+
+Le dernier silence : rattacher un barème par tranches à un planteur sans distance.
+
+L'autre moitié : la catégorie passe aux tranches après coup, sans que personne ne rouvre la fiche du planteur.
+
+Une parenthèse dans une parenthèse. Je sépare comme le reste de l'application.
+
+La fiche d'une catégorie ne dit pas quel transport elle donne — alors qu'elle le décide pour tous ses planteurs.
+
+Je relance la suite complète sur le code final, cache sérialiseur vidé.
+
+Le balayage des modèles TypeScript contre les charges réelles, sur ce que l'étape a touché.
+
+Je reprends. Suite complète relancée, et le script de balayage pointait sur la mauvaise route de connexion.
+
+Faux positif de mon script : `AvecPesees` n'est pas exportée.
+
+La corbeille — c'est là qu'un quatrième type avait fait tomber l'écran à l'étape 2.
+
+Avant de conclure, je compare avec un autre écran, même méthode.
+
+Il faut de vrais clics — le module l'explique. Je reprends à la souris.
+
+Le refus passe. Mais « 1 planteur(s) ou catégorie(s) suivent » détonne — le reste de l'application accorde.
+
+Je termine le parcours : détacher la catégorie, supprimer, voir la corbeille.
+
+La corbeille accueille bien le barème, mais ses compteurs et son texte n'en connaissent que deux types sur quatre.
+
+Le parcours complet tient. Je rebâtis les assets et je rends aux données de démonstration leur état d'origine.
+
+La suite vient de démarrer — j'ajoute les cas qui manquent encore avant de la laisser tourner pour de bon.
+
+Le filtre par catégorie existe maintenant côté API mais aucun écran ne l'offre — je complète.
+
+Le plan signalait ce couple : `prixtransport` à côté de `montanttransport` invite le poste à recalculer.
+
+`libelleTranche()` figerait une chaîne vide là où aucune tranche ne répond.
+
+J'attends le verdict de la suite. En attendant, une dernière lecture de la migration de reprise — c'est elle qui touche des données.
+
+Rien de plus à modifier. J'attends la suite.
+
+Le `|default(null)` de mes gabarits avale une faute de frappe en silence — le harnais de rendu existe, autant l'utiliser.
+
+Ces `|default(null)` sont inutiles — les clés sont toujours là — et ils transformeraient une faute de frappe en page muette.
+
+Tout est vérifié. J'attends le verdict de la suite complète.
+
+Pendant que la suite finit, le même écran vu par un opérateur — les droits se vérifient aussi à l'écran.
+
+Tout est vérifié sauf le verdict de la suite complète, qui tourne encore (63/219). Je ferai le point dès qu'elle rend la main.
+
+Voilà où en est l'étape 3.
+
+**Ce qui tient**
+
+Les barèmes de transport remplacent le prix au kilo : `AU_KILO`, `FORFAIT`, `TRANCHES`, résolus en deux sauts (le barème du planteur, sinon celui de sa catégorie, sinon aucun) par `TransportApplicable`, statique et sans requête comme `TarifApplicable`.
+
+Les bornes sont semi-ouvertes `[min, max[` et la cohérence se juge sur la collection entière — un trou, un chevauchement, aucune tranche ouverte, un départ ailleurs qu'à zéro. J'ai cassé quatre règles une à une pour vérifier que les cas mordent : chacune fait tomber exactement le cas prévu.
+
+Les deux silences sont fermés. Un barème par tranches sur un planteur sans distance est **refusé** à la saisie ; quand c'est sa catégorie qui bascule après coup, la pesée et la fiche le **disent** au lieu de figer un zéro muet. Et `getTransportApplique()` répond « qui touche quoi » en suivant les deux sauts — la colonne lisait `baremeTransport`, donc le sien, et annonçait « Aucun » à des planteurs parfaitement réglés par leur catégorie.
+
+**Trois choses trouvées en vérifiant, hors plan**
+
+- `form_end()` rendait la collection de tranches une **seconde fois** sous les boutons, muette et vide.
+- Les compteurs de la corbeille ne connaissaient que deux types sur quatre : le total ne correspondait plus à la somme affichée.
+- Le refus de suppression disait « 1 planteur(s) ou catégorie(s) suivent » ; il nomme maintenant chaque compte séparément, parce qu'ils ne se corrigent pas au même endroit.
+
+J'ai aussi ramené le contrôleur Stimulus des tranches à un module `assets/modules/collection.js` : le README documente « pas de Stimulus pour le code applicatif », et une exception pour un seul écran oblige à connaître les deux conventions.
+
+**Ce qui reste**
+
+La suite backend tourne sur le code final (219 cas, 23 neufs). Le reste est vert : frontend 19/19, 170 gabarits Twig, conteneur, schéma, `tsc`, build, 17 invariants SQL à zéro, modèles TypeScript conformes aux charges réelles, et les écrans parcourus sous administrateur, super-administrateur et opératrice.
+
+Rien n'est commité dans aucun des deux dépôts. Je vous donne le verdict dès que la suite rend la main.
+
+219 tests, 1368 assertions, verts. Deux retouches sont arrivées après le lancement — je repasse les suites concernées sur les fichiers finaux.
+
+L'étape 3 est close.
+
+**Le verdict**
+
+- Backend : **219 cas, 1368 assertions**, verts — dont 23 neufs pour les barèmes.
+- Deux retouches sont arrivées après le lancement de cette suite (`libelleTranche()` qui rendait une chaîne vide au lieu de `null`, et un nom de cas mal orthographié). J'ai repassé `tests/Transport` et `tests/Caisse` sur les fichiers finaux : **100 cas, 633 assertions**, verts. Le verdict porte donc bien sur le code tel qu'il est.
+- Frontend : 19/19, 170 gabarits Twig, conteneur, `tsc`, build fait.
+- Schéma en phase avec le mapping, 17 invariants SQL à zéro, modèles TypeScript conformes aux charges réelles, aucune dérive CRLF.
+
+**Ce que l'étape change pour le métier**
+
+Un camion qui apporte deux cents kilos a fait la même route que celui qui en apporte dix tonnes. Au prix au kilo, le premier touchait cinquante fois moins pour le même trajet ; il peut désormais être payé au forfait, ou selon la distance. Les anciennes valeurs sont devenues des barèmes « au kilo », un par prix distinct et par entreprise — **aucun montant n'a bougé à la reprise**.
+
+**Ce qui ne peut plus passer en silence**
+
+Un transport à zéro ressemblait à tous les autres. Maintenant : une suite de tranches incohérente est refusée à la saisie avec la phrase qui dit quoi corriger ; un barème par tranches sur un planteur sans distance est refusé au rattachement ; et quand c'est la catégorie qui bascule après coup — le seul cas qu'aucun refus ne peut attraper — la pesée et la fiche l'écrivent noir sur blanc.
+
+**Les trois défauts trouvés en vérifiant**, hors plan : la collection de tranches rendue deux fois par `form_end()`, les compteurs de la corbeille restés à deux types sur quatre, et un refus de suppression qui comptait les planteurs et les catégories ensemble alors qu'ils ne se corrigent pas au même endroit.
+
+Rien n'est commité, dans aucun des deux dépôts.
+
+
+
+
+
+
+
+
+
+
+
+- Je me dis que le `modifier le nom` dans la partie catégorie n'est pas explicite vu qu'on ne modifie pas que le nom !
+- Dans le formulaire de création et modification d'une catégorie, malgré que le champ `Barème de transport` soit optionnel ça m'oblige à choisir un barème car je ne peux pas choisir le `Aucun` (valeur null) et que par défaut ça sélectionne un barème !
+    - Aussi, j'ai le même soucis sur les champs `Catégorie`, `Réseau`, `Barème de transport` dans le formulaire de création et modification d'un planteur
+- Lors de la création ou modification d'une branche quand j'ai une erreur du genre `La première tranche doit partir de 0 km : sinon un planteur plus proche ne trouve aucun montant`, et que j'appuie sur `Ajouter une tranche` ça ne fonctionne pas, je me dis que le javascript ne se recharge pas ! Aussi, je pense que ce problème existe dans d'autres endroits de l'application !
+
+Ensuite, vérifie que tout est correcte et cohérent.
+
+Et pour les prochaines fonctionnalités (3, 5, 4, 9, etc...) et ce qui reste à faire, note les quelque parts car on va les faire dans la session suivante.
+
+
+
+
+
+
+
+Trois défauts, dont un systémique. Je commence par les reproduire.
+
+Reproduit : « — Aucun — » est `disabled`, donc le navigateur sélectionne le premier barème. Une catégorie créée sans toucher au champ en reçoit un que personne n'a choisi.
+
+Les trois champs facultatifs s'ouvrent sur « Aucun », le site obligatoire reste bloqué sur l'invite. Maintenant le JavaScript après un refus.
+
+Confirmé, et c'est bien systémique : sur un 422 Turbo remplace le corps en n'émettant que `turbo:render`, jamais `turbo:load`.
+
+« Ajouter une tranche » répond de nouveau, et une seule ligne s'ajoute. Maintenant le libellé du bouton.
+
+Maintenant les mêmes défauts ailleurs. D'abord : qui d'autre écoute `turbo:load` ?
+
+Le module des modes de règlement vit sur l'écran du guichet — c'est le cas qui coûte cher. Je l'éprouve après un refus.
+
+Le module réagit de nouveau après le refus. Je vérifie que mon essai n'a pas laissé de trace en base.
+
+Trois formulaires de **décision** n'ont aucune invite : le navigateur choisit la première option. Ce sont les écrans où l'on approuve ou rejette la demande de quelqu'un.
+
+Mon script a mal jugé : ces trois-là sont `expanded`, donc des boutons radio, pas une liste. Je vérifie qu'aucun n'est coché d'avance.
+
+Deux de ces trois écrans cochent **« Approuver »** d'avance ; le troisième ne coche rien. Un administrateur qui valide sans choisir approuve.
+
+Les deux qui cochent « Approuver » ouvrent une retenue ou font sortir de l'argent, et ce sont des gestes sans retour. J'aligne sur l'écran des retraits, qui lui ne coche rien.
+
+Vérifions que les champs désormais vides partent bien en `null` et non en chaîne vide.
+
+Le vrai test : créer un planteur sans toucher aux trois listes.
+
+Avant le correctif, ce planteur serait né avec ORANGE, la première catégorie et le premier barème. Je retire l'essai.
+
+Il me faut la liste des fonctionnalités que vous aviez donnée — je la retrouve dans la transcription.
+
+J'ai la liste. Je vérifie deux points que je dois y consigner avant d'écrire.
+
+Ces deux pièges appartiennent au README du web — c'est la section faite pour eux.
+
+Dernier aller-retour : un champ qui porte déjà une valeur doit pouvoir revenir à « Aucun ».
+
+Vos trois observations étaient justes, et la deuxième était plus grave que vous ne le disiez.
+
+**1. « Modifier le nom »** → « Modifier la catégorie ». Le formulaire porte aussi le barème et la base d'admission ; le sous-titre de la page d'édition les nomme maintenant tous les trois.
+
+**2. Le « Aucun » impossible à choisir — ce n'était pas qu'une gêne**
+
+Le thème de formulaire mettait `disabled` sur l'option vide **de tous les champs**, obligatoires comme facultatifs. Le navigateur sautait donc sur la première option valide. Conséquence : une catégorie créée sans regarder le champ « barème » héritait du **premier barème de la liste**, et tous ses planteurs avec elle — un transport que personne n'a choisi, sans une ligne d'erreur, avec une valeur parfaitement plausible.
+
+L'option n'est désactivée que sur un champ obligatoire, et sélectionnée dès que la valeur est vide. J'ai éprouvé le résultat en créant un planteur sans toucher aux trois listes : réseau, catégorie et barème sont bien `NULL` en base. Avant, il serait né avec ORANGE, la première catégorie et le premier barème.
+
+Le correctif est dans le thème, donc il vaut pour les six champs facultatifs de l'application — et le champ `site`, lui, reste bloqué sur son invite comme il le doit.
+
+**3. Le JavaScript après un refus — vous aviez raison, c'est partout**
+
+Turbo n'émet `turbo:load` que sur une **visite**. Un formulaire servi en 422 remplace le corps de la page en n'émettant que `turbo:render`. Tout ce que `app.js` câblait mourait donc à la première erreur de saisie, sur la page même où l'on vient de se tromper : les tranches, le menu latéral, les graphiques, et **les champs du versement qui suivent le mode de règlement**. Celui-là est l'écran du guichet.
+
+`app.js` écoute désormais les deux événements, avec un garde-fou sur `document.body` : sur une visite normale ils se suivent sur le même corps, et sans lui chaque écouteur serait posé deux fois. Vérifié : « Ajouter une tranche » répond après le refus, et n'ajoute qu'**une** ligne.
+
+**Ce que le balayage a trouvé en plus**
+
+En auditant les vingt champs de choix de l'application, deux écrans de **décision** cochaient « Approuver » d'avance : la demande de solde et la mise en compte. Ouvrir la demande et valider sans lire suffisait à l'accorder — et ces gestes-là ne se reprennent pas. L'écran des retraits, lui, ne cochait rien. J'ai aligné sur celui-là : le montant reste pré-rempli, la décision non. **Dites-le-moi si vous préfériez le défaut** — c'est un arbitrage, pas un bug, mais les trois écrans se contredisaient.
+
+**Ce qui est noté**
+
+[A-FAIRE.md](../Backend-Webpesee-V2/A-FAIRE.md), à la racine de l'API, pointé depuis les deux README : les cinq fonctionnalités restantes (**7, 3, 5, 4, 9**) avec ce qu'il faut trancher avant chacune, les deux écarts assumés sur ce qui est livré — la #6 est une liste plate, et la #8 a tranché l'origine de la distance —, les quatre notions d'iTransport non reprises, et le modèle TypeScript de la pesée à qui manquent 15 champs. La #7, les prix datés, y est mise en premier : c'est la seule qui réécrive le code qu'on vient d'écrire.
+
+Les deux nouveaux pièges sont entrés dans le tableau du README du web, avec le symptôme plutôt que la cause.
+
+Frontend vert : 19/19, 170 gabarits, conteneur, `tsc`, build fait. Le backend n'a pas bougé ce tour-ci. Rien n'est commité.

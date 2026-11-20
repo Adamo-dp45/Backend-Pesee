@@ -3,6 +3,7 @@
 namespace App\Tests\Caisse;
 
 use App\Domain\Enum\Role;
+use App\Entity\Entreprise;
 use App\Entity\Fournisseur;
 use App\Entity\Operation;
 use App\Entity\Produit;
@@ -31,6 +32,7 @@ final class PrixTransportTest extends InvariantTestCase
     private const POIDS = 500;      // kg
 
     private Site $site;
+    private Entreprise $entreprise;
     private Produit $produit;
     private User $admin;
 
@@ -42,12 +44,17 @@ final class PrixTransportTest extends InvariantTestCase
         $this->site = $this->creerSite($entreprise, 'ACM001', 1_000_000, 1_000_000);
         $this->produit = $this->creerProduit($this->site, 'Hévéa', self::PRIX);
         $this->admin = $this->creerUtilisateur($entreprise, Role::ADMIN, 'admin@acme.test');
+        $this->entreprise = $entreprise;
     }
 
+    /*
+        - UN BARÈME AU KILO remplace le prix qui vivait sur la fiche. La formule est la même —
+          prix × poids net — donc tous les montants attendus par ce fichier sont inchangés.
+    */
     private function planteurTransporteur(int $transport = self::TRANSPORT, string $nom = 'Kouassi'): Fournisseur
     {
         $planteur = $this->creerPlanteur($this->site, $nom);
-        $planteur->setPrixtransport($transport);
+        $planteur->setBaremeTransport($this->creerBaremeAuKilo($this->entreprise, $transport, 'Au kilo ' . $transport));
 
         $this->em->flush();
 
@@ -147,25 +154,34 @@ final class PrixTransportTest extends InvariantTestCase
     }
 
     /*
-        - LE PRIX DU TRANSPORT SE SAISIT SUR LE WEB, ET NULLE PART AILLEURS. Ce cas éprouvait
-          autrefois l'arbitrage entre les deux sources ; il ne reste qu'une source, et ce qui
-          compte désormais est qu'une valeur saisie au bureau tienne, et qu'elle se corrige.
+        - LE TRANSPORT SE DÉCIDE SUR LE WEB, ET NULLE PART AILLEURS. Ce cas éprouvait autrefois
+          l'arbitrage entre deux sources ; il n'en reste qu'une, et ce qui compte désormais est
+          qu'un barème rattaché au bureau tienne, et qu'il se retire.
+
+        - LE « ZÉRO » A DISPARU, et c'est un gain : un prix de transport à zéro et « pas de
+          transport » étaient déjà la même chose pour la pesée, mais deux états distincts sur la
+          fiche. Retirer le barème est maintenant la seule façon de dire « on ne lui en paie
+          pas », et elle ne se confond avec rien.
+
         - Le cas symétrique — un poste qui envoie quand même un prix — est dans
           'SynchronisationTest' : c'est là que la charge utile arrive.
     */
-    public function testLePrixDuTransportSeSaisitEtSeCorrigeSurLeWeb(): void
+    public function testLeBaremeSeRattacheEtSeRetireSurLeWeb(): void
     {
         $planteur = $this->planteurTransporteur();
 
-        self::assertSame(self::TRANSPORT, $planteur->getPrixtransport());
+        self::assertSame(self::TRANSPORT, $planteur->getBaremeTransport()?->getPrixAuKilo());
 
-        // Zéro n'est pas « pas de valeur » : c'est « on ne lui paie plus de transport »
-        $planteur->setPrixtransport(0);
-        self::assertSame(0, $planteur->getPrixtransport());
+        $pesee = $this->creerPesee($this->site, $this->produit, $planteur, self::POIDS, '9');
+        self::assertSame(7_500, $pesee->getMontanttransport());
 
-        // Et 'null' le rend à son état le plus courant : un planteur à qui on ne paie pas de transport
-        $planteur->setPrixtransport(null);
-        self::assertNull($planteur->getPrixtransport());
+        // Le retirer le rend à son état le plus courant : un planteur à qui on ne paie pas de transport
+        $planteur->setBaremeTransport(null);
+        $this->em->flush();
+
+        self::assertTrue($pesee->calculerMontant());
+        self::assertSame(0, $pesee->getMontanttransport());
+        self::assertNull($pesee->getPrixtransport());
     }
 
     /*
@@ -211,7 +227,11 @@ final class PrixTransportTest extends InvariantTestCase
         $enAttente = $this->creerPesee($this->site, $this->produit, $planteur, self::POIDS, '1');
         $arbitree = $this->creerPeseeArbitree($this->site, $this->produit, $planteur, self::POIDS, '2');
 
-        $this->appeler('PATCH', '/api/fournisseurs/' . $planteur->getId(), $this->admin, ['prixtransport' => 30]);
+        $autre = $this->creerBaremeAuKilo($this->entreprise, 30, 'Au kilo 30');
+
+        $this->appeler('PATCH', '/api/fournisseurs/' . $planteur->getId(), $this->admin, [
+            'baremeTransport' => '/api/bareme_transports/' . $autre->getId(),
+        ]);
         self::assertSame(200, $this->client->getResponse()->getStatusCode());
 
         $this->em->clear();
@@ -241,5 +261,12 @@ final class PrixTransportTest extends InvariantTestCase
         self::assertSame(self::TRANSPORT, $accuse['prixtransport']);
         self::assertSame(7_500, $accuse['montanttransport']);
         self::assertSame(107_500, $accuse['montantpayable']);
+
+        /*
+            - LE MODE VOYAGE AVEC LES DEUX, parce que 'prixtransport' ne veut plus rien dire hors du
+              mode « au kilo » : il est nul sur un forfait et sur une tranche. Un poste qui
+              recalculerait le transport par ce prix imprimerait 0 F sur un montant bien réel.
+        */
+        self::assertSame('AU_KILO', $accuse['modeTransport']);
     }
 }

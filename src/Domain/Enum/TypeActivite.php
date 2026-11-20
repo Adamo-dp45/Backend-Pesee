@@ -22,6 +22,10 @@ enum TypeActivite: string
     */
     case PRODUIT_TARIFE = 'PRODUIT_TARIFE';         // Prix au kilo d'un produit
     case FOURNISSEUR_TARIFE = 'FOURNISSEUR_TARIFE'; // Prix du transport payé à un planteur
+    case TARIF_CATEGORIE = 'TARIF_CATEGORIE';             // La grille d'une catégorie de planteurs
+    case TARIF_FOURNISSEUR = 'TARIF_FOURNISSEUR';         // Un tarif négocié avec un planteur en propre
+    case FOURNISSEUR_CATEGORIE = 'FOURNISSEUR_CATEGORIE'; // Le classement d'un planteur : il change ses prix d'un coup
+    case BAREME_TRANSPORT = 'BAREME_TRANSPORT';           // La façon dont un trajet se facture, pour tous ceux qui suivent ce barème
 
     /*
         - La mise en compte. Elle décide de ce qu'un planteur touche au guichet, exactement comme un
@@ -58,6 +62,10 @@ enum TypeActivite: string
         return match($this) {
             self::PRODUIT_TARIFE => 'Tarification d\'un produit',
             self::FOURNISSEUR_TARIFE => 'Prix du transport d\'un planteur',
+            self::TARIF_CATEGORIE => 'Tarifs d\'une catégorie',
+            self::TARIF_FOURNISSEUR => 'Tarifs propres d\'un planteur',
+            self::FOURNISSEUR_CATEGORIE => 'Classement d\'un planteur',
+            self::BAREME_TRANSPORT => 'Barème de transport',
             self::FOURNISSEUR_PRELEVEMENT => 'Ouverture d\'une mise en compte',
             self::FOURNISSEUR_PRELEVEMENT_ARRET => 'Arrêt d\'une mise en compte',
             self::RETRAIT_ACCORDE => 'Accord d\'un retrait d\'épargne',

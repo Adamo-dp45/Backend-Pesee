@@ -5,10 +5,16 @@ namespace App\Entity\Data;
 use ApiPlatform\Metadata\ApiResource;
 use ApiPlatform\Metadata\Get;
 use ApiPlatform\OpenApi\Model\Operation;
+use App\Entity\Output\APayerOutput;
+use App\Entity\Output\BilanCaissesOutput;
+use App\Entity\Output\BilanPaiementsOutput;
 use App\Entity\Output\CaisseOutput;
 use App\Entity\Output\ProductionOutput;
 use App\Entity\Output\ReferentielsOutput;
 use App\Entity\Output\TableauDeBordOutput;
+use App\State\Provider\APayerProvider;
+use App\State\Provider\BilanCaissesProvider;
+use App\State\Provider\BilanPaiementsProvider;
 use App\State\Provider\CaisseProvider;
 use App\State\Provider\ProductionProvider;
 use App\State\Provider\ReferentielsProvider;
@@ -28,7 +34,7 @@ use App\State\Provider\TableauDeBordProvider;
 */
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:Statistique'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:Statistique']],
     operations: [
         new Get(
             uriTemplate: '/stats/tableau-de-bord',
@@ -54,6 +60,22 @@ use App\State\Provider\TableauDeBordProvider;
                 description: 'Croisement site × produit sur une période. Alimente la page Bilan et ses exports'
             )
         ),
+        /*
+            - CE QUE LA FILE DU GUICHET PÈSE. Il répond à la même sélection que la liste de l'écran
+              « À payer », parce qu'il lit les MÊMES noms de filtres que la collection des pesées.
+        */
+        new Get(
+            uriTemplate: '/stats/a-payer',
+            security: "is_granted('PAYER', 'Paiement')",
+            input: false,
+            output: APayerOutput::class,
+            provider: APayerProvider::class,
+            openapi: new Operation(
+                security: [['bearerAuth' => []]],
+                summary: 'Totaux de la file à payer',
+                description: 'Reste à verser, déjà versé, en vol et nombre de pesées en attente, sur les filtres posés par le web'
+            )
+        ),
         new Get(
             uriTemplate: '/stats/caisse',
             security: "is_granted('VOIR', 'MouvementCaisse')",
@@ -64,6 +86,36 @@ use App\State\Provider\TableauDeBordProvider;
                 security: [['bearerAuth' => []]],
                 summary: 'État de la trésorerie',
                 description: 'Solde de l\'entreprise, caisse de chaque pont bascule, montant immobilisé par des versements en cours et demandes en attente'
+            )
+        ),
+        /*
+            - LES DEUX BILANS D'ARGENT. Ils répondent à deux questions distinctes : « qu'a-t-on
+              versé aux planteurs », et « qu'est-ce qui est entré et sorti des caisses ». Un
+              versement est une sortie de caisse, mais toutes les sorties ne sont pas des
+              versements — une dotation n'en est pas une.
+        */
+        new Get(
+            uriTemplate: '/stats/paiements',
+            security: "is_granted('VOIR', 'Paiement')",
+            input: false,
+            output: BilanPaiementsOutput::class,
+            provider: BilanPaiementsProvider::class,
+            openapi: new Operation(
+                security: [['bearerAuth' => []]],
+                summary: 'Bilan des versements',
+                description: 'Ce qui est sorti vers les planteurs sur une période : confirmé, en vol et remboursé, ventilés par mode de règlement et par pont bascule'
+            )
+        ),
+        new Get(
+            uriTemplate: '/stats/caisses',
+            security: "is_granted('VOIR', 'MouvementCaisse')",
+            input: false,
+            output: BilanCaissesOutput::class,
+            provider: BilanCaissesProvider::class,
+            openapi: new Operation(
+                security: [['bearerAuth' => []]],
+                summary: 'Bilan des caisses',
+                description: 'Entrées et sorties de chaque caisse sur une période, par cause et par pont bascule. Ce sont des FLUX : les soldes du jour se lisent sur /stats/caisse'
             )
         ),
         new Get(

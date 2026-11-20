@@ -23,7 +23,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
 #[ORM\Index(name: 'idx_lot_site_date', fields: ['site', 'createdAt'])]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:SynchronisationLot', 'read:Base'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:SynchronisationLot', 'read:Base']],
     paginationItemsPerPage: 50,
     paginationClientItemsPerPage: true,
     order: ['createdAt' => 'DESC'],

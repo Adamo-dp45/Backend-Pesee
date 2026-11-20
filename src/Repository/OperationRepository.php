@@ -3,6 +3,11 @@
 namespace App\Repository;
 
 use App\Domain\Enum\StatutOperation;
+use App\Domain\Enum\StatutPaiement;
+use App\Domain\Enum\StatutReglement;
+use App\Domain\Enum\PartPesee;
+use App\Entity\BaremeTransport;
+use App\Entity\CategorieFournisseur;
 use App\Entity\Fournisseur;
 use App\Entity\Operation;
 use App\Entity\Produit;
@@ -65,33 +70,65 @@ class OperationRepository extends ServiceEntityRepository
     }
 
     /*
-        - Les pesées qu'un changement de tarif sur le web doit revaloriser : celles d'un produit qu'on vient de tarifer, ou d'un planteur dont on vient de changer le transport.
+        - Les pesées qu'un changement de tarif sur le web doit revaloriser.
 
-        - DEUX GARDE-FOUS, et aucun n'est de confort. 'montantpaye = 0' écarte ce qui est déjà payé, même en partie : on ne réécrit pas le montant d'une pesée sur laquelle un planteur a touché de l'argent. 'retenue IS NULL' écarte ce qui est arbitré : une promesse a été écrite au planteur sur la base de ce montant.
+        - DEUX GARDE-FOUS, et aucun n'est de confort. Le déjà-payé écarte ce sur quoi un planteur a touché de l'argent : on ne réécrit pas un montant qui a servi à le payer. 'retenue IS NULL' écarte ce qui est arbitré : une promesse lui a été faite sur la base de ce montant, et 'figerLaRetenue()' ne se rejoue pas.
+
+        - LE GARDE-FOU PORTE SUR LA PART TOUCHÉE, et non sur le cumul. Tarifer un produit ne réécrit que la récolte : qu'un transport ait déjà été versé sur cette pesée ne regarde pas ce calcul-là. Avec le cumul, payer le transport d'une pesée non tarifée la retirait pour toujours de la revalorisation.
+
+        - C'EST L'APPELANT QUI DIT LA PART, et ce n'est plus déductible du type de la cause. Un 'Fournisseur' en touchait une seule, le transport ; il en touche aujourd'hui deux — son prix de transport, mais aussi la RÉCOLTE par son tarif propre et par sa catégorie. Déduire la part du type regarderait alors la mauvaise colonne, et écarterait des pesées qu'il fallait reprendre.
+
+        - Le '$produit' facultatif RESSERRE encore : un tarif de catégorie ne vise qu'un produit, et sans lui on revaloriserait toutes les pesées de tous ses planteurs, toutes cultures confondues. Des milliers de recalculs inutiles, chacun susceptible d'arbitrer une épargne.
 
         - Volontairement SANS filtre de site : un produit vaut la même chose sur tous les ponts bascules de l'entreprise, et un planteur n'appartient de toute façon qu'à un seul poste.
 
-        - La portée est étroite exprès : tarifer un produit ne touche que SES pesées. C'est désormais le SEUL chemin de retarification — 'findRecalculables()', qui balayait tout un poste quand un prix bougeait côté logiciel de pesée, est partie avec l'arbitrage des prix.
-
         @return list<Operation>
     */
-    public function findARevaloriser(Produit|Fournisseur $cause): array
+    public function findARevaloriser(
+        Produit|Fournisseur|CategorieFournisseur|BaremeTransport $cause,
+        PartPesee $part,
+        ?Produit $produit = null
+    ): array
     {
-        $produit = $cause instanceof Produit;
-
-        /*
-            - LE GARDE-FOU PORTE SUR LA PART QUE LA CAUSE TOUCHE, et non sur le cumul. Tarifer un
-              produit ne réécrit que la récolte : qu'un transport ait déjà été versé sur cette pesée
-              ne regarde pas ce calcul-là. Avec le cumul, payer le transport d'une pesée non tarifée
-              la retirait pour toujours de la revalorisation — et c'est le cas que cette
-              fonctionnalité rend courant.
-        */
         $qb = $this->createQueryBuilder('o')
             ->andWhere('o.deletedAt IS NULL')
-            ->andWhere($produit ? 'o.montantpayeproduit = 0' : 'o.montantpayetransport = 0')
-            ->andWhere('o.retenue IS NULL')
-            ->andWhere($produit ? 'o.produit = :cause' : 'o.fournisseur = :cause')
-            ->setParameter('cause', $cause);
+            ->andWhere(sprintf('o.%s = 0', $part->champPaye()))
+            ->andWhere('o.retenue IS NULL');
+
+        match(true) {
+            $cause instanceof Produit => $qb->andWhere('o.produit = :cause'),
+            $cause instanceof Fournisseur => $qb->andWhere('o.fournisseur = :cause'),
+            /*
+                - UN BARÈME TOUCHE CEUX QUI LE SUIVENT, et la sous-requête dit exactement la règle
+                  de résolution : son barème propre, OU sa catégorie quand il n'en a pas. Le
+                  'baremeTransport IS NULL' du second terme n'est pas décoratif — sans lui, on
+                  revaloriserait les pesées de planteurs qui ont leur propre barème et que ce
+                  changement ne concerne pas.
+            */
+            $cause instanceof BaremeTransport => $qb->andWhere(
+                'o.fournisseur IN ('
+                . 'SELECT fb.id FROM App\\Entity\\Fournisseur fb'
+                . ' LEFT JOIN fb.categorie cb'
+                . ' WHERE fb.deletedAt IS NULL'
+                . ' AND (fb.baremeTransport = :cause OR (fb.baremeTransport IS NULL AND cb.baremeTransport = :cause))'
+                . ')'
+            ),
+            /*
+                - Une catégorie ne touche aucune pesée directement : elle en touche par ses
+                  planteurs. La sous-requête les désigne sans charger la liste — elle peut compter
+                  des centaines de lignes, et on n'en ferait rien d'autre que les recoller dans un
+                  'IN'.
+            */
+            default => $qb->andWhere(
+                'o.fournisseur IN (SELECT f.id FROM App\\Entity\\Fournisseur f WHERE f.categorie = :cause AND f.deletedAt IS NULL)'
+            ),
+        };
+
+        $qb->setParameter('cause', $cause);
+
+        if($produit !== null) {
+            $qb->andWhere('o.produit = :produit')->setParameter('produit', $produit);
+        }
 
         return $qb->getQuery()->getResult();
     }
@@ -285,7 +322,9 @@ class OperationRepository extends ServiceEntityRepository
                 'COUNT(o.id) AS nbPesees'
             )
             ->groupBy('produit')
+            /* Départagé par le libellé : deux cultures au même tonnage changeaient d'ordre d'un appel à l'autre, et le graphique semblait bouger tout seul. */
             ->orderBy('tonnageNet', 'DESC')
+            ->addOrderBy('produit', 'ASC')
             ->getQuery()
             ->getArrayResult();
 
@@ -324,7 +363,9 @@ class OperationRepository extends ServiceEntityRepository
                 'COUNT(o.id) AS nbPesees'
             )
             ->groupBy('s.id', 's.libellesite')
+            /* Même raison : l'identifiant du poste départage deux tonnages égaux. */
             ->orderBy('tonnageNet', 'DESC')
+            ->addOrderBy('s.id', 'ASC')
             ->getQuery()
             ->getArrayResult();
 
@@ -400,7 +441,15 @@ class OperationRepository extends ServiceEntityRepository
 
         return $this->baseSites($siteIds)
             ->andWhere('o.peseeAt2 IS NOT NULL')
+            /*
+                - CELUI-CI COUPE : avec 'setMaxResults', deux pesées sorties à la même seconde — et
+                  elles le sont souvent, le poste horodate à la seconde — se départagent au hasard
+                  du plan d'exécution. L'une entre dans les dix dernières, l'autre disparaît, et ce
+                  n'est pas la même d'un rafraîchissement à l'autre. L'auto-incrément est
+                  chronologique et total : il tranche.
+            */
             ->orderBy('o.peseeAt2', 'DESC')
+            ->addOrderBy('o.id', 'DESC')
             ->setMaxResults($limit)
             ->getQuery()
             ->getResult();
@@ -491,6 +540,131 @@ class OperationRepository extends ServiceEntityRepository
         }
 
         if($au !== null) {
+            $qb->andWhere('o.peseeAt2 <= :au')->setParameter('au', $au);
+        }
+
+        return $qb;
+    }
+
+    /**
+     * CE QUE LA FILE DU GUICHET PÈSE, sur exactement les mêmes critères que la liste.
+     *
+     * Les quatre chiffres de l'écran « À payer ». Ils ne se recomposent PAS en additionnant les
+     * lignes affichées : une page est plafonnée à cent lignes et tronquée en silence, donc un total
+     * calculé côté web serait faux dès la cent-unième pesée, sans une erreur.
+     *
+     * LA RÈGLE DU RESTE EST ÉCRITE DEUX FOIS, ici en SQL et dans 'Operation::getResteapayerproduit()'.
+     * C'est assumé et c'est borné : les 'max(0, ...)' par part interdisent de sortir le clamp de la
+     * somme — 'SUM(max(0, a - b))' n'est pas 'max(0, SUM(a) - SUM(b))', et un trop-perçu sur une
+     * pesée éponderait la créance d'une autre. 'TotauxAPayerTest' tient les deux versions d'accord,
+     * cas limites compris : produit sans prix, retenue supérieure au dû, tarif baissé après un
+     * versement. Même dispositif que 'sommerLesVersementsEnVol()' et sa requête groupée.
+     *
+     * @param list<int> $siteIds
+     * @param array{fournisseur?: int|null, produit?: int|null, site?: int|null, numticket?: string|null, du?: \DateTimeImmutable|null, au?: \DateTimeImmutable|null} $criteres
+     *
+     * @return array{nbPesees: int, nbSansPrix: int, resteProduit: int, resteTransport: int, dejaVerse: int, enVol: int}
+     */
+    public function totauxAPayer(array $siteIds, array $criteres): array
+    {
+        $vide = ['nbPesees' => 0, 'nbSansPrix' => 0, 'resteProduit' => 0, 'resteTransport' => 0, 'dejaVerse' => 0, 'enVol' => 0];
+
+        if($siteIds === []) {
+            return $vide;
+        }
+
+        /*
+            - LE RESTE D'UNE PART, écrit comme un produit : le montant brut MULTIPLIÉ par un 'CASE'
+              qui ne rend que 0 ou 1. DQL n'accepte pas d'arithmétique dans la branche 'THEN' d'un
+              'CASE' — il lit le premier terme et bute sur le signe moins — mais il l'accepte dans
+              la CONDITION et autour du 'CASE'. Le drapeau porte donc le clamp, la soustraction
+              reste dehors.
+
+            - L'entité l'écrit en deux clamps successifs : 'max(0, dû - retenue)' pour le payable,
+              puis 'max(0, payable - payé)' pour le reste. La forme à plat est équivalente, et c'est
+              le montant payé qui le garantit — il n'est jamais négatif. Quand la retenue dépasse
+              le dû, le payable vaut zéro et le reste aussi ; la soustraction à plat tombe alors
+              sous zéro et le drapeau rend le même zéro. 'TotauxAPayerTest' tient le cas.
+        */
+        $brutProduit = 'COALESCE(o.montantdu, 0) - COALESCE(o.retenue, 0) - o.montantpayeproduit';
+        $resteProduit = sprintf(
+            '(%1$s) * CASE WHEN o.montantdu IS NULL OR o.montantdu <= 0 THEN 0 WHEN %1$s > 0 THEN 1 ELSE 0 END',
+            $brutProduit
+        );
+
+        $brutTransport = 'COALESCE(o.montanttransport, 0) - o.montantpayetransport';
+        $resteTransport = sprintf('(%1$s) * CASE WHEN %1$s > 0 THEN 1 ELSE 0 END', $brutTransport);
+
+        $ligne = $this->baseAPayer($siteIds, $criteres)
+            ->select(
+                'COUNT(o.id) AS nbPesees',
+                /* Le seul blocage qu'on sache compter exactement : un produit sans prix. Les autres motifs tiennent à une règle à branches que recopier en SQL ferait diverger. */
+                'COALESCE(SUM(CASE WHEN o.montantdu IS NULL OR o.montantdu <= 0 THEN 1 ELSE 0 END), 0) AS nbSansPrix',
+                sprintf('COALESCE(SUM(%s), 0) AS resteProduit', $resteProduit),
+                sprintf('COALESCE(SUM(%s), 0) AS resteTransport', $resteTransport),
+                'COALESCE(SUM(o.montantpaye), 0) AS dejaVerse'
+            )
+            ->getQuery()
+            ->getSingleResult();
+
+        /*
+            - L'EN-VOL SE LIT SUR LES VERSEMENTS, pas sur la pesée : c'est ce qui a quitté la caisse
+              sans réponse de la passerelle. Une jointure dans la requête ci-dessus multiplierait
+              chaque pesée par son nombre de versements et ferait compter plusieurs fois son reste.
+        */
+        $enVol = $this->baseAPayer($siteIds, $criteres)
+            ->innerJoin('o.paiements', 'p')
+            ->select('COALESCE(SUM(p.montant), 0)')
+            ->andWhere('p.statut IN (:enCours)')
+            ->setParameter('enCours', StatutPaiement::enCours())
+            ->getQuery()
+            ->getSingleScalarResult();
+
+        return [
+            'nbPesees' => (int) $ligne['nbPesees'],
+            'nbSansPrix' => (int) $ligne['nbSansPrix'],
+            'resteProduit' => (int) $ligne['resteProduit'],
+            'resteTransport' => (int) $ligne['resteTransport'],
+            'dejaVerse' => (int) $ligne['dejaVerse'],
+            'enVol' => (int) $enVol,
+        ];
+    }
+
+    /**
+     * La file du guichet : terminées, pas encore soldées, et les filtres de l'écran.
+     *
+     * Les deux premières bornes DÉFINISSENT l'écran et ne se décochent pas — une pesée soldée ou
+     * encore sur le pont n'a rien à régler. Les suivantes sont celles que l'utilisateur pose, et
+     * elles portent les mêmes noms que les filtres de la collection : c'est ce qui garantit que le
+     * total décrit la liste qu'on a sous les yeux.
+     *
+     * @param list<int> $siteIds
+     * @param array<string, mixed> $criteres
+     */
+    private function baseAPayer(array $siteIds, array $criteres): QueryBuilder
+    {
+        $qb = $this->baseSites($siteIds)
+            ->andWhere('o.statut = :terminee')
+            ->andWhere('o.statutReglement IN (:aRegler)')
+            ->setParameter('terminee', StatutOperation::TERMINEE)
+            ->setParameter('aRegler', [StatutReglement::NON_PAYE, StatutReglement::PARTIEL]);
+
+        foreach(['fournisseur' => 'fournisseur', 'produit' => 'produit', 'site' => 'site'] as $cle => $champ) {
+            if(($valeur = $criteres[$cle] ?? null) !== null) {
+                $qb->andWhere(sprintf('o.%1$s = :%1$s', $champ))->setParameter($champ, $valeur);
+            }
+        }
+
+        /* La recherche de l'écran porte sur le numéro de ticket, et de la même façon que l'API : un début de numéro suffit. */
+        if(($ticket = $criteres['numticket'] ?? null) !== null && trim((string) $ticket) !== '') {
+            $qb->andWhere('o.numticket LIKE :ticket')->setParameter('ticket', trim((string) $ticket) . '%');
+        }
+
+        if(($du = $criteres['du'] ?? null) !== null) {
+            $qb->andWhere('o.peseeAt2 >= :du')->setParameter('du', $du);
+        }
+
+        if(($au = $criteres['au'] ?? null) !== null) {
             $qb->andWhere('o.peseeAt2 <= :au')->setParameter('au', $au);
         }
 

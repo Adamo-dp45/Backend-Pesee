@@ -117,7 +117,17 @@ final class SynchronisationController extends AbstractController
         return $this->json(array_map(static fn($fournisseur) => [
             'fournisseur' => $fournisseur->getNom(),
             'codefournisseur' => $fournisseur->getCodefournisseur(),
-            'prixtransport' => $fournisseur->getPrixtransport(),
+            /*
+                - LA CLÉ RESTE, À NULL, et c'est volontaire. Le planteur n'a plus de prix au kilo —
+                  il a un barème, que le poste ne saurait pas lire — mais les logiciels de pesée
+                  déployés attendent ce champ. Le supprimer ferait disparaître une clé de la
+                  charge utile, et un client qui l'indexe sans précaution tombe sur une absence
+                  là où il attendait un nombre.
+
+                - Nul plutôt que zéro : zéro voudrait dire « transport gratuit », et c'est faux.
+                  Le transport se calcule ici, et le poste n'a pas à le connaître.
+            */
+            'prixtransport' => null,
             'contact' => $fournisseur->getContact1(),
         ], $fournisseurs->findPourLePoste($site)));
     }
@@ -227,7 +237,16 @@ final class SynchronisationController extends AbstractController
                 - Ce que le planteur touchera réellement, et les deux écarts qui l'expliquent : le transport qu'on lui ajoute, la retenue qu'on lui garde. Ajoutés sans rien changer à 'montant', qui reste ce que vaut la récolte — le logiciel du poste est un outil tiers, il n'imprimera ces clés que le jour où il saura les lire.
                 - Tant qu'il ne les imprime pas, le ticket annonce le montant de la récolte seule et c'est l'opérateur qui explique l'écart au guichet.
             */
+            /*
+                - 'prixtransport' N'EST PLUS QU'UN PRIX AU KILO, et il est nul sur deux modes de
+                  facturation sur trois : un forfait et une tranche n'ont pas de prix au kilo. La
+                  clé reste parce qu'un logiciel déployé la lit, mais c'est 'montanttransport' qui
+                  fait foi. Un poste qui recalculerait 'prixtransport x poidsnet' imprimerait 0 F
+                  de transport sur un montant bien réel — et ce zéro-là ressemble à tous les
+                  autres. 'modeTransport' dit lequel des trois a produit le montant.
+            */
             'prixtransport' => $operation->getPrixtransport(),
+            'modeTransport' => $operation->getModeTransport()?->value,
             'montanttransport' => $operation->getMontanttransport(),
             'retenue' => $operation->getRetenue(),
             'montantpayable' => $operation->getMontantpayable(),

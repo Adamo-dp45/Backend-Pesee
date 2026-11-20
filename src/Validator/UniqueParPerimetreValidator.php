@@ -6,7 +6,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Validator\Constraint;
 use Symfony\Component\Validator\ConstraintValidator;
 
-final class UniqueParSiteValidator extends ConstraintValidator
+final class UniqueParPerimetreValidator extends ConstraintValidator
 {
     public function __construct(
         private EntityManagerInterface $em
@@ -16,20 +16,27 @@ final class UniqueParSiteValidator extends ConstraintValidator
 
     public function validate(mixed $entity, Constraint $constraint): void
     {
-        if(!$constraint instanceof UniqueParSite || !is_object($entity) || !method_exists($entity, 'getSite')) {
+        if(!$constraint instanceof UniqueParPerimetre || !is_object($entity)) {
             return;
         }
 
-        $site = $entity->getSite();
+        $champ = $constraint->champDuPerimetre();
+        $getter = 'get' . ucfirst($champ);
 
-        if($site === null) {
-            return; // Le site est obligatoire par ailleurs : ce n'est pas à cette contrainte de le dire
+        if(!method_exists($entity, $getter)) {
+            return;
         }
 
-        $criteres = ['site' => $site];
+        $perimetre = $entity->$getter();
 
-        foreach($constraint->fields as $champ) {
-            $getter = 'get' . ucfirst($champ);
+        if($perimetre === null) {
+            return; // Le périmètre est obligatoire par ailleurs : ce n'est pas à cette contrainte de le dire
+        }
+
+        $criteres = [$champ => $perimetre];
+
+        foreach($constraint->fields as $champDuDoublon) {
+            $getter = 'get' . ucfirst($champDuDoublon);
 
             if(!method_exists($entity, $getter)) {
                 return;
@@ -41,7 +48,7 @@ final class UniqueParSiteValidator extends ConstraintValidator
                 return; // Champ vide : rien à comparer
             }
 
-            $criteres[$champ] = $valeur;
+            $criteres[$champDuDoublon] = $valeur;
         }
 
         /*

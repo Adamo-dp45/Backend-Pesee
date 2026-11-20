@@ -50,7 +50,7 @@ use Symfony\Component\Validator\Constraints as Assert;
 #[UniqueEntity(fields: ['email'], message: 'Un compte existe déjà avec cette adresse e-mail')]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:User', 'read:Base'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:User', 'read:Base']],
     denormalizationContext: ['groups' => ['write:User']],
     paginationItemsPerPage: 25,
     paginationClientItemsPerPage: true,
@@ -74,7 +74,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         new GetCollection(
             security: "is_granted('VOIR', 'User')",
             // 'gestion' : ce que le compte connecté peut faire sur chaque ligne, croisé par le provider
-            normalizationContext: ['groups' => ['read:User', 'read:Base', 'read:User:gestion'], 'skip_null_values' => false],
+            normalizationContext: ['groups' => ['read:User', 'read:Base', 'read:User:gestion']],
             provider: GestionCompteProvider::class,
             openapi: new Operation(
                 summary: 'Liste des utilisateurs',
@@ -85,7 +85,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         new Get(
             security: "is_granted('VOIR', object)",
             requirements: ['id' => '\d+'],
-            normalizationContext: ['groups' => ['read:User', 'read:Base', 'read:User:gestion'], 'skip_null_values' => false],
+            normalizationContext: ['groups' => ['read:User', 'read:Base', 'read:User:gestion']],
             provider: GestionCompteProvider::class,
             openapi: new Operation(
                 summary: 'L\'utilisateur',
@@ -145,7 +145,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             security: "is_granted('ROLE_USER')",
             provider: MeProvider::class,
             // Le seul endroit qui publie 'droits' : c'est le compte connecté qui les demande pour lui-même
-            normalizationContext: ['groups' => ['read:User', 'read:Base', 'read:User:me'], 'skip_null_values' => false],
+            normalizationContext: ['groups' => ['read:User', 'read:Base', 'read:User:me']],
             openapi: new Operation(
                 summary: 'Mon compte',
                 description: 'Permet de voir le compte connecté, son rôle et son entreprise',
@@ -235,7 +235,8 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface, Entrepr
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde', 'read:DemandeRetrait'])]
+    /* 'read:Paiement' : l'auteur d'un versement se sérialisait AVEC SON LIEN ET RIEN D'AUTRE — un objet qui a l'air rempli et ne porte aucun nom. */
+    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde', 'read:DemandeRetrait', 'read:Paiement'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 180)]
@@ -485,7 +486,7 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface, Entrepr
         return $this;
     }
 
-    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:DemandeRetrait'])]
+    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:DemandeRetrait', 'read:Paiement'])]
     public function getNomComplet(): string
     {
         return trim(($this->prenom ?? '') . ' ' . ($this->nom ?? ''));

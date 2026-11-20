@@ -77,7 +77,7 @@ class ApprouverPrelevementProcessor implements ProcessorInterface
               prix qui compte est celui du jour où l'on ouvre le robinet, pas celui du jour où on l'a
               demandé.
         */
-        if(($motif = TauxPrelevement::motifDuRefus($produit, $taux)) !== null) {
+        if(($motif = TauxPrelevement::motifDuRefus($planteur, $produit, $taux)) !== null) {
             throw new UnprocessableEntityHttpException($motif);
         }
 

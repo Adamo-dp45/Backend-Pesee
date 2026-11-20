@@ -53,7 +53,7 @@ use Symfony\Component\Validator\Constraints as Assert;
 #[ORM\Index(name: 'idx_demande_prelevement_statut', fields: ['fournisseur', 'produit', 'statut'])]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:DemandePrelevement', 'read:Base'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:DemandePrelevement', 'read:Base']],
     denormalizationContext: ['groups' => ['write:DemandePrelevement']],
     paginationItemsPerPage: 25,
     paginationClientItemsPerPage: true,

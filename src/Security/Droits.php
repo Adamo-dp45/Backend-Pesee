@@ -67,7 +67,20 @@ final class Droits
             'User' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER, self::BLOQUER, self::PROMOUVOIR],
             'Site' => [self::VOIR, self::MODIFIER, self::BLOQUER, self::ATTRIBUER],
             'Produit' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER],
-            'Fournisseur' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER, self::PRELEVER], // Lui seul ouvre et arrête une mise en compte
+            'Fournisseur' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER, self::PRELEVER], // Lui seul ouvre et arrête une mise en compte, et pose un tarif propre
+            /*
+                - CRÉER ET TARIFER une catégorie est à lui seul : sa grille vaut pour tous ses planteurs,
+                  sur tous les postes, et chaque case revalorise des pesées.
+                - CLASSER un planteur, en revanche, suit le droit de modifier sa fiche — l'opérateur
+                  l'a, comme il a déjà le prix du transport et même le prix d'un produit. Lui refuser
+                  le classement serait le seul prix qu'on lui interdirait, sans raison.
+            */
+            'CategorieFournisseur' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER],
+            /*
+                - Un barème décide de ce qu'un trajet rapporte, pour tous ceux qui le suivent à la
+                  fois. Même nature qu'un prix, mêmes mains.
+            */
+            'BaremeTransport' => [self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER],
             'Operation' => [self::VOIR],
             'Paiement' => [self::VOIR, self::PAYER],
             'MouvementCaisse' => [self::VOIR],
@@ -84,6 +97,8 @@ final class Droits
             'Site' => [self::VOIR],
             'Produit' => [self::VOIR],
             'Fournisseur' => [self::VOIR],
+            'CategorieFournisseur' => [self::VOIR], // Il supervise des montants : il doit pouvoir lire d'où ils sortent
+            'BaremeTransport' => [self::VOIR],
             'Operation' => [self::VOIR],
             'Paiement' => [self::VOIR],
             'MouvementCaisse' => [self::VOIR],
@@ -96,8 +111,29 @@ final class Droits
         ],
         Role::OPERATEUR->value => [
             'Site' => [self::VOIR],
-            'Produit' => [self::VOIR, self::MODIFIER],                  // Il tarifie
-            'Fournisseur' => [self::VOIR, self::CREER, self::MODIFIER], // Il fixe les prix spéciaux
+            /*
+                - EN LECTURE SEULE SUR LES DEUX RÉFÉRENTIELS. Il les voyait et les écrivait : il
+                  tarifait un produit, créait un planteur et corrigeait sa fiche. Le référentiel
+                  appartient désormais à l'ENTREPRISE, pas au poste — un prix saisi à une barrière
+                  vaut à toutes les autres, et une fiche corrigée l'est pour tout le monde.
+
+                - CE QUE ÇA CHANGE AU GUICHET, et il faut le savoir : un planteur qui se présente
+                  pour la première fois ne se crée plus depuis le web par l'opérateur, et un numéro
+                  de téléphone faux ne se corrige plus par lui. Le poste, lui, continue de créer
+                  produits et planteurs en synchronisant : il porte 'ROLE_SITE', qui n'est pas dans
+                  cette table et ne passe pas par le voter.
+            */
+            'Produit' => [self::VOIR],
+            'Fournisseur' => [self::VOIR],
+            /*
+                - EN LECTURE, et cette lecture n'est pas optionnelle : la classe d'un planteur
+                  décide de ce qu'il touche au kilo, et c'est l'opérateur qui a le planteur devant
+                  lui quand celui-ci conteste un montant. Sans le droit, la fiche afficherait un
+                  prix sans jamais pouvoir dire d'où il vient.
+            */
+            'CategorieFournisseur' => [self::VOIR],
+            /* Même raison : le barème décide de ce que son trajet rapporte. */
+            'BaremeTransport' => [self::VOIR],
             'Operation' => [self::VOIR],
             'Paiement' => [self::VOIR, self::PAYER],
             'MouvementCaisse' => [self::VOIR],

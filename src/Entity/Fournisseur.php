@@ -18,16 +18,25 @@ use ApiPlatform\OpenApi\Model\Operation;
 use App\Domain\Enum\ReseauMobile;
 use App\Domain\Enum\StatutActivation;
 use App\Domain\Support\Cle;
+use App\Domain\Support\TransportApplicable;
+use App\Domain\Enum\OrigineTransport;
 use App\Domain\Support\NumeroMobile;
+use App\Entity\Dto\TarifLotInput;
+use App\Entity\Dto\TarifLotOutput;
 use App\Entity\Interface\SiteOwnedInterface;
+use App\Entity\Output\TarifsApplicablesOutput;
+use App\Filter\AvecTarifPropreFilter;
+use App\Filter\SansTransportFilter;
 use App\Entity\Operation as Pesee; // Aliasé : 'Operation' désigne déjà celle d'OpenAPI dans ce fichier
 use App\Repository\FournisseurRepository;
 use App\State\Provider\CompteurPeseesProvider;
+use App\State\Provider\TarifsApplicablesProvider;
 use App\Entity\Input\PrelevementInput;
 use App\State\Processor\BasculerPrelevementProcessor;
 use App\State\Processor\AuditProcessor;
 use App\State\Processor\TarificationProcessor;
 use App\State\Processor\SuppressionLogiqueProcessor;
+use App\State\Processor\TarifLotProcessor;
 use App\Validator\NumeroMobileValide;
 use App\Validator\UniqueParSite;
 use Doctrine\Common\Collections\ArrayCollection;
@@ -35,7 +44,9 @@ use Doctrine\Common\Collections\Collection;
 use Doctrine\Common\Collections\Criteria;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
+use Symfony\Component\Serializer\Attribute\SerializedName;
 use Symfony\Component\Validator\Constraints as Assert;
+use Symfony\Component\Validator\Context\ExecutionContextInterface;
 
 /*
     - Le planteur. Le patron emploie indifféremment « planteur » et « fournisseur » ; on garde « fournisseur » côté code puisque c'est le vocabulaire du logiciel de pesée et de sa charge utile.
@@ -54,7 +65,7 @@ use Symfony\Component\Validator\Constraints as Assert;
 )]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:Fournisseur', 'read:Base'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:Fournisseur', 'read:Base']],
     denormalizationContext: ['groups' => ['write:Fournisseur']],
     paginationItemsPerPage: 25,
     paginationClientItemsPerPage: true,
@@ -69,6 +80,28 @@ use Symfony\Component\Validator\Constraints as Assert;
                 security: [['bearerAuth' => []]]
             )
         ),
+        /*
+            - LA LISTE DES PLANTEURS TARIFÉS À PART, avec leurs tarifs. Une opération à elle seule,
+              et non un champ de plus sur la collection ordinaire : la grille d'un planteur se lit
+              à travers une relation, donc la publier partout ferait une requête par ligne sur
+              CHAQUE liste de planteurs — listes déroulantes de filtres comprises, qui les chargent
+              tous.
+
+            - Elle se lit avec 'avecTarifPropre=true', qui écarte aussi les tarifs RETIRÉS. Sans le
+              filtre, l'opération rendrait tous les planteurs et retomberait dans le défaut qu'elle
+              existe pour éviter.
+        */
+        new GetCollection(
+            uriTemplate: '/fournisseurs/tarifes',
+            security: "is_granted('VOIR', 'Fournisseur')",
+            normalizationContext: ['groups' => ['read:Fournisseur', 'read:Fournisseur:tarifs', 'read:Base']],
+            provider: CompteurPeseesProvider::class,
+            openapi: new Operation(
+                summary: 'Les planteurs et leurs tarifs propres',
+                description: 'La même liste que /fournisseurs, enrichie de la grille propre de chaque planteur. À lire avec avecTarifPropre=true',
+                security: [['bearerAuth' => []]]
+            )
+        ),
         new Get( /*
             - La fiche embarque les prélèvements, que la LISTE n'a pas : une collection sérialisée sur
               chaque ligne tirerait une requête par planteur. C'est le même raisonnement que pour le
@@ -76,7 +109,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         */
             security: "is_granted('VOIR', object)",
             requirements: ['id' => '\d+'],
-            normalizationContext: ['groups' => ['read:Fournisseur', 'read:Fournisseur:item', 'read:Base'], 'skip_null_values' => false],
+            normalizationContext: ['groups' => ['read:Fournisseur', 'read:Fournisseur:item', 'read:Base']],
             openapi: new Operation(
                 summary: 'Le planteur',
                 description: 'Permet de voir un planteur, son numéro mobile money, son prix de transport et ses mises en compte',
@@ -118,6 +151,63 @@ use Symfony\Component\Validator\Constraints as Assert;
                 security: [['bearerAuth' => []]]
             )
         ),
+        /*
+            - CE QU'IL TOUCHE SUR CHAQUE PRODUIT, et lequel des trois sauts a répondu. Une lecture,
+              posée à côté de l'écriture qui la suit : on regarde la grille, puis on la corrige.
+
+            - Elle existe parce que la fiche du planteur ne porte QUE ses tarifs propres : la
+              grille de sa catégorie n'y est pas, et sans elle aucun écran ne peut dire ce qu'il
+              touche réellement. On l'a appris en laissant une liste déroulante annoncer le prix
+              du produit comme borne du taux de mise en compte — faux dès qu'une catégorie paie
+              autrement, et l'API acceptait pourtant davantage.
+        */
+        new Get(
+            uriTemplate: '/fournisseurs/{id}/tarifs',
+            /*
+                - SUR LA CLASSE, pas sur l'objet : avec 'read: false' il n'y a pas d'objet à juger,
+                  et la règle tombait en 403 pour tout le monde. Le périmètre se vérifie dans le
+                  provider, qui charge le planteur lui-même.
+            */
+            security: "is_granted('VOIR', 'Fournisseur')",
+            requirements: ['id' => '\\d+'],
+            output: TarifsApplicablesOutput::class,
+            /* Surtout PAS de 'read: false' ici : il court-circuite le provider, et la réponse sort à 'null' */
+            normalizationContext: ['groups' => ['read:TarifsApplicables']],
+            provider: TarifsApplicablesProvider::class,
+            openapi: new Operation(
+                summary: 'La grille applicable a un planteur',
+                description: 'Un produit par ligne, le prix qu\'il touche et d\'ou il vient',
+                security: [['bearerAuth' => []]]
+            )
+        ),
+        /*
+            - SES TARIFS PROPRES, saisis d'un bloc comme ceux d'une catégorie, et par le même
+              chemin : les deux portent exactement la même chose, un prix par produit. Deux
+              mécanismes auraient fini par diverger sur ce qui compte le plus, la revalorisation.
+
+            - SANS 'confirmer', RIEN N'EST ÉCRIT : la réponse dit ce qui changerait et combien de
+              pesées seraient touchées. La portée est plus étroite que pour une catégorie — un seul
+              planteur — mais l'arbitrage d'épargne y est tout aussi irréversible.
+
+            - À l'administrateur seul, comme la mise en compte : décider qu'un planteur sera payé
+              autrement que ses voisins n'est pas du même ordre que corriger son numéro.
+        */
+        new Post(
+            uriTemplate: '/fournisseurs/{id}/tarifs',
+            security: "is_granted('PRELEVER', 'Fournisseur')",
+            requirements: ['id' => '\\d+'],
+            input: TarifLotInput::class,
+            output: TarifLotOutput::class,
+            read: false,
+            normalizationContext: ['groups' => ['read:TarifLot']],
+            denormalizationContext: ['groups' => ['write:TarifLot']],
+            processor: TarifLotProcessor::class,
+            openapi: new Operation(
+                summary: 'Saisie groupée des tarifs propres d\'un planteur',
+                description: 'Sans « confirmer », rend le bilan et le nombre de pesées concernées sans rien écrire',
+                security: [['bearerAuth' => []]]
+            )
+        ),
         new Patch( // Verbe dédié, jamais DELETE : les pesées et les paiements référencent ce planteur
             uriTemplate: '/fournisseurs/{id}/suppression',
             security: "is_granted('SUPPRIMER', object)",
@@ -152,7 +242,16 @@ use Symfony\Component\Validator\Constraints as Assert;
     filter: new FreeTextQueryFilter(new OrFilter(new PartialSearchFilter())),
     properties: ['nom', 'prenom', 'codefournisseur'],
 )]
-#[ApiFilter(OrderFilter::class, properties: ['codefournisseur', 'nom', 'prixtransport', 'createdAt'])]
+#[ApiFilter(SearchFilter::class, properties: ['categorie' => 'exact'])]
+/*
+    - « QUI NE TOUCHE AUCUN TRANSPORT ? », la question que 'baremeTransport IS NULL' ne sait pas
+      poser : elle rendrait aussi les planteurs d'une catégorie qui en porte un. Le filtre suit
+      la règle de résolution entière — voir 'SansTransportFilter'.
+*/
+#[ApiFilter(SansTransportFilter::class)]
+#[ApiFilter(AvecTarifPropreFilter::class)]
+#[ApiFilter(OrderFilter::class, properties: ['codefournisseur', 'nom', 'distanceKm', 'createdAt'])]
+#[Assert\Callback('verifierSonTransport')]
 class Fournisseur extends EntityBase implements SiteOwnedInterface
 {
     #[ORM\Id]
@@ -205,16 +304,40 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
     private ?ReseauMobile $reseau = null;
 
     /*
-        - Le prix du transport, en francs PAR KILO. Certains planteurs amènent eux-mêmes leur récolte au pont bascule : on leur paie le transport EN PLUS de ce que vaut la récolte. 'null' veut dire qu'on ne paie pas de transport à ce planteur, et c'est le cas de la plupart d'entre eux.
+        - SON BARÈME DE TRANSPORT, s'il s'en fait payer un. Certains planteurs amènent eux-mêmes
+          leur récolte : le trajet leur est payé EN PLUS de ce qu'elle vaut. 'null' veut dire qu'on
+          ne leur paie pas de transport, et c'est le cas de la plupart d'entre eux.
 
-        - Ce n'est pas un prix de remplacement : la récolte garde sa valeur, le transport s'ajoute par-dessus. Voir 'Operation::calculerMontant()', où les deux restent deux nombres distincts jusqu'au bout.
+        - IL REMPLACE UN PRIX AU KILO écrit sur cette fiche. Ce prix était juste pour qui livre dix
+          tonnes et absurde pour qui en apporte deux cents kilos du même village — le camion a fait
+          la même route. Et il ne se partageait pas : vingt planteurs du même village donnaient
+          vingt saisies à tenir d'accord à la main.
 
-        - Même propriété que 'Produit::prix' : il se saisit sur le web, et nulle part ailleurs. Un 'prixtransport' reçu d'un poste est ignoré.
+        - Ce n'est pas un prix de remplacement : la récolte garde sa valeur, le transport s'ajoute
+          par-dessus. Voir 'Operation::calculerMontant()', où les deux restent deux nombres
+          distincts jusqu'au bout.
+
+        - 'SET NULL' à la purge du barème : le planteur perd son transport, ce qui se voit au
+          guichet. L'emporter avec serait une catastrophe muette.
+    */
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(nullable: true, onDelete: 'SET NULL')]
+    #[Groups(['read:Fournisseur', 'write:Fournisseur', 'read:Fournisseur:item'])]
+    private ?BaremeTransport $baremeTransport = null;
+
+    /*
+        - LA DISTANCE DE SON TRAJET, en kilomètres. Elle ne sert qu'aux barèmes par TRANCHES, et
+          elle leur est indispensable : sans elle, aucune tranche ne contient quoi que ce soit.
+
+        - Nullable, et elle le restera : le poste crée les planteurs avec un libellé et rien
+          d'autre. C'est pour ça que rattacher un barème par tranches à un planteur sans distance
+          est refusé — sinon son transport vaudrait zéro, se figerait, et personne n'aurait vu
+          passer l'information.
     */
     #[ORM\Column(nullable: true)]
-    #[Assert\PositiveOrZero(message: 'Le prix du transport ne peut pas être négatif')]
-    #[Groups(['read:Fournisseur', 'write:Fournisseur'])]
-    private ?int $prixtransport = null;
+    #[Assert\PositiveOrZero(message: 'La distance ne peut pas être négative')]
+    #[Groups(['read:Fournisseur', 'write:Fournisseur', 'read:Fournisseur:item'])]
+    private ?int $distanceKm = null;
 
     /*
         - Les mises en compte du planteur, UNE PAR PRODUIT : à chaque pesée, le taux du produit pesé décide de la part qui va sur son épargne au lieu de lui être remise au guichet. La grande majorité des planteurs n'en a aucune.
@@ -230,6 +353,35 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
     #[ORM\OrderBy(['arreteAt' => 'ASC', 'id' => 'DESC'])]
     #[Groups(['read:Fournisseur:item'])]
     private Collection $prelevements;
+
+    /*
+        - SA CATÉGORIE, si on lui en a donné une. Facultative, et elle le restera : la quasi-totalité
+          des planteurs n'en a pas besoin, et les forcer dans une catégorie « ordinaire » n'apporterait
+          qu'une ligne de plus à tenir.
+
+        - Sérialisée sur la liste ET sur la fiche : c'est une colonne de tri mental pour qui cherche
+          « qui est en catégorie A ? », et la première chose qu'on vérifie quand un montant surprend.
+
+        - 'SET NULL' à la suppression définitive : perdre sa catégorie rend le planteur au prix du
+          produit, ce qui est une conséquence visible. Le supprimer avec elle serait une catastrophe
+          silencieuse — ses pesées, son épargne et ses versements pendent de lui.
+    */
+    #[ORM\ManyToOne(inversedBy: 'fournisseurs')]
+    #[ORM\JoinColumn(nullable: true, onDelete: 'SET NULL')]
+    #[Groups(['read:Fournisseur', 'write:Fournisseur', 'read:Fournisseur:item'])]
+    private ?CategorieFournisseur $categorie = null;
+
+    /*
+        - SES TARIFS PROPRES, qui l'emportent sur ceux de sa catégorie. L'exception, pas la règle :
+          trente tarifs identiques saisis planteur par planteur sont une catégorie qui manquait.
+
+        - Sur la FICHE seulement, comme les prélèvements : une collection par ligne de liste ferait
+          une requête par ligne.
+    */
+    /** @var Collection<int, TarifFournisseur> */
+    #[ORM\OneToMany(mappedBy: 'fournisseur', targetEntity: TarifFournisseur::class, cascade: ['persist'])]
+    #[ORM\OrderBy(['id' => 'ASC'])]
+    private Collection $tarifs;
 
     /* Jamais sérialisé : c'est le solde qui est publié, pas le compte. Nul tant que rien n'a été prélevé. */
     #[ORM\OneToOne(mappedBy: 'fournisseur', targetEntity: CompteEpargne::class)]
@@ -252,6 +404,7 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
     {
         $this->pesees = new ArrayCollection();
         $this->prelevements = new ArrayCollection();
+        $this->tarifs = new ArrayCollection();
     }
 
     /*
@@ -387,14 +540,80 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
         return $this;
     }
 
-    public function getPrixtransport(): ?int
+    public function getBaremeTransport(): ?BaremeTransport
     {
-        return $this->prixtransport;
+        return $this->baremeTransport;
     }
 
-    public function setPrixtransport(?int $prixtransport): static
+    public function setBaremeTransport(?BaremeTransport $baremeTransport): static
     {
-        $this->prixtransport = $prixtransport;
+        $this->baremeTransport = $baremeTransport;
+
+        return $this;
+    }
+
+    /*
+        - UN BARÈME PAR TRANCHES SANS DISTANCE NE PEUT RIEN DONNER, et le refus tombe ICI, au
+          moment où on les met ensemble. Sans lui, le rattachement passe, la pesée suivante fige
+          un transport à zéro, et ce zéro s'arbitre — personne n'aura vu passer l'information.
+
+        - Le refus ne couvre QUE le barème propre du planteur. Celui de sa catégorie peut devenir
+          « par tranches » après coup, sans que personne ne touche à sa fiche : ce cas-là se dit
+          sur la pesée, par 'getMotifTransportIncalculable()'. Les deux se complètent.
+    */
+    public function verifierSonTransport(ExecutionContextInterface $contexte): void
+    {
+        if($this->baremeTransport?->getMode()?->exigeUneDistance() === true && $this->distanceKm === null) {
+            $contexte->buildViolation(
+                'Le barème « %bareme% » se calcule par tranches de kilomètres : renseignez la distance de ce planteur, sinon son transport resterait à zéro.'
+            )
+                ->setParameter('%bareme%', (string) $this->baremeTransport)
+                ->atPath('distanceKm')
+                ->addViolation();
+        }
+    }
+
+    /*
+        - CE QUE CE PLANTEUR TOUCHE VRAIMENT, en une phrase, barème de sa catégorie compris. Sans
+          elle, la liste affichait « Aucun » pour un planteur parfaitement réglé par sa catégorie —
+          la colonne mentait sur le seul cas qu'elle existe pour signaler.
+
+        - L'origine est DITE, pas seulement appliquée : « par sa catégorie » prévient que corriger
+          ce transport-là se fait ailleurs, et touchera tous les autres planteurs du groupe.
+    */
+    #[Groups(['read:Fournisseur', 'read:Fournisseur:item'])]
+    public function getTransportApplique(): ?string
+    {
+        $transport = TransportApplicable::pour($this);
+
+        if($transport->bareme === null) {
+            return null;
+        }
+
+        return $transport->origine === OrigineTransport::CATEGORIE
+            ? sprintf('%s (par sa catégorie)', (string) $transport->bareme)
+            : (string) $transport->bareme;
+    }
+
+    /*
+        - LE SEUL BARÈME QUI NE PAIE RIEN : par tranches, sur un planteur sans distance. Sa propre
+          fiche refuse déjà ce couple ('verifierSonTransport'), mais la catégorie peut passer aux
+          tranches après coup sans que personne ne rouvre la fiche — et alors plus rien ne le dit.
+    */
+    #[Groups(['read:Fournisseur', 'read:Fournisseur:item'])]
+    public function getMotifTransportIndisponible(): ?string
+    {
+        return TransportApplicable::pour($this)->motifIndisponible();
+    }
+
+    public function getDistanceKm(): ?int
+    {
+        return $this->distanceKm;
+    }
+
+    public function setDistanceKm(?int $distanceKm): static
+    {
+        $this->distanceKm = $distanceKm;
 
         return $this;
     }
@@ -501,6 +720,80 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
         }
 
         return $this;
+    }
+
+    public function getCategorie(): ?CategorieFournisseur
+    {
+        return $this->categorie;
+    }
+
+    public function setCategorie(?CategorieFournisseur $categorie): static
+    {
+        $this->categorie = $categorie;
+
+        return $this;
+    }
+
+    /** @return Collection<int, TarifFournisseur> */
+    public function getTarifs(): Collection
+    {
+        return $this->tarifs;
+    }
+
+    /**
+     * SES TARIFS EN VIGUEUR, et c'est la seule forme qu'on publie.
+     *
+     * La collection brute porte aussi les lignes RETIRÉES : une ligne supprimée reste en base, et
+     * c'est voulu — savoir qui a retiré le tarif hévéa de ce planteur, et quand, est exactement la
+     * question qu'on posera le jour où il verra sa paie baisser. Mais elle ne s'applique plus :
+     * 'tarifPour()' l'écarte, comme toute la valorisation.
+     *
+     * Même piège que sur 'CategorieFournisseur', et il s'est déjà montré là-bas : publier la
+     * collection entière faisait afficher un prix que PERSONNE ne touche, sans une erreur.
+     *
+     * @return list<TarifFournisseur>
+     */
+    #[Groups(['read:Fournisseur:item', 'read:Fournisseur:tarifs'])]
+    #[SerializedName('tarifs')]
+    public function getTarifsVivants(): array
+    {
+        return array_values(array_filter(
+            $this->tarifs->toArray(),
+            static fn(TarifFournisseur $tarif): bool => $tarif->getDeletedAt() === null
+        ));
+    }
+
+    public function addTarif(TarifFournisseur $tarif): static
+    {
+        if(!$this->tarifs->contains($tarif)) {
+            $this->tarifs->add($tarif);
+            $tarif->setFournisseur($this);
+        }
+
+        return $this;
+    }
+
+    public function removeTarif(TarifFournisseur $tarif): static
+    {
+        $this->tarifs->removeElement($tarif);
+
+        return $this;
+    }
+
+    /*
+        - Son tarif propre SUR CE PRODUIT, ou null. Même parcours en mémoire que
+          'prelevementPour()', et pour la même raison : la valorisation traite des lots, et le
+          même planteur y revient autant de fois qu'il a livré.
+    */
+    public function tarifPour(?Produit $produit): ?TarifFournisseur
+    {
+        foreach($this->tarifs as $tarif) {
+            if($tarif->getDeletedAt() === null && $tarif->vise($produit)) {
+                return $tarif;
+            }
+        }
+
+        return null;
     }
 
     /*

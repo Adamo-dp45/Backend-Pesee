@@ -57,7 +57,7 @@ use Symfony\Component\Validator\Constraints as Assert;
 #[UniqueEntity(fields: ['code'], message: 'Ce code de pont bascule est déjà utilisé')]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:Site', 'read:Base'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:Site', 'read:Base']],
     denormalizationContext: ['groups' => ['write:Site']],
     paginationItemsPerPage: 25,
     paginationClientItemsPerPage: true,
@@ -83,7 +83,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         ),
         new Post( // Groupe de lecture élargi : la réponse porte les identifiants du poste, une seule fois
             security: "is_granted('CREER', 'Site')",
-            normalizationContext: ['groups' => ['read:Site', 'read:Site:machine', 'read:Base'], 'skip_null_values' => false],
+            normalizationContext: ['groups' => ['read:Site', 'read:Site:machine', 'read:Base']],
             processor: SiteProcessor::class,
             openapi: new Operation(
                 summary: 'Mise en service d\'un pont bascule',
@@ -146,7 +146,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             security: "is_granted('CREER', 'Site')",
             requirements: ['id' => '\d+'],
             input: false,
-            normalizationContext: ['groups' => ['read:Site', 'read:Site:machine', 'read:Base'], 'skip_null_values' => false],
+            normalizationContext: ['groups' => ['read:Site', 'read:Site:machine', 'read:Base']],
             processor: RegenererIdentifiantsProcessor::class,
             openapi: new Operation(
                 summary: 'Renouvellement des identifiants du poste',
@@ -184,19 +184,19 @@ class Site extends EntityBase implements EntrepriseOwnedInterface, CompteInterfa
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    #[Groups(['read:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement', 'read:DemandeRetrait'])]
+    #[Groups(['read:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement', 'read:DemandeRetrait'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 50)]
     #[Assert\NotBlank(message: 'Le code du pont bascule est obligatoire')]
     #[Assert\Length(min: 2, max: 50)]
-    #[Groups(['read:Site', 'write:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement', 'read:DemandeRetrait'])]
+    #[Groups(['read:Site', 'write:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement', 'read:DemandeRetrait'])]
     private ?string $code = null; // Modifiable à la création seulement : c'est la clé de rapprochement avec le poste
 
     #[ORM\Column(length: 255)]
     #[Assert\NotBlank(message: 'Le libellé du pont bascule est obligatoire')]
     #[Assert\Length(min: 2, max: 255)]
-    #[Groups(['read:Site', 'write:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Produit', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement', 'read:DemandeRetrait'])]
+    #[Groups(['read:Site', 'write:Site', 'read:MouvementCaisse', 'read:Operation', 'read:SynchronisationLot', 'read:Fournisseur', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:Paiement', 'read:DemandeRetrait'])]
     private ?string $libellesite = null;
 
     #[ORM\Column(length: 255, nullable: true)]

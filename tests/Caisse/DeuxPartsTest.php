@@ -282,7 +282,8 @@ final class DeuxPartsTest extends InvariantTestCase
         }
 
         $planteur = $this->creerPlanteur($this->site, 'Kouassi');
-        $planteur->setPrixtransport(self::TRANSPORT);
+        /* Un barème au kilo : même formule qu'avant, donc mêmes montants attendus. */
+        $planteur->setBaremeTransport($this->creerBaremeAuKilo($this->entreprise, self::TRANSPORT));
         $this->em->flush();
 
         return $this->creerPesee($this->site, $produit ?? $this->produit, $planteur, self::POIDS);

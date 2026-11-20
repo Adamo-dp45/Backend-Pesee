@@ -36,7 +36,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
 #[ORM\Index(name: 'idx_mouvement_type', fields: ['type'])]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:MouvementCaisse', 'read:Base'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:MouvementCaisse', 'read:Base']],
     paginationItemsPerPage: 50,
     paginationClientItemsPerPage: true,
     order: ['createdAt' => 'DESC'],

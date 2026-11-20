@@ -101,7 +101,7 @@ class SynchronisationService
         }
 
         /* 2. Préchargement par lot : un envoi de deux cents pesées ne doit pas produire quatre cents lectures. */
-        $produits = $this->produitRepository->parCle($site);
+        $produits = $this->produitRepository->parCle($site->getEntreprise());
         $fournisseurs = $this->fournisseurRepository->parCles($site, $this->clesFournisseurs($lignes));
         $existantes = $this->operationRepository->parCodesecret(array_column($lignes, 'codesecret'));
 
@@ -290,7 +290,8 @@ class SynchronisationService
         $produit = $produits[$cle] ?? null;
 
         if($produit === null) {
-            $produit = (new Produit())->setLibelle($libelle)->setSite($site);
+            // Sur l'ENTREPRISE du poste : un produit créé à Soubré est le même que celui de Gagnoa
+            $produit = (new Produit())->setLibelle($libelle)->setEntreprise($site->getEntreprise());
 
             $produits[$cle] = $produit;
             $this->em->persist($produit);

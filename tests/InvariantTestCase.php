@@ -10,7 +10,12 @@ use App\Domain\Service\Epargne\EpargneService;
 use App\Entity\Entreprise;
 use App\Entity\Fournisseur;
 use App\Entity\Operation;
+use App\Domain\Enum\ModeTransport;
+use App\Entity\BaremeTransport;
+use App\Entity\CategorieFournisseur;
 use App\Entity\Prelevement;
+use App\Entity\TarifCategorie;
+use App\Entity\TarifFournisseur;
 use App\Entity\Produit;
 use App\Entity\Site;
 use App\Entity\User;
@@ -181,9 +186,21 @@ abstract class InvariantTestCase extends WebTestCase
         return $compte;
     }
 
+    /*
+        - L'ARGUMENT RESTE LE POSTE alors que le produit naît sur l'entreprise : c'est ce qu'un cas
+          de test a sous la main, et ce qu'il veut dire est « un produit pesable ici ». Le rendre
+          explicite partout n'apprendrait rien de plus et toucherait une vingtaine d'appels.
+
+        - Conséquence à garder en tête en écrivant un cas : deux appels sur deux postes d'une MÊME
+          entreprise créent deux fois le même produit. Rien ne lève ici — la validation ne tourne
+          pas sur un 'persist' direct — mais l'API, elle, refuserait le second.
+    */
     protected function creerProduit(Site $site, string $libelle = 'Hévéa', int $prix = 200): Produit
     {
-        $produit = (new Produit())->setLibelle($libelle)->setPrix($prix)->setSite($site);
+        $entreprise = $site->getEntreprise();
+        self::assertNotNull($entreprise, 'Un poste de test devrait porter son entreprise');
+
+        $produit = (new Produit())->setLibelle($libelle)->setPrix($prix)->setEntreprise($entreprise);
 
         $this->em->persist($produit);
         $this->em->flush();
@@ -237,6 +254,54 @@ abstract class InvariantTestCase extends WebTestCase
           taux doit rester sous le prix du produit, sauf à vouloir éprouver justement ce plafond —
           le helper ne vérifie rien, ce sont les processors qui tiennent la règle.
     */
+    /*
+        - UN BARÈME AU KILO, qui reproduit exactement ce qu'un 'prixtransport' faisait : prix ×
+          poids net. Les cas qui l'utilisent n'ont donc rien changé à leurs attentes.
+    */
+    protected function creerBaremeAuKilo(Entreprise $entreprise, int $prixAuKilo, string $libelle = 'Au kilo'): BaremeTransport
+    {
+        $bareme = (new BaremeTransport())
+            ->setLibelle($libelle)
+            ->setMode(ModeTransport::AU_KILO)
+            ->setPrixAuKilo($prixAuKilo)
+            ->setEntreprise($entreprise);
+
+        $this->em->persist($bareme);
+        $this->em->flush();
+
+        return $bareme;
+    }
+
+    protected function creerCategorie(Entreprise $entreprise, string $libelle = 'Gros livreurs'): CategorieFournisseur
+    {
+        $categorie = (new CategorieFournisseur())->setLibelle($libelle)->setEntreprise($entreprise);
+
+        $this->em->persist($categorie);
+        $this->em->flush();
+
+        return $categorie;
+    }
+
+    protected function tariferCategorie(CategorieFournisseur $categorie, Produit $produit, int $prix): TarifCategorie
+    {
+        $categorie->addTarif($tarif = (new TarifCategorie())->setProduit($produit)->setPrix($prix));
+
+        $this->em->persist($tarif);
+        $this->em->flush();
+
+        return $tarif;
+    }
+
+    protected function tariferPlanteur(Fournisseur $planteur, Produit $produit, int $prix): TarifFournisseur
+    {
+        $planteur->addTarif($tarif = (new TarifFournisseur())->setProduit($produit)->setPrix($prix));
+
+        $this->em->persist($tarif);
+        $this->em->flush();
+
+        return $tarif;
+    }
+
     protected function ouvrirPrelevement(Fournisseur $planteur, Produit $produit, int $taux): Prelevement
     {
         $planteur->ajouterPrelevement($prelevement = (new Prelevement())->setProduit($produit)->setTaux($taux));

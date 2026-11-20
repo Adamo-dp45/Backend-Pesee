@@ -38,7 +38,7 @@ use Symfony\Component\Validator\Constraints as Assert;
 #[ORM\Index(name: 'idx_demande_site_statut', fields: ['site', 'statut'])]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:DemandeSolde', 'read:Base'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:DemandeSolde', 'read:Base']],
     denormalizationContext: ['groups' => ['write:DemandeSolde']],
     paginationItemsPerPage: 25,
     paginationClientItemsPerPage: true,
@@ -134,7 +134,8 @@ class DemandeSolde extends EntityBase implements SiteOwnedInterface
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    #[Groups(['read:DemandeSolde'])]
+    /* 'read:MouvementCaisse' : l'écriture porte un lien vers la demande qui l'a déclenchée, et ce lien ne rendait AUCUN champ exploitable. */
+    #[Groups(['read:DemandeSolde', 'read:MouvementCaisse'])]
     private ?int $id = null;
 
     #[ORM\Column]

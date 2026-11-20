@@ -64,10 +64,22 @@ final class DroitsTest extends InvariantTestCase
         $this->appeler('GET', '/api/me', $operateur);
         $droits = $this->reponse()['droits'] ?? [];
 
-        // Il tient la caisse de son poste et tarife
+        // Il tient la caisse de son poste et réclame de quoi payer
         self::assertContains('PAIEMENT_PAYER', $droits);
-        self::assertContains('PRODUIT_MODIFIER', $droits);
         self::assertContains('DEMANDESOLDE_CREER', $droits);
+
+        // Il LIT le référentiel : la classe d'un planteur décide de ce qu'il touche, et c'est lui qui l'a en face
+        self::assertContains('PRODUIT_VOIR', $droits);
+        self::assertContains('FOURNISSEUR_VOIR', $droits);
+
+        /*
+            - ET IL NE L'ÉCRIT PLUS. Il tarifait les produits et créait des planteurs, du temps où
+              le référentiel était à son poste. Depuis qu'il appartient à l'entreprise, un prix
+              saisi à une barrière vaut à toutes les autres.
+        */
+        self::assertNotContains('PRODUIT_MODIFIER', $droits);
+        self::assertNotContains('FOURNISSEUR_CREER', $droits);
+        self::assertNotContains('FOURNISSEUR_MODIFIER', $droits);
 
         // Il ne gère ni les comptes, ni l'argent de l'entreprise, et ne met rien à la corbeille
         self::assertNotContains('USER_VOIR', $droits);
@@ -103,17 +115,34 @@ final class DroitsTest extends InvariantTestCase
         $produit = $this->creerProduit($this->site);
 
         $this->appeler('GET', '/api/me', $operateur);
-        self::assertNotContains('PRODUIT_SUPPRIMER', $this->reponse()['droits'] ?? []);
+        $droits = $this->reponse()['droits'] ?? [];
+
+        self::assertNotContains('PRODUIT_SUPPRIMER', $droits);
+        self::assertNotContains('PRODUIT_MODIFIER', $droits);
 
         $this->appeler('PATCH', '/api/produits/' . $produit->getId() . '/suppression', $operateur, []);
         self::assertSame(403, $this->client->getResponse()->getStatusCode(), 'Un droit absent de /me doit être refusé par l\'API');
 
-        // Et le symétrique : ce que la liste annonce, l'API l'accorde
-        $this->appeler('GET', '/api/me', $operateur);
-        self::assertContains('PRODUIT_MODIFIER', $this->reponse()['droits'] ?? []);
-
+        /*
+            - LE RÉFÉRENTIEL EST À L'ADMINISTRATEUR. L'opérateur tarifait les produits et créait des
+              planteurs ; depuis que le référentiel appartient à l'ENTREPRISE et non au poste, un
+              prix saisi à une barrière vaut à toutes les autres, et une fiche corrigée l'est pour
+              tout le monde. Le refus se vérifie DES DEUX CÔTÉS : une table modifiée sans son
+              voter laisserait l'écran cacher un bouton que l'API accorde encore.
+        */
         $this->appeler('PATCH', '/api/produits/' . $produit->getId(), $operateur, ['prix' => 250]);
-        self::assertSame(200, $this->client->getResponse()->getStatusCode());
+        self::assertSame(403, $this->client->getResponse()->getStatusCode(), 'L\'opérateur ne tarifie plus');
+
+        // Et le symétrique : ce que la liste annonce, l'API l'accorde
+        self::assertContains('DEMANDESOLDE_CREER', $droits);
+
+        $this->appeler('POST', '/api/demande_soldes', $operateur, [
+            'site' => '/api/sites/' . $this->site->getId(),
+            'montantDemande' => 100_000,
+            'caisse' => 'NUMERIQUE',
+            'motif' => 'Plus de quoi payer les planteurs.',
+        ]);
+        self::assertSame(201, $this->client->getResponse()->getStatusCode());
     }
 
     /*

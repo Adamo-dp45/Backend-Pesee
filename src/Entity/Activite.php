@@ -38,7 +38,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
 #[ORM\Index(name: 'idx_activite_cible', fields: ['cibleType', 'cibleId'])]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:Activite', 'read:Base'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:Activite', 'read:Base']],
     paginationItemsPerPage: 50,
     paginationClientItemsPerPage: true,
     order: ['createdAt' => 'DESC'],

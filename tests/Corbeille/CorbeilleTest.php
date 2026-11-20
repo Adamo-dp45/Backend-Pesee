@@ -53,8 +53,13 @@ final class CorbeilleTest extends InvariantTestCase
 
         self::assertSame('produit', $ligne['type']);
         self::assertSame('Hévéa', $ligne['libelle']);
-        // D'où il venait : sans cela, deux « Hévéa » de deux postes se confondent
-        self::assertStringContainsString('SOF010', (string) $ligne['contexte']);
+        /*
+            - PAS DE CONTEXTE, et c'est le point du cas : le contexte nomme le pont bascule d'où
+              vient l'élément, ce qui distingue deux « Kouassi » homonymes. Un produit n'a plus de
+              poste — c'est son entreprise qui le situe, et elle a sa propre colonne. Y laisser le
+              code du poste reviendrait à nommer un rattachement qui n'existe plus.
+        */
+        self::assertNull($ligne['contexte']);
         self::assertSame('Entreprise ACME', $ligne['entreprise']);
         // 'deletedBy' est un entier illisible : la corbeille doit rendre un nom
         self::assertSame('Admin Test', $ligne['supprimePar']); // 'getNomComplet()' rend prenom puis nom

@@ -88,4 +88,40 @@ class FournisseurRepository extends ServiceEntityRepository
             ->getQuery()
             ->getResult();
     }
+
+    /**
+     * Combien de planteurs vivants par categorie, pour une page de categories.
+     *
+     * Une seule requete groupee : la liste des categories en poserait sinon une par ligne. Les
+     * categories sans planteur sont ABSENTES du resultat, et c'est a l'appelant de lire zero — une
+     * cle manquante n'est pas une donnee manquante ici, c'est un comptage a vide.
+     *
+     * @param list<int> $ids
+     *
+     * @return array<int, int>
+     */
+    public function compterParCategorie(array $ids): array
+    {
+        if($ids === []) {
+            return [];
+        }
+
+        $lignes = $this->createQueryBuilder('f')
+            ->select('IDENTITY(f.categorie) AS ref', 'COUNT(f.id) AS nb')
+            ->andWhere('f.categorie IN (:ids)')
+            ->andWhere('f.deletedAt IS NULL')
+            ->setParameter('ids', $ids)
+            ->groupBy('ref')
+            ->getQuery()
+            ->getArrayResult();
+
+        $compteurs = [];
+
+        foreach($lignes as $ligne) {
+            $compteurs[(int) $ligne['ref']] = (int) $ligne['nb'];
+        }
+
+        return $compteurs;
+    }
+
 }

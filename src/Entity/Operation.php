@@ -11,9 +11,14 @@ use ApiPlatform\Metadata\Get;
 use ApiPlatform\Metadata\GetCollection;
 // Aliasé : 'Operation' est le nom de cette entité même
 use ApiPlatform\OpenApi\Model\Operation as OpenApiOperation;
+use App\Domain\Enum\ModeTransport;
+use App\Domain\Enum\OrigineTarif;
+use App\Domain\Enum\OrigineTransport;
 use App\Domain\Enum\StatutOperation;
 use App\Domain\Enum\StatutPaiement;
 use App\Domain\Enum\StatutReglement;
+use App\Domain\Support\TarifApplicable;
+use App\Domain\Support\TransportApplicable;
 use App\Entity\Interface\SiteOwnedInterface;
 use App\Repository\OperationRepository;
 use App\State\Provider\MontantEnVolProvider;
@@ -43,7 +48,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
 #[ORM\Index(name: 'idx_operation_produit', fields: ['produit'])]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:Operation', 'read:Base'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:Operation', 'read:Base']],
     paginationItemsPerPage: 25,
     paginationClientItemsPerPage: true,
     order: ['peseeAt2' => 'DESC'],
@@ -60,7 +65,7 @@ use Symfony\Component\Serializer\Attribute\Groups;
         new Get(
             security: "is_granted('VOIR', object)",
             requirements: ['id' => '\d+'],
-            normalizationContext: ['groups' => ['read:Operation', 'read:Operation:item', 'read:Base'], 'skip_null_values' => false],
+            normalizationContext: ['groups' => ['read:Operation', 'read:Operation:item', 'read:Base']],
             openapi: new OpenApiOperation(
                 summary: 'La pesée',
                 description: 'Fiche complète, avec le détail du règlement',
@@ -226,6 +231,22 @@ class Operation extends EntityBase implements SiteOwnedInterface
     #[Groups(['read:Operation'])]
     private ?int $prixunitaire = null;
 
+    /*
+        - D'OÙ VIENT CE PRIX : du planteur, de sa catégorie, ou du produit. Figée en même temps que
+          'prixunitaire' et pour la même raison — le prix retenu est un fait daté, et le chemin qui y
+          a mené aussi.
+
+        - Sans elle, deux pesées à 470 F sont indiscernables et personne ne peut répondre à « pourquoi
+          mon voisin touche 500 ». Avec elle, la fiche de la pesée se relit toute seule, des années
+          après que la catégorie a changé de tarif ou que le planteur en a changé.
+
+        - 'null' sur les pesées antérieures à cette colonne, et sur celles qui n'ont pas encore de
+          prix. Ce n'est pas un défaut de saisie : c'est « on ne sait pas », et l'écran doit le taire
+          plutôt que d'inventer « prix du produit ».
+    */
+    #[ORM\Column(enumType: OrigineTarif::class, nullable: true)]
+    private ?OrigineTarif $origineTarif = null; // Pas dans les groupes : c'est 'getOrigineTarifLibelle()' qui sort, et lui seul
+
     #[ORM\Column(nullable: true)]
     #[Groups(['read:Operation'])]
     private ?int $montantdu = null; // La RÉCOLTE seule. Le transport est à part, juste en dessous
@@ -244,6 +265,32 @@ class Operation extends EntityBase implements SiteOwnedInterface
     #[ORM\Column(options: ['default' => 0])]
     #[Groups(['read:Operation'])]
     private int $montanttransport = 0;
+
+    /*
+        - COMMENT CE MONTANT A ÉTÉ OBTENU, et c'est ce qui manquait le plus. 'prixtransport' est un
+          prix AU KILO : il ne survit qu'au mode « au kilo » et reste nul sur deux modes sur trois.
+          Sans le mode, « forfait à 0 F » et « aucun barème » sont la même ligne en base — un zéro,
+          et rien pour dire pourquoi.
+
+        - LA DISTANCE ET LA TRANCHE sont figées pour la même raison que le prix : elles expliquent
+          le montant, et elles bougent. La tranche en TOUTES LETTRES, jamais par clé étrangère —
+          éditer ses bornes rendrait demain un intervalle qui n'a jamais servi à ce montant-là.
+
+        - 'origineTransport' dit lequel des deux sauts a répondu, ou qu'aucun n'a répondu. C'est
+          elle qui distingue « on ne lui paie pas de transport » de « on a oublié de lui en poser
+          un », deux situations qu'un montant nul confond.
+    */
+    #[ORM\Column(enumType: ModeTransport::class, nullable: true)]
+    private ?ModeTransport $modeTransport = null;
+
+    #[ORM\Column(enumType: OrigineTransport::class, nullable: true)]
+    private ?OrigineTransport $origineTransport = null;
+
+    #[ORM\Column(nullable: true)]
+    private ?int $distanceTransport = null; // La distance effectivement utilisée, en kilomètres
+
+    #[ORM\Column(length: 100, nullable: true)]
+    private ?string $trancheTransport = null; // « de 20 à 50 km », figé tel quel
 
     /*
         - Le cumul des paiements CONFIRMÉS, et sa ventilation. Dénormalisés : sans eux, lister des pesées imposerait une sous-requête de somme par ligne.
@@ -647,6 +694,26 @@ class Operation extends EntityBase implements SiteOwnedInterface
         return $this->prixunitaire;
     }
 
+    public function getOrigineTarif(): ?OrigineTarif
+    {
+        return $this->origineTarif;
+    }
+
+    /*
+        - LE SEUL DES DEUX QUI SORT. Publier la valeur brute à côté donnerait deux représentations de
+          la même chose dans la même charge utile, et surtout inviterait le web à brancher dessus —
+          c'est-à-dire à y recopier une règle. Le jour où un écran aura besoin de distinguer les cas
+          autrement que par le texte, on ajoutera le champ à ce moment-là, pour cet usage-là.
+        - Le libellé, et non la valeur brute : c'est ce que l'écran affiche sous le prix, et traduire
+          'CATEGORIE' en « tarif de sa catégorie » côté web reviendrait à y recopier une règle.
+        - Nul tant que la pesée n'a pas de prix : « on ne sait pas » se tait, il ne s'invente pas.
+    */
+    #[Groups(['read:Operation'])]
+    public function getOrigineTarifLibelle(): ?string
+    {
+        return $this->origineTarif?->libelle();
+    }
+
     public function getMontantdu(): ?int
     {
         return $this->montantdu;
@@ -719,26 +786,66 @@ class Operation extends EntityBase implements SiteOwnedInterface
 
         $terminee = $this->estTerminee();
 
-        $prixunitaire = $gelProduit ? $this->prixunitaire : ($terminee ? $this->produit?->getPrix() : null);
-        $prixtransport = $gelTransport ? $this->prixtransport : ($terminee ? $this->fournisseur?->getPrixtransport() : null);
+        /*
+            - LE PRIX NE SE LIT PLUS SUR LE PRODUIT, il se RÉSOUT : tarif du planteur, puis de sa
+              catégorie, puis prix du produit. 'TarifApplicable' porte la règle, et elle ne requête
+              pas — elle lit le graphe déjà chargé, ce qui la rend appelable dans la boucle de
+              synchronisation.
+        */
+        $applicable = TarifApplicable::pour($this->fournisseur, $this->produit);
+
+        $prixunitaire = $gelProduit ? $this->prixunitaire : ($terminee ? $applicable->prix : null);
+        $origineTarif = $gelProduit ? $this->origineTarif : ($terminee ? $applicable->origine : null);
+
+        /*
+            - LE TRANSPORT NE SE LIT PLUS SUR LE PLANTEUR : il se RÉSOUT, comme le prix. Son barème,
+              puis celui de sa catégorie, puis rien. Et il peut rendre TROIS choses : zéro faute de
+              barème, un montant, ou RIEN quand un barème existe mais ne sait pas répondre.
+
+            - Ce dernier cas — un barème par tranches sur un planteur sans distance — fige un
+              montant nul et une origine qui dit qu'un barème existait. La fiche de la pesée en
+              tire une phrase ; sans ça, le transport vaudrait zéro sans que rien ne l'explique.
+        */
+        $transport = TransportApplicable::pour($this->fournisseur);
+        $montantResolu = $terminee ? $transport->montant($this->poidsnet) : null;
+
+        $prixtransport = $gelTransport ? $this->prixtransport : ($terminee ? $transport->prixAuKilo() : null);
+        $modeTransport = $gelTransport ? $this->modeTransport : ($terminee ? $transport->bareme?->getMode() : null);
+        $origineTransport = $gelTransport ? $this->origineTransport : ($terminee ? $transport->origine : null);
+        $distanceTransport = $gelTransport ? $this->distanceTransport : ($terminee ? $transport->distanceKm : null);
+        $trancheTransport = $gelTransport ? $this->trancheTransport : ($terminee ? $transport->libelleTranche() : null);
 
         $montantdu = $gelProduit
             ? $this->montantdu
             : (($prixunitaire !== null && $this->poidsnet !== null) ? $this->poidsnet * $prixunitaire : null);
 
-        $montanttransport = $gelTransport
-            ? $this->montanttransport
-            : (($prixtransport !== null && $this->poidsnet !== null) ? $this->poidsnet * $prixtransport : 0);
+        /* 'null' veut dire « le barème ne sait pas répondre » : on ne devine pas, on fige zéro et l'origine dira pourquoi. */
+        $montanttransport = $gelTransport ? $this->montanttransport : ($montantResolu ?? 0);
 
+        /*
+            - L'ORIGINE ENTRE DANS LA COMPARAISON, sans quoi un changement qui ne touche pas le
+              chiffre passerait inaperçu : supprimer le tarif d'un planteur au profit d'un tarif de
+              catégorie au MÊME montant laisserait une origine qui ment, sur un montant pourtant
+              juste. C'est précisément le cas qu'on ne saurait plus expliquer six mois après.
+        */
         if($this->prixunitaire === $prixunitaire && $this->montantdu === $montantdu
-            && $this->prixtransport === $prixtransport && $this->montanttransport === $montanttransport) {
+            && $this->origineTarif === $origineTarif
+            && $this->prixtransport === $prixtransport && $this->montanttransport === $montanttransport
+            /* Les quatre champs du transport entrent dans la comparaison, pour la raison qui vaut pour l'origine du tarif : changer de barème sans changer le montant reste un changement, et l'explication doit suivre. */
+            && $this->modeTransport === $modeTransport && $this->origineTransport === $origineTransport
+            && $this->distanceTransport === $distanceTransport && $this->trancheTransport === $trancheTransport) {
             return false;
         }
 
         $this->prixunitaire = $prixunitaire;
+        $this->origineTarif = $origineTarif;
         $this->montantdu = $montantdu;
         $this->prixtransport = $prixtransport;
         $this->montanttransport = $montanttransport;
+        $this->modeTransport = $modeTransport;
+        $this->origineTransport = $origineTransport;
+        $this->distanceTransport = $distanceTransport;
+        $this->trancheTransport = $trancheTransport;
 
         // SUR LES CHAMPS ÉCRITS, et non sur les variables locales : avec des verrous par part, les deux peuvent désormais diverger
         $this->statutReglement = StatutReglement::pourLesParts(
@@ -755,6 +862,68 @@ class Operation extends EntityBase implements SiteOwnedInterface
     public function getPrixtransport(): ?int
     {
         return $this->prixtransport;
+    }
+
+    public function getModeTransport(): ?ModeTransport
+    {
+        return $this->modeTransport;
+    }
+
+    public function getOrigineTransport(): ?OrigineTransport
+    {
+        return $this->origineTransport;
+    }
+
+    public function getDistanceTransport(): ?int
+    {
+        return $this->distanceTransport;
+    }
+
+    /*
+        - CE QUI EXPLIQUE LE MONTANT DU TRANSPORT, en une phrase déjà écrite. Le web ne recompose
+          rien : « forfait », « 15 F le kilo », « de 20 à 50 km » n'ont pas la même forme, et les
+          assembler côté écran y recopierait la règle.
+        - Nul quand il n'y a pas de transport : l'écran se tait plutôt que d'annoncer un vide.
+    */
+    #[Groups(['read:Operation'])]
+    public function getExplicationTransport(): ?string
+    {
+        if($this->origineTransport === null || $this->origineTransport === OrigineTransport::AUCUN) {
+            return null;
+        }
+
+        return match($this->modeTransport) {
+            ModeTransport::AU_KILO => $this->prixtransport === null ? null : sprintf('%d F le kilo', $this->prixtransport),
+            ModeTransport::FORFAIT => 'Forfait, quel que soit le tonnage',
+            ModeTransport::TRANCHES => $this->trancheTransport === null
+                ? null
+                /* Le point mi-haut, et non une parenthèse : l'écart l'affiche DÉJÀ entre parenthèses */
+                : sprintf('%s · trajet de %s km', $this->trancheTransport, (string) $this->distanceTransport),
+            default => null,
+        };
+    }
+
+    /*
+        - POURQUOI LE TRANSPORT EST À ZÉRO ALORS QU'UN BARÈME EXISTE. Un seul cas : un barème par
+          tranches sur un planteur sans distance. Le poste crée les planteurs avec un libellé et
+          rien d'autre, donc ce cas est celui du terrain, pas une curiosité.
+
+        - Sans cette phrase, le transport vaudrait zéro exactement comme pour les planteurs qu'on
+          ne paie pas — et la pesée se figerait sur ce zéro sans que personne ne sache qu'il
+          fallait corriger quelque chose.
+    */
+    #[Groups(['read:Operation'])]
+    public function getMotifTransportIncalculable(): ?string
+    {
+        if($this->origineTransport === null || $this->origineTransport === OrigineTransport::AUCUN) {
+            return null;
+        }
+
+        if($this->modeTransport?->exigeUneDistance() !== true || $this->distanceTransport !== null) {
+            return null;
+        }
+
+        return 'Ce planteur suit un barème par tranches de kilomètres, mais sa fiche n\'a pas de distance : son transport est resté à zéro.';
     }
 
     public function getMontanttransport(): int

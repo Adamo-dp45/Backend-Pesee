@@ -131,6 +131,44 @@ final class SynchronisationTest extends InvariantTestCase
     }
 
     /*
+        - LE PRODUIT EST À L'ENTREPRISE, LE PLANTEUR AU POSTE — et c'est ici que ça se joue, parce que
+          c'est la synchronisation, pas un écran, qui crée l'essentiel des référentiels.
+
+        - Deux postes d'un même client qui pèsent « Hévéa » doivent se retrouver sur UN produit. Deux
+          lignes donneraient deux prix à tenir d'accord à la main, et c'est précisément ce qu'on ne
+          peut plus se permettre dès qu'un tarif se saisit par catégorie de planteurs.
+
+        - Deux « Kouassi » sur ces mêmes postes restent DEUX hommes : ils livrent à deux barrières,
+          rien ne dit que c'est le même, et les confondre verserait l'argent de l'un à l'autre.
+    */
+    public function testDeuxPostesDUnMemeClientPartagentLeProduitMaisPasLePlanteur(): void
+    {
+        $second = $this->creerSite($this->entreprise, 'SOF020');
+        $posteSecond = $this->creerCompteMachine($second);
+
+        $this->synchroniser([$this->ligne('201')]);
+        self::assertSame(1, $this->reponse()['success']);
+
+        $this->appeler('POST', '/api/synchronisation', $posteSecond, ['pesees' => [
+            $this->ligne('301', ['code' => $second->getCode()]),
+        ]]);
+        self::assertSame(1, $this->reponse()['success']);
+
+        $this->em->clear();
+
+        $produits = $this->em->getRepository(Produit::class)->findAll();
+        self::assertCount(1, $produits, 'Les deux postes doivent peser LE même hévéa');
+        self::assertSame($this->entreprise->getId(), $produits[0]->getEntreprise()?->getId());
+
+        $planteurs = $this->em->getRepository(Fournisseur::class)->findAll();
+        self::assertCount(2, $planteurs, 'Un « Kouassi » par pont bascule : ce sont deux hommes');
+        self::assertEqualsCanonicalizing(
+            ['SOF010', 'SOF020'],
+            array_map(static fn($planteur) => $planteur->getSite()?->getCode(), $planteurs)
+        );
+    }
+
+    /*
         - Le signal de fin est le SECOND POIDS, jamais la date de second passage : le poste pré-remplit
           celle-ci avec la date du premier dès la création. S'y fier marquerait « terminée » toute
           pesée dès son premier envoi, lui inventerait un poids net et rendrait payable un camion
@@ -293,7 +331,8 @@ final class SynchronisationTest extends InvariantTestCase
     {
         $produit = $this->creerProduit($this->site, 'Hévéa', 400);
         $planteur = $this->creerPlanteur($this->site, 'Kouassi');
-        $planteur->setPrixtransport(30);
+        $bareme = $this->creerBaremeAuKilo($this->entreprise, 30);
+        $planteur->setBaremeTransport($bareme);
         $this->em->flush();
 
         $this->synchroniser([$this->ligne('101', ['prix' => 999, 'prixtransport' => 777])]);
@@ -302,7 +341,11 @@ final class SynchronisationTest extends InvariantTestCase
         $this->em->clear();
 
         self::assertSame(400, $this->em->find(Produit::class, $produit->getId())?->getPrix(), 'Le poste a écrasé le prix du bureau');
-        self::assertSame(30, $this->em->find(Fournisseur::class, $planteur->getId())?->getPrixtransport(), 'Le poste a écrasé le transport du bureau');
+        self::assertSame(
+            30,
+            $this->em->find(Fournisseur::class, $planteur->getId())?->getBaremeTransport()?->getPrixAuKilo(),
+            'Le poste a écrasé le transport du bureau'
+        );
 
         // 500 kg : la récolte au prix du bureau, le transport au sien aussi
         $pesee = $this->pesees()[0];

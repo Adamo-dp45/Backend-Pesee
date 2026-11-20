@@ -41,7 +41,7 @@ class CorrigerPrelevementProcessor implements ProcessorInterface
               dans un état qu'il ne pourra que rejeter.
         */
         if($data instanceof DemandePrelevement
-            && ($motif = TauxPrelevement::motifDuRefus($data->getProduit(), $data->getTauxDemande())) !== null) {
+            && ($motif = TauxPrelevement::motifDuRefus($data->getFournisseur(), $data->getProduit(), $data->getTauxDemande())) !== null) {
             throw new UnprocessableEntityHttpException($motif);
         }
 

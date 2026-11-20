@@ -112,16 +112,22 @@ final class DemandePrelevementTest extends InvariantTestCase
     }
 
     /*
-        - LA règle du patron : un taux qui atteint le prix du produit ne laisserait rien au planteur.
-          Refusé à l'ÉGALITÉ, pas seulement au-dessus — à 200 F sur un produit à 200 F, le planteur
-          repart avec exactement zéro.
+        - LA règle du patron : un taux qui atteint le prix ne laisserait rien au planteur. Refusé à
+          l'ÉGALITÉ, pas seulement au-dessus — à 200 F sur un produit à 200 F, le planteur repart
+          avec exactement zéro.
+
+        - Le cas n'affirme plus le libellé « inférieur au prix du produit » : le prix qui borne est
+          celui qui est RÉELLEMENT PAYÉ à ce planteur, tarif propre ou tarif de sa catégorie
+          compris, et le message le dit maintenant en nommant ce prix-là. Ce qu'on vérifie ici est
+          la règle, pas sa formulation — mais il faut bien en citer un morceau, alors on cite la
+          partie qui ne dépend d'aucun des trois sauts.
     */
     public function testUnTauxQuiAtteintLePrixDuProduitEstRefuse(): void
     {
         $this->poster(self::PRIX);
 
         self::assertSame(422, $this->client->getResponse()->getStatusCode());
-        self::assertStringContainsString('inférieur au prix du produit', (string) ($this->reponse()['detail'] ?? ''));
+        self::assertStringContainsString('ne laisserait rien au planteur', (string) ($this->reponse()['detail'] ?? ''));
 
         $this->em->clear();
         self::assertCount(0, $this->em->getRepository(DemandePrelevement::class)->findAll());
@@ -155,7 +161,7 @@ final class DemandePrelevementTest extends InvariantTestCase
         $this->appeler('PATCH', '/api/demande_prelevements/' . $id . '/approbation', $this->admin, []);
 
         self::assertSame(422, $this->client->getResponse()->getStatusCode());
-        self::assertStringContainsString('inférieur au prix du produit', (string) ($this->reponse()['detail'] ?? ''));
+        self::assertStringContainsString('ne laisserait rien au planteur', (string) ($this->reponse()['detail'] ?? ''));
 
         $this->em->clear();
         self::assertNull($this->tauxEnCours(), 'Aucun prélèvement ouvert');

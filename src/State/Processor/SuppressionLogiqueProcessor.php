@@ -5,6 +5,8 @@ namespace App\State\Processor;
 use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use App\Entity\EntityBase;
+use App\Entity\BaremeTransport;
+use App\Entity\CategorieFournisseur;
 use App\Entity\Fournisseur;
 use App\Entity\User;
 use App\Domain\Enum\TypeActivite;
@@ -31,6 +33,19 @@ class SuppressionLogiqueProcessor implements ProcessorInterface
     {
     }
 
+    /* Combien de lignes vivantes d'une classe pointent sur cette entite par ce champ. En SQL : on ne veut que le nombre. */
+    private function compter(string $classe, string $champ, object $cible): int
+    {
+        return (int) $this->em->createQueryBuilder()
+            ->select('COUNT(e.id)')
+            ->from($classe, 'e')
+            ->andWhere(sprintf('e.%s = :cible', $champ))
+            ->andWhere('e.deletedAt IS NULL')
+            ->setParameter('cible', $cible)
+            ->getQuery()
+            ->getSingleScalarResult();
+    }
+
     public function process(mixed $data, Operation $operation, array $uriVariables = [], array $context = []): mixed
     {
         if(!$data instanceof EntityBase) {
@@ -40,6 +55,60 @@ class SuppressionLogiqueProcessor implements ProcessorInterface
         /*
             - Un planteur dont l'épargne n'est pas vide ne se met pas à la corbeille : le cloisonnement le ferait disparaître de tous les écrans, et son argent avec lui. Tant qu'il n'existe pas de retrait, il n'y a aucun moyen de le lui rendre après coup.
         */
+        /*
+            - UNE CATÉGORIE ENCORE PEUPLÉE NE SE SUPPRIME PAS. Le cloisonnement la ferait disparaître
+              de tous les écrans, mais ses planteurs y resteraient rattachés : ils continueraient
+              d'être payés au tarif d'une catégorie que plus personne ne peut ni lire ni corriger.
+              Et la purge, elle, détacherait tout le monde d'un coup — la clé est en 'SET NULL' —
+              ramenant chacun au prix du produit sans qu'une ligne ne le dise.
+
+            - Le motif NOMME LE NOMBRE, parce que c'est ce qui permet de décider : à deux planteurs
+              on les reclasse, à deux cents on y regarde à deux fois.
+        */
+        /*
+            - UN BARÈME QUE QUELQU'UN SUIT NE SE SUPPRIME PAS. Le cloisonnement le ferait
+              disparaître des écrans, mais les planteurs et les catégories continueraient de
+              pointer dessus : leur transport se calculerait encore sur un barème que plus
+              personne ne peut ni lire ni corriger. Et la purge les détacherait tous d'un coup.
+        */
+        if($data instanceof BaremeTransport) {
+            $planteurs = $this->compter(Fournisseur::class, 'baremeTransport', $data);
+            $categories = $this->compter(CategorieFournisseur::class, 'baremeTransport', $data);
+
+            if($planteurs + $categories > 0) {
+                /*
+                    - LES DEUX COMPTES SÉPARÉMENT, parce qu'ils ne se corrigent pas au même endroit :
+                      un planteur se rouvre fiche par fiche, une catégorie emmène tous les siens d'un
+                      geste. « 3 suiveurs » laisserait chercher lesquels, et où.
+                */
+                $qui = array_filter([
+                    $planteurs > 0 ? sprintf('%d planteur%s', $planteurs, $planteurs > 1 ? 's' : '') : null,
+                    $categories > 0 ? sprintf('%d catégorie%s', $categories, $categories > 1 ? 's' : '') : null,
+                ]);
+
+                throw new UnprocessableEntityHttpException(sprintf(
+                    '%s %s encore ce barème : rattachez-%s ailleurs avant de le mettre à la corbeille.',
+                    implode(' et ', $qui),
+                    $planteurs + $categories > 1 ? 'suivent' : 'suit',
+                    $planteurs + $categories > 1 ? 'les' : 'le'
+                ));
+            }
+        }
+
+        if($data instanceof CategorieFournisseur) {
+            $planteurs = $this->compter(Fournisseur::class, 'categorie', $data);
+
+            if($planteurs > 0) {
+                throw new UnprocessableEntityHttpException(sprintf(
+                    '%d planteur%s %s encore classé%s dans cette catégorie : reclassez-les avant de la mettre à la corbeille.',
+                    $planteurs,
+                    $planteurs > 1 ? 's' : '',
+                    $planteurs > 1 ? 'sont' : 'est',
+                    $planteurs > 1 ? 's' : ''
+                ));
+            }
+        }
+
         if($data instanceof Fournisseur && $data->getSoldeEpargne() > 0) {
             throw new UnprocessableEntityHttpException(sprintf(
                 'Ce planteur a %s F CFA sur son compte d\'épargne : il ne peut pas être mis à la corbeille tant que cette somme ne lui a pas été rendue.',

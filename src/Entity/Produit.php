@@ -18,14 +18,14 @@ use ApiPlatform\Metadata\Patch;
 use ApiPlatform\Metadata\Post;
 use ApiPlatform\OpenApi\Model\Operation;
 use App\Domain\Support\Cle;
-use App\Entity\Interface\SiteOwnedInterface;
+use App\Entity\Interface\EntrepriseOwnedInterface;
 use App\Entity\Operation as Pesee; // Aliasé : 'Operation' désigne déjà celle d'OpenAPI dans ce fichier
 use App\Repository\ProduitRepository;
 use App\State\Provider\CompteurPeseesProvider;
-use App\State\Processor\AuditProcessor;
+use App\State\Processor\PerimetreEntrepriseProcessor;
 use App\State\Processor\TarificationProcessor;
 use App\State\Processor\SuppressionLogiqueProcessor;
-use App\Validator\UniqueParSite;
+use App\Validator\UniqueParEntreprise;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\Common\Collections\Criteria;
@@ -34,7 +34,13 @@ use Symfony\Component\Serializer\Attribute\Groups;
 use Symfony\Component\Validator\Constraints as Assert;
 
 /*
-    - Produit pesé (hévéa, cacao, palme…). Rattaché au SITE et non à l'entreprise : le peseur crée ses produits localement, depuis le bouton « Créer » de l'écran de pesée. Le référentiel appartient donc au logiciel de pesée, et le web ne fait que l'enrichir — le prix, essentiellement.
+    - Produit pesé (hévéa, cacao, palme…). Le peseur le crée à la volée depuis le bouton « Créer » de l'écran de pesée, et le web l'enrichit — le prix, essentiellement.
+
+    - RATTACHÉ À L'ENTREPRISE, ET NON PLUS AU PONT BASCULE. Il l'a été longtemps : chaque poste tenait son propre « Cacao », avec son propre prix. C'était tenable tant qu'un prix était un seul nombre. Avec des catégories de planteurs portées par l'entreprise, un tarif de catégorie aurait dû viser « le cacao de Soubré » puis « celui de Gagnoa », et il aurait fallu les tenir d'accord à la main — la duplication même que la catégorie existe pour supprimer.
+
+    - Le PLANTEUR, lui, reste au poste : il livre à une barrière précise, et deux hommes du même nom à deux postes sont deux hommes. « Les référentiels sont locaux » reste donc vrai de lui, et cesse de l'être du produit.
+
+    - CE QUE ÇA CHANGE POUR UN OPÉRATEUR : il voit désormais tous les produits de son entreprise, y compris ceux qu'il ne pèse jamais. C'est le prix à payer pour qu'un cacao soit un cacao partout, et c'est préférable à deux cacaos qui divergent en silence.
 
     - PROPRIÉTÉ DU PRIX : LE WEB, ET LUI SEUL. Le poste pese ; il ne tarife pas. Un prix qui arriverait dans une charge utile de synchronisation est lu et jeté — la valorisation se fait ici, avec le prix d'ici.
 
@@ -43,18 +49,18 @@ use Symfony\Component\Validator\Constraints as Assert;
       CE QUE ÇA CHANGE AU QUOTIDIEN : un produit créé à la volée par le peseur naît à zéro et ses pesées ne valent rien tant que personne ne l'a tarifé au bureau. C'était déjà vrai quand le poste se taisait ; c'est désormais la règle. D'où le filtre « non tarifés » sur la liste des produits, qui est là pour qu'on ne les découvre pas au guichet.
 */
 #[ORM\Entity(repositoryClass: ProduitRepository::class)]
-#[ORM\Index(name: 'idx_produit_site_cle', fields: ['site', 'cle'])]
+#[ORM\Index(name: 'idx_produit_entreprise_cle', fields: ['entreprise', 'cle'])]
 /*
-    - Pas d'index UNIQUE en base, et c'est voulu : une ligne à la corbeille garde sa clé et entrerait en collision avec la nouvelle, ce qui interdirait de recréer un produit supprimé. L'unicité est portée par 'UniqueParSite', qui ne compare qu'aux lignes vivantes.
+    - Pas d'index UNIQUE en base, et c'est voulu : une ligne à la corbeille garde sa clé et entrerait en collision avec la nouvelle, ce qui interdirait de recréer un produit supprimé. L'unicité est portée par 'UniqueParEntreprise', qui ne compare qu'aux lignes vivantes.
 */
-#[UniqueParSite(
+#[UniqueParEntreprise(
     fields: ['cle'],
-    message: 'Ce produit existe déjà sur ce pont bascule (les accents et la casse ne comptent pas).',
+    message: 'Ce produit existe déjà (les accents et la casse ne comptent pas).',
     errorPath: 'libelle'
 )]
 #[ApiResource(
     security: "is_granted('IS_AUTHENTICATED_FULLY')",
-    normalizationContext: ['groups' => ['read:Produit', 'read:Base'], 'skip_null_values' => false],
+    normalizationContext: ['groups' => ['read:Produit', 'read:Base']],
     denormalizationContext: ['groups' => ['write:Produit']],
     paginationItemsPerPage: 25,
     paginationClientItemsPerPage: true,
@@ -65,7 +71,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             provider: CompteurPeseesProvider::class, // Pose 'peseesCount' sur toute la page en une requête groupée
             openapi: new Operation(
                 summary: 'Liste des produits',
-                description: 'Les produits des ponts bascules de son périmètre',
+                description: 'Les produits de son entreprise, tous ponts bascules confondus',
                 security: [['bearerAuth' => []]]
             )
         ),
@@ -80,7 +86,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         ),
         new Post(
             security: "is_granted('CREER', 'Produit')",
-            processor: AuditProcessor::class,
+            processor: PerimetreEntrepriseProcessor::class, // Pose l'entreprise du créateur, puis délègue à 'AuditProcessor'
             openapi: new Operation(
                 summary: 'Création d\'un produit',
                 description: 'Rarement utile : le référentiel arrive du logiciel de pesée et se crée à la synchronisation',
@@ -112,7 +118,7 @@ use Symfony\Component\Validator\Constraints as Assert;
     ],
     openapi: new Operation(security: [['bearerAuth' => []]])
 )]
-#[ApiFilter(SearchFilter::class, properties: ['libelle' => 'partial', 'site' => 'exact'])]
+#[ApiFilter(SearchFilter::class, properties: ['libelle' => 'partial'])]
 /*
     - 'actif' est un BOOLÉEN, et 'SearchFilter' n'en sait rien : il comparait la chaîne reçue à ce
       que porte la colonne, un tinyint. 'actif=1' répondait donc, 'actif=true' et 'actif=false'
@@ -141,12 +147,12 @@ use Symfony\Component\Validator\Constraints as Assert;
     properties: ['libelle', 'codeproduit'],
 )]
 #[ApiFilter(OrderFilter::class, properties: ['codeproduit', 'libelle', 'prix', 'createdAt'])]
-class Produit extends EntityBase implements SiteOwnedInterface
+class Produit extends EntityBase implements EntrepriseOwnedInterface
 {
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    #[Groups(['read:Produit', 'read:Operation', 'read:Fournisseur:item', 'read:DemandePrelevement'])]
+    #[Groups(['read:Produit', 'read:Operation', 'read:Fournisseur:item', 'read:Fournisseur:tarifs', 'read:CategorieFournisseur', 'read:CategorieFournisseur:item', 'read:DemandePrelevement'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 100, nullable: true)]
@@ -156,7 +162,7 @@ class Produit extends EntityBase implements SiteOwnedInterface
     #[ORM\Column(length: 255)]
     #[Assert\NotBlank(message: 'Le libellé du produit est obligatoire')]
     #[Assert\Length(min: 1, max: 255)]
-    #[Groups(['read:Produit', 'write:Produit', 'read:Operation', 'read:Fournisseur:item', 'read:DemandePrelevement'])]
+    #[Groups(['read:Produit', 'write:Produit', 'read:Operation', 'read:Fournisseur:item', 'read:Fournisseur:tarifs', 'read:CategorieFournisseur', 'read:CategorieFournisseur:item', 'read:DemandePrelevement'])]
     private ?string $libelle = null;
 
     #[ORM\Column(length: 255)]
@@ -167,17 +173,46 @@ class Produit extends EntityBase implements SiteOwnedInterface
     */
     #[ORM\Column(options: ['default' => 0])]
     #[Assert\PositiveOrZero(message: 'Le prix ne peut pas être négatif')]
-    #[Groups(['read:Produit', 'write:Produit', 'read:Operation', 'read:Fournisseur:item', 'read:DemandePrelevement'])]
+    #[Groups(['read:Produit', 'write:Produit', 'read:Operation', 'read:Fournisseur:item', 'read:Fournisseur:tarifs', 'read:CategorieFournisseur', 'read:CategorieFournisseur:item', 'read:DemandePrelevement'])]
     private int $prix = 0;
+
+    /*
+        - QUAND CE PRIX A BOUGÉ pour la dernière fois. 'updatedAt' ne répond pas à la question : il
+          bouge aussi quand on corrige un libellé ou un code, et un écran qui s'y fierait annoncerait
+          un tarif périmé chaque fois qu'on a retouché l'orthographe du produit.
+
+        - À quoi elle sert : comparer cette date à celle d'un tarif de catégorie, pour avertir que le
+          tarif a été saisi AVANT le dernier changement de prix et qu'il n'a donc peut-être pas été
+          revu depuis. Un simple avertissement, jamais un report automatique — décider qu'une
+          catégorie suit le produit est une décision de gestion, pas un calcul.
+
+        - 'null' tant que personne n'a tarifé : le produit vaut zéro depuis sa création.
+    */
+    #[ORM\Column(nullable: true)]
+    #[Groups(['read:Produit'])]
+    private ?\DateTimeImmutable $prixModifieAt = null;
 
     #[ORM\Column(options: ['default' => true])]
     #[Groups(['read:Produit', 'write:Produit'])]
     private bool $actif = true;
 
+    /*
+        - DANS AUCUN GROUPE, ni lecture ni écriture, et ce n'est pas un oubli.
+
+        - EN LECTURE, la relation ne rendait qu'un objet '{ createdAt }' : aucun champ d'Entreprise
+          ne porte 'read:Produit', seul 'read:Base' — donc 'createdAt' — tombait dans les groupes
+          actifs. Une clé par ligne qui ne dit rien, et que personne n'affiche : un utilisateur ne
+          voit jamais que la sienne.
+
+        - EN ÉCRITURE, c'était une cérémonie : un utilisateur n'a qu'une entreprise, le formulaire
+          proposait donc une liste d'un seul élément. 'PerimetreEntrepriseProcessor' la pose depuis le compte
+          qui crée. En désigner une autre ne plaçait d'ailleurs rien chez le voisin — l'IRI ne
+          résolvait pas, le périmètre s'appliquant aussi à la lecture d'item — mais le
+          cloisonnement tenait alors par effet de bord, et le refus était un « introuvable ».
+    */
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
-    #[Groups(['read:Produit', 'write:Produit'])]
-    private ?Site $site = null; // Écrit à la création puis figé : déplacer un produit détacherait les pesées qui le référencent de leur référentiel local
+    private ?Entreprise $entreprise = null; // Écrit à la création puis figé : déplacer un produit emporterait l'historique des montants de toutes ses pesées
 
     /** @var Collection<int, Pesee> Jamais sérialisée : seul son compteur l'est */
     #[ORM\OneToMany(mappedBy: 'produit', targetEntity: Pesee::class)]
@@ -252,6 +287,19 @@ class Produit extends EntityBase implements SiteOwnedInterface
         return $this;
     }
 
+    public function getPrixModifieAt(): ?\DateTimeImmutable
+    {
+        return $this->prixModifieAt;
+    }
+
+    /* Posée par 'TarificationProcessor', là où il répond déjà à « le prix a-t-il bougé ? ». */
+    public function marquerLePrixModifie(): static
+    {
+        $this->prixModifieAt = new \DateTimeImmutable();
+
+        return $this;
+    }
+
 
     public function isActif(): bool
     {
@@ -265,14 +313,14 @@ class Produit extends EntityBase implements SiteOwnedInterface
         return $this;
     }
 
-    public function getSite(): ?Site
+    public function getEntreprise(): ?Entreprise
     {
-        return $this->site;
+        return $this->entreprise;
     }
 
-    public function setSite(?Site $site): static
+    public function setEntreprise(?Entreprise $entreprise): static
     {
-        $this->site = $site;
+        $this->entreprise = $entreprise;
 
         return $this;
     }

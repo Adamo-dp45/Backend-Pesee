@@ -51,9 +51,17 @@ final class CloisonnementTest extends InvariantTestCase
         $this->siteRivale = $this->creerSite($this->rivale, 'RIV001');
         $this->creerUtilisateur($this->rivale, Role::ADMIN, 'admin@rivale.test');
 
+        /*
+            - UN PRODUIT PAR ENTREPRISE, un planteur et une pesée PAR POSTE : c'est le clivage que
+              le modèle porte désormais. Les deux postes d'ACME partagent donc le même hévéa — en
+              créer un par poste serait aujourd'hui un doublon, que l'API refuserait.
+        */
+        $heveaAcme = $this->creerProduit($this->siteAcme, 'Hévéa');
+        $heveaRivale = $this->creerProduit($this->siteRivale, 'Hévéa');
+
         foreach([$this->siteAcme, $this->secondSiteAcme, $this->siteRivale] as $index => $site) {
-            $produit = $this->creerProduit($site, 'Hévéa');
             $planteur = $this->creerPlanteur($site, 'Planteur ' . $site->getCode());
+            $produit = $site === $this->siteRivale ? $heveaRivale : $heveaAcme;
             $this->creerPesee($site, $produit, $planteur, 500, (string) ($index + 1));
         }
     }
@@ -92,7 +100,7 @@ final class CloisonnementTest extends InvariantTestCase
         $this->appeler('GET', '/api/operations/' . $peseeRivale->getId(), $this->adminAcme);
         self::assertSame(404, $this->client->getResponse()->getStatusCode());
 
-        $produitRival = $this->em->getRepository(Produit::class)->findOneBy(['site' => $this->siteRivale]);
+        $produitRival = $this->em->getRepository(Produit::class)->findOneBy(['entreprise' => $this->rivale]);
         $this->appeler('GET', '/api/produits/' . $produitRival->getId(), $this->adminAcme);
         self::assertSame(404, $this->client->getResponse()->getStatusCode());
     }
@@ -235,21 +243,71 @@ final class CloisonnementTest extends InvariantTestCase
     }
 
     /*
+        - LE PRODUIT N'EST PLUS LOCAL, LE PLANTEUR L'EST RESTÉ. C'est tout le changement, et il se
+          lit sur un seul opérateur : il ne tient qu'un poste, voit TOUS les produits de son
+          entreprise — y compris celui que seul l'autre poste pèse — et toujours ses SEULS
+          planteurs. Sans ce cas, rien n'empêcherait de recloisonner le produit par mégarde.
+    */
+    public function testUnOperateurVoitLesProduitsDeSonEntrepriseMaisSesSeulsPlanteurs(): void
+    {
+        $this->creerProduit($this->secondSiteAcme, 'Palme'); // Sur l'entreprise, par l'autre poste
+
+        $this->appeler('GET', '/api/produits', $this->operateurAcme);
+        self::assertEqualsCanonicalizing(['Hévéa', 'Palme'], array_column($this->membres(), 'libelle'));
+
+        $this->appeler('GET', '/api/fournisseurs', $this->operateurAcme);
+        self::assertSame(['Planteur ACM001'], array_column($this->membres(), 'nom'));
+    }
+
+    /*
+        - L'ENTREPRISE D'UN PRODUIT NE VIENT PAS DE LA REQUÊTE, mais du compte qui l'envoie.
+
+        - Le cas envoie l'entreprise rivale EXPRÈS, et n'attend pas un refus : le champ a quitté
+          les groupes d'écriture, il n'est donc plus lu du tout. Ce qu'on vérifie, c'est que la
+          ligne atterrit chez son auteur quoi qu'on demande.
+
+        - La même charge utile répondait 400 avant : l'IRI d'un autre client ne résolvait pas, le
+          périmètre s'appliquant aussi à la lecture d'item. Rien n'était donc mal placé — mais le
+          cloisonnement tenait par effet de bord, et l'auteur lisait « Item not found » là où il
+          n'avait, en réalité, rien à saisir.
+    */
+    public function testLEntrepriseDUnProduitVientDuCompteEtNonDeLaRequete(): void
+    {
+        $this->appeler('POST', '/api/produits', $this->adminAcme, [
+            'libelle' => 'Karité',
+            'prix' => 600,
+            'entreprise' => '/api/entreprises/' . $this->rivale->getId(),
+        ]);
+
+        self::assertSame(201, $this->client->getResponse()->getStatusCode());
+
+        $this->em->clear();
+        $produit = $this->em->getRepository(Produit::class)->findOneBy(['libelle' => 'Karité']);
+
+        self::assertNotNull($produit);
+        self::assertSame(
+            $this->acme->getId(),
+            $produit->getEntreprise()?->getId(),
+            'Le produit doit rester chez son auteur, pas chez l\'entreprise nommée dans la charge utile'
+        );
+    }
+
+    /*
         - La corbeille est portée par la même extension. Un produit supprimé doit disparaître des
           listes sans emporter les pesées qui le référencent.
     */
     public function testUnProduitMisALaCorbeilleSortDesListes(): void
     {
-        $produit = $this->em->getRepository(Produit::class)->findOneBy(['site' => $this->siteAcme]);
+        $produit = $this->em->getRepository(Produit::class)->findOneBy(['entreprise' => $this->acme]);
 
         $this->appeler('GET', '/api/produits', $this->adminAcme);
-        self::assertCount(2, $this->membres()); // Un par poste d'ACME
+        self::assertCount(1, $this->membres()); // UN pour toute l'entreprise, ses deux postes compris
 
         $this->appeler('PATCH', '/api/produits/' . $produit->getId() . '/suppression', $this->adminAcme, []);
         self::assertSame(200, $this->client->getResponse()->getStatusCode());
 
         $this->appeler('GET', '/api/produits', $this->adminAcme);
-        self::assertCount(1, $this->membres());
+        self::assertCount(0, $this->membres());
 
         $this->appeler('GET', '/api/produits/' . $produit->getId(), $this->adminAcme);
         self::assertSame(404, $this->client->getResponse()->getStatusCode());

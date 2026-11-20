@@ -4,6 +4,7 @@ namespace App\DataFixtures;
 
 use App\Domain\Enum\CompteMouvement;
 use App\Domain\Enum\ModeReglement;
+use App\Domain\Enum\ModeTransport;
 use App\Domain\Enum\ReseauMobile;
 use App\Domain\Enum\Role;
 use App\Domain\Enum\StatutActivation;
@@ -17,6 +18,8 @@ use App\Domain\Enum\TypeCaisse;
 use App\Domain\Enum\TypeMouvement;
 use App\Domain\Enum\TypeMouvementEpargne;
 use App\Domain\Service\CompteMachineService;
+use App\Entity\BaremeTransport;
+use App\Entity\CategorieFournisseur;
 use App\Entity\CompteEpargne;
 use App\Entity\DemandePrelevement;
 use App\Entity\DemandeRetrait;
@@ -31,6 +34,9 @@ use App\Entity\Prelevement;
 use App\Entity\Produit;
 use App\Entity\Site;
 use App\Entity\SynchronisationLot;
+use App\Entity\Tranche;
+use App\Entity\TarifCategorie;
+use App\Entity\TarifFournisseur;
 use App\Entity\User;
 use Doctrine\Bundle\FixturesBundle\Fixture;
 use Doctrine\Persistence\ObjectManager;
@@ -94,17 +100,87 @@ class AppFixtures extends Fixture
         $this->doter($manager, $socaf, $gagnoa, TypeCaisse::NUMERIQUE, 8_000_000);
         $this->doter($manager, $socaf, $gagnoa, TypeCaisse::PHYSIQUE, 3_000_000);
 
-        /* ---- Référentiels, tels que le poste les créerait -------------------------------- */
+        /* ---- Référentiels : le produit à l'entreprise, le planteur au pont bascule -------- */
 
-        $hevea = $this->creerProduit($manager, $soubre, 'Hévéa', 'HEV', 400);
-        $palme = $this->creerProduit($manager, $soubre, 'Palme', 'PAL', 145);
-        $this->creerProduit($manager, $soubre, 'Cacao', 'CAC', 0); // Sans prix : ses pesées restent non payables
-        $cafe = $this->creerProduit($manager, $gagnoa, 'Café', 'CAF', 950);
+        /*
+            - Les quatre produits appartiennent à SOCAF, non à l'un de ses postes : Soubré et Gagnoa
+              voient donc le MÊME café au même prix, là où chacun tenait le sien. C'est le jeu de
+              données qui rend la chose visible — peser du café à Soubré sans l'y avoir créé.
+        */
+        $hevea = $this->creerProduit($manager, $socaf, 'Hévéa', 'HEV', 400);
+        $palme = $this->creerProduit($manager, $socaf, 'Palme', 'PAL', 145);
+        $this->creerProduit($manager, $socaf, 'Cacao', 'CAC', 0); // Sans prix : ses pesées restent non payables
+        $cafe = $this->creerProduit($manager, $socaf, 'Café', 'CAF', 950);
+
+        /*
+            - DEUX CATÉGORIES, et des tarifs qui ne couvrent pas tout : « Gros livreurs » paie l'hévéa
+              et la palme au-dessus du prix du produit, mais rien de particulier sur le café. Un de
+              ses planteurs qui livrerait du café retombe donc sur le prix du produit — c'est le cas
+              qu'une grille pleine cacherait, et c'est celui qui surprend au guichet.
+
+            - « Coopératives » n'a AUCUN tarif et aucun planteur : une catégorie qu'on vient de créer
+              ressemble à ça, et c'est le seul état où elle se supprime sans conséquence.
+        */
+        $grosLivreurs = $this->creerCategorie(
+            $manager,
+            $socaf,
+            'Gros livreurs',
+            'Les planteurs qui livrent plus de dix tonnes par passage.'
+        );
+        $this->tariferCategorie($manager, $grosLivreurs, $hevea, 450); // 400 pour les autres
+        $this->tariferCategorie($manager, $grosLivreurs, $palme, 160); // 145 pour les autres
+
+        $cooperatives = $this->creerCategorie(
+            $manager,
+            $socaf,
+            'Coopératives',
+            'Les coopératives sous contrat annuel. Aucun tarif négocié pour l\'instant.'
+        );
+
+        /*
+            - TROIS BARÈMES, UN PAR MODE, pour que le jeu de démonstration montre les trois façons
+              de payer un trajet. Celui au kilo reproduit À L'IDENTIQUE le prix que Yao portait sur
+              sa fiche : les scénarios de caisse plus bas versent des montants exacts, qu'un
+              transport différent rendrait faux.
+
+            - Les tranches couvrent de zéro à l'infini sans trou : c'est ce que la validation
+              exige, et c'est ce qui fait qu'une distance trouve toujours exactement un montant.
+        */
+        $auKilo = $this->creerBareme($manager, $socaf, 'Transport au kilo', ModeTransport::AU_KILO, prixAuKilo: 15);
+        $forfait = $this->creerBareme($manager, $socaf, 'Forfait village', ModeTransport::FORFAIT, montant: 8_000);
+
+        $parDistance = $this->creerBareme($manager, $socaf, 'Par distance', ModeTransport::TRANCHES);
+        $this->ajouterTranche($manager, $parDistance, 0, 20, 5_000);
+        $this->ajouterTranche($manager, $parDistance, 20, 50, 12_000);
+        $this->ajouterTranche($manager, $parDistance, 50, null, 20_000); // La dernière, sans limite
+
+        /* Une catégorie peut porter un barème : ses planteurs sans barème propre le suivent. */
+        $cooperatives->setBaremeTransport($forfait);
 
         $nguessan = $this->creerPlanteur($manager, $soubre, 'N\'Guessan', 'Kouamé', '0701020304', ReseauMobile::ORANGE);
-        $yao = $this->creerPlanteur($manager, $soubre, 'Kouame', 'Yao', '0505060708', ReseauMobile::WAVE, prixtransport: 15); // Il livre lui-même
+        $yao = $this->creerPlanteur($manager, $soubre, 'Kouame', 'Yao', '0505060708', ReseauMobile::WAVE); // Il livre lui-même
+        $yao->setBaremeTransport($auKilo); // 15 F le kilo, exactement ce qu'il portait avant les barèmes
         $sansNumero = $this->creerPlanteur($manager, $soubre, 'Bamba', 'Sekou'); // Non payable : pas de numéro
         $koffi = $this->creerPlanteur($manager, $gagnoa, 'Koffi', 'Jean', '0102030405', ReseauMobile::MTN);
+        /*
+            - Il n'a AUCUN barème à lui : son transport vient de sa catégorie, au forfait. C'est le
+              second saut de la résolution, et le seul endroit du jeu de données où on le voit.
+        */
+        $koffi->setCategorie($cooperatives);
+
+        /*
+            - CELUI PAR QUI LES TROIS SAUTS SE LISENT. Il est en catégorie « Gros livreurs », donc son
+              hévéa vaut 450 au lieu de 400 — origine CATEGORIE. Et il a un tarif négocié à lui sur la
+              palme, 200 au lieu des 160 de sa catégorie — origine PLANTEUR. Tous les autres restent
+              au prix du produit, origine PRODUIT.
+
+            - Il est NEUF exprès, plutôt que de classer un planteur existant : les scénarios de caisse
+              plus bas versent des montants exacts, qu'un changement de prix rendrait faux.
+        */
+        $grossiste = $this->creerPlanteur($manager, $soubre, 'Traoré', 'Salif', '0709101112', ReseauMobile::ORANGE);
+        $grossiste->setCategorie($grosLivreurs);
+        $grossiste->setBaremeTransport($parDistance)->setDistanceKm(35); // Tranche « de 20 à 50 km » : 12 000 F par pesée
+        $this->tariferPlanteur($manager, $grossiste, $palme, 200); // L'emporte sur les 160 de sa catégorie
 
         /*
             - Yao met de côté sur DEUX cultures, à deux taux différents : c'est tout l'intérêt du
@@ -142,9 +218,13 @@ class AppFixtures extends Fixture
         $this->mettreEnCompte($manager, $echouee, $yao);
         $this->verser($manager, $echouee, 1_000_000, StatutPaiement::ECHOUE);
 
+        /* Son hévéa au tarif de sa catégorie, sa palme au sien : deux origines sur la même fiche */
+        $this->creerPesee($manager, $soubre, $hevea, $grossiste, '1006', 'T-4506', 9_000, 24_000, '-1 day');
+        $this->creerPesee($manager, $soubre, $palme, $grossiste, '1007', 'T-4507', 7_000, 20_000, '-1 day');
+
         $this->creerPesee($manager, $gagnoa, $cafe, $koffi, '2001', 'T-9001', 7_000, 19_000, '-1 day');
 
-        $this->journaliser($manager, $soubre, 6, 6, 0);
+        $this->journaliser($manager, $soubre, 8, 8, 0);
         $this->journaliser($manager, $gagnoa, 1, 1, 0);
         $this->journaliser($manager, $bloque, 2, 0, 2); // Poste bloqué : ses envois sont refusés
 
@@ -186,7 +266,7 @@ class AppFixtures extends Fixture
         $this->doter($manager, $agri, $bouake, TypeCaisse::NUMERIQUE, 2_000_000);
         $this->doter($manager, $agri, $bouake, TypeCaisse::PHYSIQUE, 500_000);
 
-        $anacarde = $this->creerProduit($manager, $bouake, 'Anacarde', 'ANA', 310);
+        $anacarde = $this->creerProduit($manager, $agri, 'Anacarde', 'ANA', 310);
         $sanogo = $this->creerPlanteur($manager, $bouake, 'Sanogo', 'Fanta', '0708091011', ReseauMobile::MOOV);
         $this->creerPesee($manager, $bouake, $anacarde, $sanogo, '5001', 'T-1201', 6_000, 21_000, '-1 day');
 
@@ -271,17 +351,76 @@ class AppFixtures extends Fixture
         return $site;
     }
 
-    private function creerProduit(ObjectManager $manager, Site $site, string $libelle, string $code, int $prix): Produit
+    private function creerProduit(ObjectManager $manager, Entreprise $entreprise, string $libelle, string $code, int $prix): Produit
     {
         $produit = (new Produit())
             ->setLibelle($libelle)
             ->setCodeproduit($code)
             ->setPrix($prix)
-            ->setSite($site);
+            ->setEntreprise($entreprise);
 
         $manager->persist($produit);
 
         return $produit;
+    }
+
+    private function creerCategorie(
+        ObjectManager $manager,
+        Entreprise $entreprise,
+        string $libelle,
+        ?string $description = null
+    ): CategorieFournisseur {
+        $categorie = (new CategorieFournisseur())
+            ->setLibelle($libelle)
+            ->setDescription($description)
+            ->setEntreprise($entreprise);
+
+        $manager->persist($categorie);
+
+        return $categorie;
+    }
+
+    private function tariferCategorie(ObjectManager $manager, CategorieFournisseur $categorie, Produit $produit, int $prix): void
+    {
+        $categorie->addTarif($tarif = (new TarifCategorie())->setProduit($produit)->setPrix($prix));
+
+        $manager->persist($tarif);
+    }
+
+    private function tariferPlanteur(ObjectManager $manager, Fournisseur $planteur, Produit $produit, int $prix): void
+    {
+        $planteur->addTarif($tarif = (new TarifFournisseur())->setProduit($produit)->setPrix($prix));
+
+        $manager->persist($tarif);
+    }
+
+    private function creerBareme(
+        ObjectManager $manager,
+        Entreprise $entreprise,
+        string $libelle,
+        ModeTransport $mode,
+        ?int $prixAuKilo = null,
+        ?int $montant = null
+    ): BaremeTransport {
+        $bareme = (new BaremeTransport())
+            ->setLibelle($libelle)
+            ->setMode($mode)
+            ->setPrixAuKilo($prixAuKilo)
+            ->setMontant($montant)
+            ->setEntreprise($entreprise);
+
+        $manager->persist($bareme);
+
+        return $bareme;
+    }
+
+    private function ajouterTranche(ObjectManager $manager, BaremeTransport $bareme, int $kmMin, ?int $kmMax, int $montant): void
+    {
+        $bareme->addTranche(
+            $tranche = (new Tranche())->setKmMin($kmMin)->setKmMax($kmMax)->setMontant($montant)
+        );
+
+        $manager->persist($tranche);
     }
 
     private function creerPlanteur(
@@ -290,15 +429,13 @@ class AppFixtures extends Fixture
         string $nom,
         string $prenom,
         ?string $contact = null,
-        ?ReseauMobile $reseau = null,
-        ?int $prixtransport = null
+        ?ReseauMobile $reseau = null
     ): Fournisseur {
         $planteur = (new Fournisseur())
             ->setNom($nom)
             ->setPrenom($prenom)
             ->setContact1($contact)
             ->setReseau($reseau)
-            ->setPrixtransport($prixtransport)
             ->setSite($site);
 
         $manager->persist($planteur);
