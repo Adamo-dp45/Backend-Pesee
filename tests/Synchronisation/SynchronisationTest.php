@@ -373,6 +373,72 @@ final class SynchronisationTest extends InvariantTestCase
         self::assertSame(0, $this->pesees()[0]->getMontantpayable());
     }
 
+    /* ---- L'identité d'un planteur --------------------------------------------------------- */
+
+    /*
+        - DEUX HOMÔNYMES SONT DEUX PERSONNES, et c'est le cas que le libellé ne savait pas voir.
+          « Kouamé » désigne trois planteurs dans un village : leurs pesées, leurs versements et leur
+          épargne atterrissaient tous sur une seule fiche, et personne ne pouvait s'en apercevoir
+          — la fiche avait l'air normale, simplement plus grosse.
+    */
+    public function testDeuxPlanteursDeMemeNomNeSeConfondentPlus(): void
+    {
+        $this->synchroniser([
+            $this->ligne('201', ['codefournisseur' => 'F-001', 'libellefournisseur' => 'Kouame']),
+            $this->ligne('202', ['codefournisseur' => 'F-002', 'libellefournisseur' => 'Kouame']),
+        ]);
+
+        self::assertSame(2, $this->reponse()['success']);
+
+        $this->em->clear();
+
+        $codes = array_map(
+            static fn(Fournisseur $f): ?string => $f->getCodefournisseur(),
+            $this->em->getRepository(Fournisseur::class)->findBy([], ['id' => 'ASC'])
+        );
+
+        self::assertSame(['F-001', 'F-002'], $codes, 'Deux codes, deux fiches');
+    }
+
+    /*
+        - UN PLANTEUR RENOMMÉ RESTE LE MÊME. Corriger « Traore » en « Traoré » sur le poste créait
+          une seconde fiche, et la première gardait l'historique : la coupure ne se voyait nulle part.
+
+        - ET LE NOM NE SE RÉÉCRIT PAS. Le poste n'est plus la source du référentiel : un nom corrigé
+          au bureau ne doit pas être défait par le prochain envoi, pas plus que le numéro de
+          téléphone.
+    */
+    public function testUnPlanteurRenommeSurLePosteResteLeMeme(): void
+    {
+        $this->synchroniser([$this->ligne('203', ['codefournisseur' => 'F-010', 'libellefournisseur' => 'Traore'])]);
+        $this->synchroniser([$this->ligne('204', ['codefournisseur' => 'F-010', 'libellefournisseur' => 'Traoré Salif'])]);
+
+        $this->em->clear();
+
+        $planteurs = $this->em->getRepository(Fournisseur::class)->findBy([], ['id' => 'ASC']);
+
+        self::assertCount(1, $planteurs, 'Un seul code, une seule fiche');
+        self::assertSame('Traore', $planteurs[0]->getNom(), 'Le nom appartient au bureau, pas au poste');
+    }
+
+    /*
+        - LES FICHES D'AVANT N'ONT PAS DE CODE, et c'est ce qui rend la bascule possible sans reprise
+          de données : on les retrouve par leur nom, on leur pose le code au passage, et la fois
+          suivante c'est le code qui répond.
+    */
+    public function testUneFicheSansCodeSeRetrouveParSonNomPuisRecoitLeCode(): void
+    {
+        $this->synchroniser([$this->ligne('205', ['libellefournisseur' => 'Bamba'])]); // Sans code : comme avant
+        $this->synchroniser([$this->ligne('206', ['codefournisseur' => 'F-020', 'libellefournisseur' => 'Bamba'])]);
+
+        $this->em->clear();
+
+        $planteurs = $this->em->getRepository(Fournisseur::class)->findBy([], ['id' => 'ASC']);
+
+        self::assertCount(1, $planteurs, 'Le nom a servi de repli, aucune seconde fiche');
+        self::assertSame('F-020', $planteurs[0]->getCodefournisseur(), 'Le code est posé au passage');
+    }
+
     private function ligne(string $refDesktop, array $surcharges = []): array
     {
         return $surcharges + [

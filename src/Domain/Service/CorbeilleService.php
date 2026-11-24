@@ -3,6 +3,13 @@
 namespace App\Domain\Service;
 
 use App\Domain\Enum\TypeActivite;
+use App\Entity\CompteEpargne;
+use App\Entity\DemandePrelevement;
+use App\Entity\DemandeRetrait;
+use App\Entity\Paiement;
+use App\Entity\Prelevement;
+use App\Entity\TarifCategorie;
+use App\Entity\TarifFournisseur;
 use App\Entity\Entreprise;
 use App\Entity\BaremeTransport;
 use App\Entity\CategorieFournisseur;
@@ -201,6 +208,10 @@ final class CorbeilleService
               'SET NULL'. Ils retomberaient tous au prix du produit, sans que rien ne le dise.
         */
         if($entite instanceof CategorieFournisseur) {
+            if(($motif = $this->motifDesReferences($entite)) !== null) {
+                return $motif;
+            }
+
             $planteurs = $entite->getPlanteursCount();
 
             if($planteurs === 0) {
@@ -236,16 +247,79 @@ final class CorbeilleService
 
         $pesees = $this->compterLesPesees($entite);
 
-        if($pesees === 0) {
-            return null;
+        if($pesees > 0) {
+            return sprintf(
+                '%d pesée%s référence%s encore cet élément : le supprimer définitivement leur ferait perdre leur référentiel.',
+                $pesees,
+                $pesees > 1 ? 's' : '',
+                $pesees > 1 ? 'nt' : ''
+            );
         }
 
-        return sprintf(
-            '%d pesée%s référence%s encore cet élément : le supprimer définitivement leur ferait perdre leur référentiel.',
-            $pesees,
-            $pesees > 1 ? 's' : '',
-            $pesees > 1 ? 'nt' : ''
-        );
+        return $this->motifDesReferences($entite);
+    }
+
+    /*
+        - TOUT CE QUI RETIENT CETTE LIGNE, et pas seulement les pesées. La purge ne regardait
+          qu'elles : un planteur sans pesée mais avec un tarif propre, une mise en compte, une
+          demande ou un compte d'épargne passait la garde, et c'est la CLÉ ÉTRANGÈRE qui refusait
+          — en 'NO ACTION', c'est-à-dire par une erreur 500 brute, sans un mot sur ce qu'il
+          fallait faire. Un produit était dans le même cas avec ses tarifs et ses prélèvements,
+          une catégorie avec sa grille.
+
+        - LA BASE A TOUJOURS LE DERNIER MOT, et c'est bien ainsi : cette liste la DOUBLE, elle ne
+          la remplace pas. Elle existe pour que le refus soit lisible, pas pour qu'il soit possible.
+
+        - L'ORDRE EST CELUI DE L'UTILITÉ : on nomme la première référence trouvée plutôt que de
+          les énumérer toutes. Qui doit en détacher trois le découvrira trois fois, et chaque
+          message lui dira exactement où aller.
+
+        @return string|null le motif, ou null si rien ne retient
+    */
+    private function motifDesReferences(Produit|Fournisseur|CategorieFournisseur $entite): ?string
+    {
+        $liens = match(true) {
+            $entite instanceof Fournisseur => [
+                [TarifFournisseur::class, 'fournisseur', 'tarif propre', 'tarifs propres'],
+                [Prelevement::class, 'fournisseur', 'mise en compte', 'mises en compte'],
+                [DemandePrelevement::class, 'fournisseur', 'demande de mise en compte', 'demandes de mise en compte'],
+                [DemandeRetrait::class, 'fournisseur', 'demande de retrait', 'demandes de retrait'],
+                [Paiement::class, 'fournisseur', 'versement', 'versements'],
+                [CompteEpargne::class, 'fournisseur', "compte d’épargne", "comptes d’épargne"],
+            ],
+            $entite instanceof Produit => [
+                [TarifFournisseur::class, 'produit', 'tarif de planteur', 'tarifs de planteurs'],
+                [TarifCategorie::class, 'produit', 'tarif de catégorie', 'tarifs de catégories'],
+                [Prelevement::class, 'produit', 'mise en compte', 'mises en compte'],
+                [DemandePrelevement::class, 'produit', 'demande de mise en compte', 'demandes de mise en compte'],
+            ],
+            default => [
+                [TarifCategorie::class, 'categorie', 'tarif', 'tarifs'],
+            ],
+        };
+
+        foreach($liens as [$classe, $champ, $singulier, $pluriel]) {
+            $nombre = (int) $this->em->createQueryBuilder()
+                ->select('COUNT(e.id)')
+                ->from($classe, 'e')
+                ->andWhere(sprintf('e.%s = :entite', $champ))
+                ->setParameter('entite', $entite)
+                ->getQuery()
+                ->getSingleScalarResult();
+
+            if($nombre > 0) {
+                return sprintf(
+                    '%d %s y %s encore rattach%s : retirez-%s avant de supprimer définitivement cet élément.',
+                    $nombre,
+                    $nombre > 1 ? $pluriel : $singulier,
+                    $nombre > 1 ? 'sont' : 'est',
+                    $nombre > 1 ? 'és' : 'é',
+                    $nombre > 1 ? 'les' : 'le'
+                );
+            }
+        }
+
+        return null;
     }
 
     /* Combien de planteurs et de catégories pointent sur ce barème. En SQL : la liste peut être longue, et on n'en ferait rien d'autre que la compter. */

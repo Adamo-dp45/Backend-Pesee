@@ -207,45 +207,32 @@ final class TarificationProcessor implements ProcessorInterface
     private function journaliserLeTransport(Fournisseur $planteur, ?User $auteur, array $origine): array
     {
         /*
-            - DEUX CHAMPS DÉCIDENT DU TRANSPORT depuis les barèmes, et non plus un prix au kilo :
-              le barème rattaché, et la DISTANCE. Changer l'un ou l'autre change ce que le
-              planteur touche — une distance corrigée de 18 à 25 km le fait changer de tranche.
-              N'en surveiller qu'un laisserait l'autre sans effet, en silence.
+            - UN SEUL CHAMP DÉCIDE DU TRANSPORT : le barème rattaché. Ils étaient deux — le barème
+              et la DISTANCE du planteur, qui choisissait l'intervalle d'un barème par tranches.
+              Les bornes vivent désormais sur le barème et ne choisissent plus rien : changer de
+              barème, c'est changer de tranche, et il n'y a plus qu'une chose à surveiller.
         */
         $baremeAvant = $origine['baremeTransport'] ?? null;
         $baremeAvant = $baremeAvant instanceof BaremeTransport ? $baremeAvant : null;
         $baremeApres = $planteur->getBaremeTransport();
 
-        $bougeLeBareme = array_key_exists('baremeTransport', $origine)
-            && $baremeAvant?->getId() !== $baremeApres?->getId();
-
-        $bougeLaDistance = array_key_exists('distanceKm', $origine)
-            && $origine['distanceKm'] !== $planteur->getDistanceKm();
-
-        if(!$bougeLeBareme && !$bougeLaDistance) {
+        if(!array_key_exists('baremeTransport', $origine) || $baremeAvant?->getId() === $baremeApres?->getId()) {
             return [];
         }
 
         $this->activites->log(
             TypeActivite::FOURNISSEUR_TARIFE,
             sprintf(
-                '%s a change le transport de %s : bareme %s -> %s, distance %s -> %s',
+                '%s a change le transport de %s : bareme %s -> %s',
                 $auteur?->getNomComplet() ?? 'Le systeme',
                 (string) $planteur,
                 $baremeAvant === null ? 'aucun' : (string) $baremeAvant,
-                $baremeApres === null ? 'aucun' : (string) $baremeApres,
-                $this->kilometres($origine['distanceKm'] ?? null),
-                $this->kilometres($planteur->getDistanceKm())
+                $baremeApres === null ? 'aucun' : (string) $baremeApres
             ),
             $planteur
         );
 
         return [PartPesee::TRANSPORT];
-    }
-
-    private function kilometres(mixed $valeur): string
-    {
-        return $valeur === null ? 'inconnue' : $valeur . ' km';
     }
 
     /**

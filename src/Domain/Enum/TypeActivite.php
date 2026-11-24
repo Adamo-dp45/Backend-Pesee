@@ -27,6 +27,7 @@ enum TypeActivite: string
     case FOURNISSEUR_CATEGORIE = 'FOURNISSEUR_CATEGORIE'; // Le classement d'un planteur : il change ses prix d'un coup
     case BAREME_TRANSPORT = 'BAREME_TRANSPORT';           // La façon dont un trajet se facture, pour tous ceux qui suivent ce barème
     case PESEE_PRIX = 'PESEE_PRIX';                       // Le prix écrit à la main sur UNE pesée : la prime
+    case PESEE_TRANSPORT = 'PESEE_TRANSPORT';             // Le transport écrit à la main sur UNE pesée
 
     /*
         - La mise en compte. Elle décide de ce qu'un planteur touche au guichet, exactement comme un
@@ -67,6 +68,7 @@ enum TypeActivite: string
             self::TARIF_FOURNISSEUR => 'Tarifs propres d\'un planteur',
             self::FOURNISSEUR_CATEGORIE => 'Classement d\'un planteur',
             self::BAREME_TRANSPORT => 'Barème de transport',
+            self::PESEE_TRANSPORT => 'Transport d’une pesée',
             self::PESEE_PRIX => 'Prix au kilo d\'une pesée',
             self::FOURNISSEUR_PRELEVEMENT => 'Ouverture d\'une mise en compte',
             self::FOURNISSEUR_PRELEVEMENT_ARRET => 'Arrêt d\'une mise en compte',

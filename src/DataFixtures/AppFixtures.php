@@ -34,7 +34,6 @@ use App\Entity\Prelevement;
 use App\Entity\Produit;
 use App\Entity\Site;
 use App\Entity\SynchronisationLot;
-use App\Entity\Tranche;
 use App\Entity\TarifCategorie;
 use App\Entity\TarifFournisseur;
 use App\Entity\User;
@@ -54,6 +53,10 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 class AppFixtures extends Fixture
 {
     private const MOT_DE_PASSE = 'motdepasse123';
+
+    /* Le numéro du prochain planteur, par pont bascule : chacun compte de son côté. */
+    /** @var array<string, int> */
+    private array $rangsPlanteurs = [];
 
     /** @var array<int, CompteEpargne> Les comptes d'épargne du jeu, indexés par planteur : rien n'est encore en base pendant la construction */
     private array $comptesEpargne = [];
@@ -138,21 +141,21 @@ class AppFixtures extends Fixture
         );
 
         /*
-            - TROIS BARÈMES, UN PAR MODE, pour que le jeu de démonstration montre les trois façons
-              de payer un trajet. Celui au kilo reproduit À L'IDENTIQUE le prix que Yao portait sur
-              sa fiche : les scénarios de caisse plus bas versent des montants exacts, qu'un
-              transport différent rendrait faux.
+            - QUATRE BARÈMES. Celui au kilo reproduit À L'IDENTIQUE le prix que Yao portait sur sa
+              fiche : les scénarios de caisse plus bas versent des montants exacts, qu'un transport
+              différent rendrait faux.
 
-            - Les tranches couvrent de zéro à l'infini sans trou : c'est ce que la validation
-              exige, et c'est ce qui fait qu'une distance trouve toujours exactement un montant.
+            - LES TROIS AUTRES SONT DES FORFAITS BORNÉS, c'est-à-dire des tranches : ce qui tenait
+              dans une collection d'intervalles tient maintenant dans trois lignes de la liste, que
+              l'on rattache à un planteur comme n'importe quel autre barème. Leurs bornes ne
+              calculent rien, elles les nomment — sans elles, trois forfaits se ressembleraient.
         */
         $auKilo = $this->creerBareme($manager, $socaf, 'Transport au kilo', ModeTransport::AU_KILO, prixAuKilo: 15);
         $forfait = $this->creerBareme($manager, $socaf, 'Forfait village', ModeTransport::FORFAIT, montant: 8_000);
 
-        $parDistance = $this->creerBareme($manager, $socaf, 'Par distance', ModeTransport::TRANCHES);
-        $this->ajouterTranche($manager, $parDistance, 0, 20, 5_000);
-        $this->ajouterTranche($manager, $parDistance, 20, 50, 12_000);
-        $this->ajouterTranche($manager, $parDistance, 50, null, 20_000); // La dernière, sans limite
+        $this->creerBareme($manager, $socaf, 'Trajet court', ModeTransport::FORFAIT, montant: 5_000, kmMin: 0, kmMax: 20);
+        $moyenneDistance = $this->creerBareme($manager, $socaf, 'Trajet moyen', ModeTransport::FORFAIT, montant: 12_000, kmMin: 20, kmMax: 50);
+        $this->creerBareme($manager, $socaf, 'Trajet long', ModeTransport::FORFAIT, montant: 20_000, kmMin: 50);
 
         /* Une catégorie peut porter un barème : ses planteurs sans barème propre le suivent. */
         $cooperatives->setBaremeTransport($forfait);
@@ -179,7 +182,7 @@ class AppFixtures extends Fixture
         */
         $grossiste = $this->creerPlanteur($manager, $soubre, 'Traoré', 'Salif', '0709101112', ReseauMobile::ORANGE);
         $grossiste->setCategorie($grosLivreurs);
-        $grossiste->setBaremeTransport($parDistance)->setDistanceKm(35); // Tranche « de 20 à 50 km » : 12 000 F par pesée
+        $grossiste->setBaremeTransport($moyenneDistance); // « de 20 à 50 km » : 12 000 F par pesée
         $this->tariferPlanteur($manager, $grossiste, $palme, 200); // L'emporte sur les 160 de sa catégorie
 
         /*
@@ -400,13 +403,17 @@ class AppFixtures extends Fixture
         string $libelle,
         ModeTransport $mode,
         ?int $prixAuKilo = null,
-        ?int $montant = null
+        ?int $montant = null,
+        ?int $kmMin = null,
+        ?int $kmMax = null
     ): BaremeTransport {
         $bareme = (new BaremeTransport())
             ->setLibelle($libelle)
             ->setMode($mode)
             ->setPrixAuKilo($prixAuKilo)
             ->setMontant($montant)
+            ->setKmMin($kmMin)
+            ->setKmMax($kmMax)
             ->setEntreprise($entreprise);
 
         $manager->persist($bareme);
@@ -414,15 +421,15 @@ class AppFixtures extends Fixture
         return $bareme;
     }
 
-    private function ajouterTranche(ObjectManager $manager, BaremeTransport $bareme, int $kmMin, ?int $kmMax, int $montant): void
-    {
-        $bareme->addTranche(
-            $tranche = (new Tranche())->setKmMin($kmMin)->setKmMax($kmMax)->setMontant($montant)
-        );
+    /*
+        - CHAQUE PLANTEUR PORTE UN CODE, parce que c'est lui qui l'identifie : la synchronisation
+          rapproche désormais par le code, et le libellé ne sert plus que de repli pour les fiches
+          d'avant. Un jeu de démonstration sans codes montrerait un état que le terrain ne produit
+          plus — et les listes de choix, qui affichent le code à côté du nom, n'auraient rien à dire.
 
-        $manager->persist($tranche);
-    }
-
+        - LE CODE EST COMPTÉ PAR SITE, comme le poste le fait : deux ponts bascules numérotent
+          chacun de leur côté, et c'est pourquoi l'unicité d'un code ne vaut que dans son périmètre.
+    */
     private function creerPlanteur(
         ObjectManager $manager,
         Site $site,
@@ -431,7 +438,11 @@ class AppFixtures extends Fixture
         ?string $contact = null,
         ?ReseauMobile $reseau = null
     ): Fournisseur {
+        $code = (string) $site->getCode();
+        $rang = $this->rangsPlanteurs[$code] = ($this->rangsPlanteurs[$code] ?? 0) + 1;
+
         $planteur = (new Fournisseur())
+            ->setCodefournisseur(sprintf('%s-P%03d', $code, $rang))
             ->setNom($nom)
             ->setPrenom($prenom)
             ->setContact1($contact)

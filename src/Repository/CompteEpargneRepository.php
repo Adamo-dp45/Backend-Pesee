@@ -20,7 +20,7 @@ class CompteEpargneRepository extends ServiceEntityRepository
 
     /*
         - Les comptes d'un lot de planteurs, en UNE requête et indexés par identifiant de planteur.
-          Même mécanique que 'FournisseurRepository::parCles()' : la synchronisation traite des lots
+          Même mécanique que 'FournisseurRepository::pourLaSynchronisation()' : la synchronisation traite des lots
           entiers, et aller chercher le compte planteur par planteur rendrait une requête par ligne.
     */
     /**

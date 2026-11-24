@@ -3,6 +3,7 @@
 namespace App\Domain\Service\Caisse;
 
 use App\Domain\Enum\ModeReglement;
+use App\Domain\Enum\PartPesee;
 use App\Domain\Enum\ReseauMobile;
 use App\Domain\Enum\StatutPaiement;
 use App\Domain\Enum\StatutReglement;
@@ -111,6 +112,136 @@ class PaiementService
     }
 
     /*
+        - LE VERSEMENT GROUPÉ : plusieurs pesées d'un MÊME planteur, en un geste. Au guichet, un
+          planteur se présente avec trois tickets ; les régler un par un, c'est trois fois l'écran,
+          trois fois le risque d'en oublier un, et trois fois la question « combien au juste ».
+
+        - COCHER, C'EST RÉGLER LA TOTALITÉ de ce qui est coché. Aucun montant ne se saisit : on
+          choisit les pesées, éventuellement la PART (la récolte seule, le transport seul, ou les
+          deux), et chaque pesée reçoit tout ce qui lui reste à engager. Il n'y a donc aucune
+          répartition à décider, et aucune façon de se tromper d'un franc.
+
+        - UN SEUL PLANTEUR, UNE SEULE CAISSE, et le refus est explicite. Un versement sort d'une
+          caisse vers une personne : mélanger deux planteurs produirait une ligne qui ne veut rien
+          dire, et deux ponts bascules un débit sur la mauvaise caisse.
+
+        - UNE SEULE TRANSACTION POUR TOUT LE LOT. Trois appels à 'initier()' en feraient trois, et
+          une caisse à sec sur la troisième laisserait les deux premières payées — l'opérateur
+          croirait son geste refusé alors que l'argent est sorti. D'où 'ecrireEtDebiter()', qui ne
+          transacte pas, et la boucle sous une seule enveloppe.
+
+        - LES BORNES SONT CELLES DE 'initier()', appliquées pesée par pesée : on part du PAYABLE
+          moins ce qui est déjà ENGAGÉ (versements en vol compris). Une pesée qui n'a plus rien à
+          engager est écartée en silence plutôt que de faire échouer tout le lot : elle a pu être
+          réglée à l'autre guichet pendant que l'opérateur cochait.
+
+        @param list<Operation> $pesees
+        @param PartPesee|null  $part la récolte seule, le transport seul, ou null pour les deux
+
+        @return list<Paiement>
+    */
+    public function initierLot(array $pesees, ?PartPesee $part, ModeReglement $mode, User $initiePar, ?string $numeroCheque = null): array
+    {
+        if($pesees === []) {
+            throw new UnprocessableEntityHttpException('Aucune pesée sélectionnée.');
+        }
+
+        /*
+            - LE GROUPÉ NE PASSE PAS PAR LA PASSERELLE, et le refus vaut mieux qu'un demi-service :
+              trois envois mobiles sous une transaction, dont le deuxième échoue, laisseraient un
+              lot à moitié parti que la réconciliation devrait démêler ligne à ligne. Le mode est
+              de toute façon fermé à la saisie ; le jour où il rouvre, c'est ici qu'on décidera.
+        */
+        if($mode->passeParLaPasserelle()) {
+            throw new UnprocessableEntityHttpException('Un versement groupé se règle en espèces ou par chèque : réglez les pesées une à une pour les autres modes.');
+        }
+
+        $planteur = null;
+        $site = null;
+
+        foreach($pesees as $pesee) {
+            $sien = $pesee->getFournisseur();
+            $sonSite = $pesee->getSite();
+
+            if($sien === null || $sonSite === null) {
+                throw new UnprocessableEntityHttpException('Une de ces pesées n’est rattachée ni à un planteur ni à un pont bascule.');
+            }
+
+            if(!$pesee->estTerminee()) {
+                throw new UnprocessableEntityHttpException(sprintf(
+                    'La pesée %s n’est pas terminée : le camion n’est pas encore ressorti.',
+                    (string) $pesee->getNumticket()
+                ));
+            }
+
+            $planteur ??= $sien;
+            $site ??= $sonSite;
+
+            if($sien->getId() !== $planteur->getId()) {
+                throw new UnprocessableEntityHttpException('Un versement va à UN planteur : ces pesées ne sont pas toutes au même.');
+            }
+
+            if($sonSite->getId() !== $site->getId()) {
+                throw new UnprocessableEntityHttpException('Ces pesées viennent de deux ponts bascules : un versement sort d’une seule caisse.');
+            }
+        }
+
+        if(!$planteur instanceof Fournisseur || !$site instanceof Site) {
+            throw new UnprocessableEntityHttpException('Ces pesées ne désignent ni planteur ni pont bascule.'); // Inatteignable : la boucle ci-dessus l a déjà refusé
+        }
+
+        if(!$site->accepteLaSynchronisation()) {
+            throw new UnprocessableEntityHttpException('Ce pont bascule est bloqué : aucun paiement ne peut en partir.');
+        }
+
+        $this->exigerUnPlanteurReglable($planteur);
+
+        $destination = $this->resoudreLaDestination($mode, $planteur, null, $numeroCheque);
+
+        /* Le plan, arrêté AVANT d'écrire : ce qu'il reste à engager sur chaque pesée, part par part. */
+        $plan = [];
+        $total = 0;
+
+        foreach($pesees as $pesee) {
+            $engage = $this->paiementRepository->sommesEngagees($pesee);
+
+            $montantProduit = $part === PartPesee::TRANSPORT ? 0 : max(0, $pesee->getPayableproduit() - $engage['produit']);
+            $montantTransport = $part === PartPesee::RECOLTE ? 0 : max(0, $pesee->getPayabletransport() - $engage['transport']);
+
+            if($montantProduit + $montantTransport <= 0) {
+                continue;
+            }
+
+            $plan[] = [$pesee, $montantProduit, $montantTransport];
+            $total += $montantProduit + $montantTransport;
+        }
+
+        if($total <= 0) {
+            throw new UnprocessableEntityHttpException('Il n’y a rien à verser sur ces pesées : tout est déjà réglé ou engagé.');
+        }
+
+        $paiements = [];
+
+        $this->em->wrapInTransaction(function() use ($plan, $planteur, $site, $mode, $initiePar, $destination, &$paiements): void {
+            foreach($plan as [$pesee, $montantProduit, $montantTransport]) {
+                $paiements[] = $this->ecrireEtDebiter($planteur, $site, $montantProduit, $montantTransport, $mode, $initiePar, $destination, $pesee, null);
+            }
+        });
+
+        /*
+            - LA CONFIRMATION LIGNE À LIGNE, hors de la transaction. Hors passerelle elle ne peut pas
+              échouer — les billets ont déjà changé de main — et c'est elle qui fait tomber le reste
+              à payer de chaque pesée. La faire dans la transaction aurait allongé d'autant le temps
+              où la caisse est verrouillée.
+        */
+        foreach($paiements as $rang => $paiement) {
+            $paiements[$rang] = $this->conclure($paiement, $mode, $initiePar);
+        }
+
+        return $paiements;
+    }
+
+    /*
         - Le contrôle d'UNE part, appliqué aux deux. Rien à verser sur cette part : on ne dit rien, c'est le cas courant — la plupart des planteurs n'ont pas de transport, et un opérateur qui ne règle que la récolte laisse l'autre champ à zéro.
 
         - LE REFUS SE COMPOSE DES CHIFFRES PASSÉS ICI, et non de ce que l'entité répondrait. Les siens viennent de sa collection de versements, qui n'est pas à jour au moment où l'on écrit : une pesée entièrement engagée s'y lisait encore libre, et le refus tombait sur un message générique au lieu de dire qu'un versement était en vol. Les formats, eux, sont ceux de l'entité — l'écran doit annoncer mot pour mot ce que le serveur répond.
@@ -206,6 +337,39 @@ class PaiementService
     */
     private function executer(Fournisseur $planteur, Site $site, int $montantProduit, int $montantTransport, ModeReglement $mode, User $initiePar, array $destination, ?Operation $pesee = null, ?ReseauMobile $reseau = null, ?callable $avantLeDebit = null): Paiement
     {
+        $paiement = null;
+
+        /*
+            - Le versement et la réservation des fonds dans la MÊME transaction. Écrire le paiement
+              d'abord puis débiter laissait, quand la caisse est insuffisante, une ligne en
+              'EN_ATTENTE' que rien ne rattrapait : elle comptait dans 'sommeEngagee()' — donc
+              gelait une part du reste à payer pour toujours — et la réconciliation aurait fini par
+              la faire confirmer par la passerelle, créditant un planteur sans qu'un franc soit sorti.
+        */
+        $this->em->wrapInTransaction(function() use (&$paiement, $planteur, $site, $montantProduit, $montantTransport, $mode, $initiePar, $destination, $pesee, $reseau, $avantLeDebit): void {
+            $paiement = $this->ecrireEtDebiter($planteur, $site, $montantProduit, $montantTransport, $mode, $initiePar, $destination, $pesee, $reseau, $avantLeDebit);
+        });
+
+        if(!$paiement instanceof Paiement) {
+            throw new \RuntimeException('La transaction du versement n a rien ecrit.'); // Inatteignable : la fermeture pose toujours la ligne
+        }
+
+        return $this->conclure($paiement, $mode, $initiePar);
+    }
+
+    /*
+        - CE QUI S'ÉCRIT DANS LA TRANSACTION, et rien d'autre : la ligne du versement, le geste
+          préalable s'il y en a un, et la réservation des fonds. Extrait pour que le versement
+          GROUPÉ puisse en enchaîner plusieurs sous UNE transaction — imbriquer deux
+          'wrapInTransaction' est à proscrire, DBAL ne pose pas de point de reprise.
+
+        - Le contrôle du solde reste dans 'debiterPourPaiement()', sous verrou : le vérifier ici en
+          plus serait à la fois redondant et sujet à la course.
+
+        @param array{numero: ?string, cheque: ?string} $destination
+    */
+    private function ecrireEtDebiter(Fournisseur $planteur, Site $site, int $montantProduit, int $montantTransport, ModeReglement $mode, User $initiePar, array $destination, ?Operation $pesee, ?ReseauMobile $reseau, ?callable $avantLeDebit = null): Paiement
+    {
         $paiement = (new Paiement())
             ->setReference(Paiement::genererReference())
             ->setMontants($montantProduit, $montantTransport)
@@ -224,29 +388,31 @@ class PaiementService
         $paiement->setCreatedBy($initiePar->getId());
 
         /*
-            - Le versement et la réservation des fonds dans la MÊME transaction. Écrire le paiement d'abord puis débiter laissait, quand la caisse est insuffisante, une ligne en 'EN_ATTENTE' que rien ne rattrapait : elle comptait dans 'sommeEngagee()' — donc gelait une part du reste à payer pour toujours — et la réconciliation aurait fini par la faire confirmer par la passerelle, créditant un planteur sans qu'un franc soit sorti.
-            - Le contrôle du solde reste dans 'debiterPourPaiement()', sous verrou : le vérifier ici en plus serait à la fois redondant et sujet à la course.
+            - Le geste du retrait, s'il y en a un : débiter le livre d'épargne. Il est DANS la même
+              transaction que la réservation des fonds, et c'est tout l'intérêt — les deux livres
+              passent ou tombent ensemble. Les séparer aurait laissé une fenêtre où l'épargne est
+              débitée sans qu'un franc soit sorti, ou l'inverse.
         */
-        $this->em->wrapInTransaction(function() use ($paiement, $avantLeDebit): void {
-            /*
-                - Le geste du retrait, s'il y en a un : débiter le livre d'épargne. Il est DANS la
-                  même transaction que la réservation des fonds, et c'est tout l'intérêt — les deux
-                  livres passent ou tombent ensemble. Les séparer aurait laissé une fenêtre où
-                  l'épargne est débitée sans qu'un franc soit sorti, ou l'inverse.
-            */
-            if($avantLeDebit !== null) {
-                $avantLeDebit();
-            }
+        if($avantLeDebit !== null) {
+            $avantLeDebit();
+        }
 
-            $this->em->persist($paiement);
+        $this->em->persist($paiement);
 
-            $this->caisse->debiterPourPaiement($paiement); // Au-delà de ce point, la somme est sortie de la caisse
-        });
+        $this->caisse->debiterPourPaiement($paiement); // Au-delà de ce point, la somme est sortie de la caisse
 
-        /*
-            - Les espèces s'arrêtent ici. Les billets ont changé de main pendant que l'opérateur saisissait l'écran : il n'y a personne à interroger, rien qui puisse échouer plus tard, et donc rien à réconcilier. Le versement est confirmé dans la foulée, et 'recalculerLeReglement()' fait tomber le reste à payer immédiatement.
-            - Le faire passer par 'appliquerResultat()' comme les autres n'est pas une coquetterie : c'est lui qui tient 'montantpaye' et le statut de règlement. Court-circuiter ce chemin aurait donné une seconde façon de solder une pesée, et deux façons finissent par diverger.
-        */
+        return $paiement;
+    }
+
+    /*
+        - CE QUI SUIT LA TRANSACTION : la confirmation. Extrait avec 'ecrireEtDebiter' et pour la
+          même raison — un lot écrit toutes ses lignes sous UNE transaction, puis conclut chacune.
+
+        - Les espèces s'arrêtent ici. Les billets ont changé de main pendant que l'opérateur saisissait l'écran : il n'y a personne à interroger, rien qui puisse échouer plus tard, et donc rien à réconcilier. Le versement est confirmé dans la foulée, et 'recalculerLeReglement()' fait tomber le reste à payer immédiatement.
+        - Le faire passer par 'appliquerResultat()' comme les autres n'est pas une coquetterie : c'est lui qui tient 'montantpaye' et le statut de règlement. Court-circuiter ce chemin aurait donné une seconde façon de solder une pesée, et deux façons finissent par diverger.
+    */
+    private function conclure(Paiement $paiement, ModeReglement $mode, User $initiePar): Paiement
+    {
         if(!$mode->passeParLaPasserelle()) {
             return $this->appliquerResultat($paiement, ResultatVersement::confirmeSansPasserelle([
                 'mode' => $mode->value,

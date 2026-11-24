@@ -89,6 +89,26 @@ se taisait ; c'est désormais la règle. La liste des produits sait filtrer **ce
 leur prix** (`?prix=0`), et la colonne des prix affiche « Aucun prix » en rouge — sans quoi on les
 découvrirait au guichet.
 
+### Ce qui identifie un planteur
+
+Le poste envoie un `codefournisseur` **et** un `libellefournisseur`. C'est le **code** qui
+rapproche, et le libellé ne sert plus que de repli — vers une fiche **sans code**, c'est-à-dire une
+fiche d'avant la bascule, jamais vers un homonyme qui en porte déjà un. `IndexFournisseurs` tient
+cet ordre, et c'est le seul endroit où il est écrit.
+
+Le libellé seul produisait deux défauts qu'aucun écran ne montrait :
+
+- **deux homonymes n'en faisaient qu'un** — « Kouamé » désigne trois planteurs dans un village, et
+  leurs pesées, leurs versements et leur épargne atterrissaient sur une seule fiche ;
+- **un planteur renommé en devenait deux** — corriger « Traore » en « Traoré » sur le poste créait
+  une seconde fiche, la première gardant l'historique.
+
+**Le nom ne se réécrit pas** sur une fiche retrouvée par son code : le poste n'est plus la source du
+référentiel, et un nom corrigé au bureau ne doit pas être défait par le prochain envoi — même règle
+que pour le numéro de téléphone. Aucune reprise de données n'a été nécessaire : les fiches sans code
+se font marquer au premier envoi qui en porte un. `tests/Synchronisation/SynchronisationTest` tient
+les trois cas.
+
 ### À quel niveau vit chaque référentiel
 
 **Le produit est à l'ENTREPRISE ; le planteur est au POSTE.** Un libellé reçu d'un poste se
@@ -314,6 +334,36 @@ réconciliation tranche les versements restés en vol.
 
 ---
 
+### Le versement groupé
+
+`POST /api/paiements/lot` règle **plusieurs pesées d'un même planteur** en un geste. Au guichet il
+se présente avec trois tickets ; les régler un par un, c'est trois fois l'écran et trois fois le
+risque d'en oublier un.
+
+**Aucun montant ne se saisit**, et c'est la décision qui tient tout le reste : cocher une pesée veut
+dire la régler EN ENTIER. Il n'y a donc pas de répartition à décider — ni dans l'API, ni à l'écran,
+ni dans la tête de l'opérateur — et aucune façon de se tromper d'un franc. Le seul choix est la
+**part** : la récolte seule, le transport seul, ou les deux.
+
+**Un versement par pesée**, écrits sous **UNE** transaction. Les deux moitiés comptent :
+
+- un versement pointe sur une pesée, hier comme aujourd'hui, donc tous les écrans existants
+  continuent de lire ce qu'ils lisent — reçu, bilan, grand livre, réconciliation ;
+- trois appels à `initier()` auraient fait trois transactions, et une caisse à sec sur la
+  troisième aurait laissé les deux premières payées : l'opérateur croirait son geste refusé alors
+  que l'argent est sorti. D'où `ecrireEtDebiter()`, qui **ne transacte pas**, et `conclure()`, qui
+  suit la transaction. Remettre un `wrapInTransaction` dans le premier casse
+  `tests/Caisse/VersementGroupeTest`, et c'est sa raison d'être.
+
+**Un seul planteur, une seule caisse**, et le refus tombe avant d'écrire. **Pas de passerelle** non
+plus : trois envois mobiles sous une transaction, dont le deuxième échoue, laisseraient un lot à
+moitié parti que la réconciliation devrait démêler ligne à ligne.
+
+**La borne est ce qui reste à ENGAGER**, versements en vol compris. Une pesée qui n'a plus rien à
+engager est écartée **en silence** plutôt que de faire tomber le lot : elle a pu être réglée à
+l'autre guichet pendant que l'opérateur cochait. Le compte rendu (`PaiementLotOutput`) dit donc ce
+qui est **vraiment** sorti, et non ce qui avait été demandé.
+
 ## 6. Les droits
 
 Une table, un voter, **zéro recopie**.
@@ -425,42 +475,49 @@ Fournisseur::$baremeTransport        le barème négocié avec CE planteur
 `TransportApplicable::pour()` porte la règle, comme `TarifApplicable` porte celle du prix :
 statique, sans requête, appelable dans la boucle de synchronisation.
 
-Un barème facture de **trois façons**, et c'est tout l'objet du changement :
+Un barème facture de **deux façons** :
 
 | `ModeTransport` | Ce qu'il donne | Ce qu'il exige |
 |---|---|---|
 | `AU_KILO` | `prixAuKilo x poidsnet` | un prix au kilo |
 | `FORFAIT` | `montant`, quel que soit le tonnage | un montant |
-| `TRANCHES` | le montant de la tranche qui contient `Fournisseur::$distanceKm` | au moins une tranche, **et une distance sur le planteur** |
 
 > Le prix au kilo était la seule façon de payer, et il payait mal : le camion d'un planteur qui
 > apporte deux cents kilos a fait la même route que celui qui en apporte dix tonnes, et touchait
 > cinquante fois moins. Les anciennes valeurs sont devenues des barèmes `AU_KILO`, un par prix
 > distinct et par entreprise : aucun montant n'a bougé à la reprise.
 
-**Les bornes d'une tranche sont semi-ouvertes `[min, max[`**, la dernière à `max = null`, et une
-validation de classe vérifie la collection **entière**. Quatre façons de produire un montant faux
-sans qu'une seule erreur n'apparaisse, et aucune n'est visible depuis une seule ligne :
+**Il y avait un troisième mode, `TRANCHES`, et son retrait est la correction la plus lourde de
+cette étape.** Il tenait une suite d'intervalles dans une entité `Tranche`, et allait chercher
+`Fournisseur::$distanceKm` pour choisir le bon. Personne ne saisissait cette distance — le poste
+crée les planteurs avec un libellé et rien d'autre — donc le barème ne savait pas répondre, le
+transport valait zéro, et ce zéro se figeait puis s'arbitrait. Tout un appareil s'était construit
+autour de ce silence : une validation de collection contre quatre façons de produire un montant
+faux (trou, chevauchement, aucune tranche ouverte, départ ailleurs qu'à zéro), un refus au
+rattachement, un `motifTransportIncalculable` sur la pesée, un `motifTransportIndisponible` sur le
+planteur. **Rien de tout cela n'existe plus.**
 
-- un **trou** — « 0 à 20 » puis « 30 à 50 » : un planteur à 25 km ne trouve rien ;
-- un **chevauchement** — deux montants pour une distance, départagés par l'ordre de la requête ;
-- **aucune tranche ouverte** — tout ce qui dépasse la dernière borne ne trouve rien ;
-- un **départ ailleurs qu'à zéro** — un planteur à 3 km d'une suite qui commence à 5.
+**Une tranche est désormais un barème.** « De 10 à 20 km : 1 000 F » est un `FORFAIT` de 1 000 F
+qui porte `kmMin` et `kmMax` ; on le rattache au planteur comme n'importe quel autre tarif, et il
+n'y a plus rien à aller chercher ailleurs. **Les bornes ne calculent rien** : elles nomment le
+barème et le classent dans la liste — sans elles, trois forfaits se ressemblent. Les deux sont
+nullables, et les quatre combinaisons ont un sens (aucune, les deux, le départ seul « au-delà de
+50 km », la fin seule « moins de 10 km »). `tests/Transport/BaremesTest` tient qu'elles ne
+changent aucun montant : si quelqu'un les rebranche un jour sur le calcul, ce cas tombe.
 
-Chacune donne un transport à zéro, qui se fige sur la pesée puis s'arbitre.
-`tests/Transport/BaremesTest` tient les quatre, plus la borne exacte : **20 appartient à la tranche qui COMMENCE à
-20**, et à elle seule.
+La migration `Version20261123084942` fait la conversion plutôt que la suppression : **chaque
+intervalle devient un barème**, et **chaque planteur est repointé sur celui qui contenait sa
+distance** — ce qu'il touchait hier, il le touche encore. Une catégorie, qui n'a pas de distance,
+suit le premier intervalle, et c'est le seul endroit où un montant peut avoir bougé. Les pesées
+déjà valorisées ont leur `mode_transport` converti en `FORFAIT` : un mode resté en base que
+l'énumération ne connaît plus ne dort pas, il lève à la première lecture et emporte tout l'écran.
 
-**Les deux silences fermés.** Un barème par tranches sur un planteur sans distance ne peut rien
-donner. Le rattachement est donc **refusé** sur la fiche du planteur (`verifierSonTransport`) ;
-mais sa catégorie peut passer aux tranches après coup sans que personne ne rouvre cette fiche, et
-là aucun refus n'est possible — la pesée le **dit** alors, par `getMotifTransportIncalculable()`,
-au lieu de figer un zéro muet. Côté planteur, `getTransportApplique()` et le filtre
-`sansTransport` répondent à « qui ne touche rien ? » en suivant les deux sauts : `baremeTransport
-IS NULL` seul aurait rendu tous les planteurs qu'une catégorie règle déjà.
+Côté planteur, `getTransportApplique()` et le filtre `sansTransport` répondent à « qui ne touche
+rien ? » en suivant les deux sauts : `baremeTransport IS NULL` seul aurait rendu tous les planteurs
+qu'une catégorie règle déjà.
 
-La pesée fige **le libellé** de la tranche retenue, pas une clé étrangère : rééditer le barème ne
-doit pas rendre une borne qui n'existe plus.
+La pesée fige **le libellé** des bornes retenues, pas une clé étrangère : rééditer le barème ne
+doit pas rendre un intervalle qui n'a jamais servi à ce montant-là.
 
 ### Où se LISENT les grilles
 
@@ -673,6 +730,8 @@ Si l'un d'eux saute, c'est de l'argent qui se perd ou qui se crée.
 | **`??` ne protège pas un appel** | `$a[$k]?->m() ?? 0` lève quand même « Undefined array key » : `??` n'étend ses semblants d'`isset` qu'aux chaînes de propriétés. Lire la case à part. |
 | **`$processor` est réservé** | `services.yaml` lie ce **nom d'argument** à la persistance native. Un processor qui décore autre chose doit nommer son argument autrement (`$audit`). |
 | **`deletedAt` dans un processor** | Les extensions Doctrine ne s'appliquent qu'aux requêtes d'API Platform. Dans un repository appelé par un processor, filtrer `deletedAt IS NULL` à la main. |
+| **Une garde de purge qui ne compte qu'une table** | La suppression définitive d'un planteur ne regardait que ses PESÉES. Sept autres tables le référencent en `NO ACTION` — tarif propre, mise en compte, demandes, versements, compte d'épargne — et un planteur sans pesée mais avec l'une d'elles passait la garde : c'est la CLÉ ÉTRANGÈRE qui refusait, en 500 brut, sans un mot sur ce qu'il fallait faire. Même défaut sur un produit (ses tarifs, ses prélèvements) et sur une catégorie (sa grille). `motifDesReferences()` les énumère toutes et nomme la première trouvée. Le contrôle est mécanique : `information_schema.KEY_COLUMN_USAGE` donne la liste exacte de ce qui retient une ligne. |
+| **Un cas d'énumération retiré ne dort pas en base** | Retirer `TRANCHES` de `ModeTransport` et convertir les barèmes ne suffit pas : les PESÉES avaient figé ce mode à côté de leur montant. À la première lecture, Doctrine lève « is not a valid backing value » et c'est TOUTE la file du guichet qui tombe en 502 — pas seulement les lignes concernées. Toute migration qui retire un cas doit balayer **chaque colonne** qui porte cette énumération, y compris les copies figées sur les pesées. |
 | **Fins de ligne** | Le dépôt est en **LF**. Un éditeur qui réécrit en CRLF produit un diff de fichier entier. |
 | **L'adresse du compte machine ne suit pas le code** | Elle est dérivée du code **à la création** puis figée : un poste renommé garde la sienne, et son ancien code reste occupé. Recomposer l'adresse depuis le code — à l'affichage ou au renouvellement — rendait un identifiant faux, ou tuait la requête sur l'unicité de `user.email` (500 à la création d'un site **et** au renouvellement). Toujours lire `identifiantDe()`, jamais `identifiant()`. |
 

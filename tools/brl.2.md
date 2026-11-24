@@ -701,3 +701,198 @@ Deux choses pour vous : la pesée **T-4507** porte maintenant une prime à 280 F
 
 
 Les huit points sont faits et vérifiés : API 233 tests (8 ignorés, mobile money fermé), web 26 tests, assets rebâtis. La suite a attrapé une vraie erreur — j'écrivais une deuxième ligne d'épargne sur une pesée, ce qu'un index unique interdit ; corrigé. Rien n'est commité
+
+
+
+
+
+
+
+
+
+- Concernant les messages d'alertes sur la page `À payer`, on va les faire du genre : on affiche l'icône au niveau de la propriété concerné, puis au survol ou au clique sur l'icône on affiche une tooltip qui affiche le message d'alerte. Mais montre moi des suggestions en image de la disposition que tu compte faire
+
+- Concernant le tarif transport, on a mal géré la notion de tranche, les propriétés `kmMin` et `kmMax` devrait être des propriétés de `BaremeTransport` et l'entité `Tranche` ne devrait pas existé ! ce qui fait qu'on n'a pas à saisir la distance du fournisseur sur sa fiche (donc pas besoin de la propriété `distanceKm` sur `Fournisseur`), du genre on a un tarif transport (10km à 20km : 1000F) donc si le fournisseur a ce tarif transport on sait qu'il aura 1000F comme transport
+    - Aussi, Sur le formulaire de tarif transport, on doit afficher les champs selon le `Mode de facturation` choisi !
+
+Aussi :
+- Sur le page de `Grand livre`, le bloc de période + export se retrouve en bas du titre au lieu d'être à droite ! regarde dans iTransport comment les bloc d'actions sont à droite du titre !
+- On vas ajouter aussi possibilité de modifier le prix transport de la pesée !
+- Vérifie si d'autres index unique ne pose pas de problème !
+
+
+
+
+
+
+
+Avant de coder, voici les trois dispositions que j'envisage pour les alertes de `À payer`.
+
+Ce qu'elles donnent : **A** place une icône sur chaque propriété concernée — le nom du planteur pour « pas de numéro », le transport pour un barème muet, le payable pour « déjà réglé » — et la bande rouge disparaît. **B** rassemble tout dans une colonne d'état en tête de ligne : une seule icône à chercher, mais elle ne dit plus de quoi elle parle avant le survol. **C** est A plus la ligne teintée, qui garde le « on ne peut pas payer » lisible sans survoler quoi que ce soit.
+
+Sur téléphone, la carte garderait la bande en toutes lettres dans les trois cas : une infobulle au doigt se ferme dès qu'on la lit.
+
+Je refonds maintenant le barème : les bornes montent sur lui, `Tranche` disparaît.
+
+Je réécris maintenant le formulaire du barème.
+
+Les cinq points sont faits. Voici ce que chacun a donné.
+
+## Les alertes de `À payer` — colonne d'état
+
+Une icône en tête de ligne, rien d'autre dans les cellules : le prix et le transport sont redevenus des nombres. L'icône dit la gravité avant d'être lue — triangle rouge quand le versement est refusé, « i » grise quand il n'y a qu'une explication — et l'infobulle groupe les messages par nature (« Versement impossible », « D'où viennent ces montants »). Elle s'ouvre au survol, au clic et au clavier : le déclencheur est un vrai bouton. Sur téléphone la carte garde ses phrases en toutes lettres, une infobulle au doigt se refermant dès qu'on la lit.
+
+## Le tarif transport — la tranche était mal placée
+
+`Tranche` n'existe plus, `distanceKm` non plus, et `TRANCHES` a disparu de l'énumération. Une tranche est maintenant un barème : « de 10 à 20 km : 1 000 F » est un forfait qui porte `kmMin`/`kmMax`, on le rattache au planteur, et il n'y a plus rien à aller chercher ailleurs.
+
+Ce que le retrait a emporté avec lui, et c'est le vrai gain : la validation de collection contre quatre façons de produire un montant faux (trou, chevauchement, aucune tranche ouverte, départ ailleurs qu'à zéro), le refus au rattachement, `motifTransportIncalculable` sur la pesée, `motifTransportIndisponible` sur le planteur. Tout cet appareil ne servait qu'à encadrer un silence : personne ne saisissait la distance, donc le barème ne savait pas répondre.
+
+**Les bornes ne calculent rien** — elles nomment et classent. Un cas de test le tient explicitement : si quelqu'un les rebranche un jour sur le calcul, il tombe.
+
+La migration **convertit** au lieu de supprimer : chaque intervalle devient un barème, chaque planteur est repointé sur celui qui contenait sa distance. Traoré, à 35 km, est passé de la tranche « 20 à 50 » au barème « Par distance - de 20 a 50 km » : toujours 12 000 F. Une catégorie, qui n'a pas de distance, suit le premier intervalle — c'est le seul endroit où un montant a pu bouger, et la migration le dit.
+
+Le formulaire n'affiche plus que le champ du mode choisi, par le module déjà utilisé à l'écran de versement. Le serveur reste la garde ; l'écran range seulement.
+
+## Le reste
+
+- **Grand livre** : la cause était `flex-wrap` sur la ligne du titre. Sa description porte un lien vers la trésorerie, donc le bloc de gauche s'élargissait et faisait tomber les actions dessous — même gabarit, trois résultats, c'est le texte qui décidait. `min-w-0` à gauche, `shrink-0` à droite, comme dans iTransport.
+- **Transport modifiable** : `PATCH /api/operations/{id}/montant-transport`, et une seconde carte sur la fiche. Un montant et non un prix au kilo, parce qu'un forfait n'a pas de prix unitaire. Zéro est une valeur ici, contrairement au prix de la récolte. Les deux parts se ferment séparément : la récolte peut être réglée pendant que le trajet ne l'est pas.
+
+## Les index uniques
+
+Aucun ne pose le problème du soft-delete : les quatre entités qui vont à la corbeille n'en portent aucun, exactement comme votre règle le veut, et `mouvement_epargne.operation_id` est la barrière voulue.
+
+Le balayage a trouvé autre chose, de la même famille. **La purge définitive ne comptait qu'une table.** Sept autres référencent un planteur en `NO ACTION` — tarif propre, mise en compte, demandes, versements, compte d'épargne — et un planteur sans pesée mais avec l'une d'elles passait la garde : c'est la clé étrangère qui refusait, en 500 brut. Même trou sur un produit (ses tarifs, ses prélèvements) et sur une catégorie (sa grille). Corrigé.
+
+Et un piège que la vérification en navigateur a attrapé : retirer un cas d'énumération ne suffit pas à le faire disparaître. Les pesées avaient figé `mode_transport = 'TRANCHES'`, et toute la file du guichet tombait en 502 — pas seulement les lignes concernées. La migration les convertit maintenant aussi.
+
+## État
+
+```powershell
+cd C:\Users\adamo\Documents\Web\Webpesee\Backend-Webpesee-V2; php bin/phpunit
+```
+
+API 231 tests (8 ignorés, mobile money), web 26 tests, assets rebâtis, migration jouée sur la base de dev. Les deux READMEs portent la nouvelle section transport et les deux pièges. Rien n'est commité.
+
+Une chose à savoir : la pesée **T-4507** de la base de dev porte mes essais — prime à 280 F et transport à 18 000 F.
+
+
+
+
+
+
+
+
+
+- Pour la partie `À payer`, on vas ajouter la possibilité de payer plusieurs pesées pour un même planteur tout en ayant la possibilité de payer soit la récolte, soit le transport ou tout ! aussi, de mon côté je pensais à un truc du genre : on sélectionne plusieurs lignes du tableau, puis il y'aura le total affiché, aussi un bouton verser, etc... mais ce n'est que ce que je pense donc tu n'a pas à partir dessus. Montre moi des suggestions en images de la disposition que tu compte faire !
+    - Aussi, sur le filtre par fournisseur, affiche le `codefournisseur` à côté du nom et prenom
+- On vas identifié le fournisseur par son `codefournisseur` plutôt que `libellefournisseur` !
+- On vas les champs de Kilométrage que si on n'est en mode forfait !
+
+
+
+
+
+
+
+
+Avant de coder, voici les deux dispositions que j'envisage pour le versement groupé.
+
+Dans les deux cas, un versement vise **un seul planteur** : cocher une ligne ferme les cases des autres, parce qu'un geste sort d'une caisse vers une personne. La modale est la même, bornée par la somme des restes, et l'API répartit de la plus ancienne pesée à la plus récente — une dette se solde dans l'ordre où elle s'est faite. Techniquement, un versement groupé écrit **un paiement par pesée** dans une seule transaction : tous les écrans existants continuent de lire ce qu'ils lisent aujourd'hui.
+
+Ce qui les sépare : **A** laisse choisir *quelles* pesées on règle ; **B** paie tout ce qui reste au planteur, le détail n'étant là que pour vérifier.
+
+**A, sans champs modifiables.** Cocher, c'est régler la totalité de ce qui est coché — la modale devient une confirmation avec le seul mode de règlement à choisir. Je commence par les trois points courts.
+
+Le découpage tient. J'ajoute maintenant le versement groupé lui-même.
+
+Maintenant l'entrée d'API : l'input, le processor et l'opération.
+
+Maintenant la sélection dans le tableau et la barre d'action.
+
+Les quatre points sont faits.
+
+## Le versement groupé
+
+Une colonne de cases à cocher, une barre qui apparaît dès qu'on coche, et une confirmation sans aucun champ de montant — cocher veut dire régler en entier, comme vous l'avez demandé. Le seul choix est la part : **Tout**, **La récolte**, **Le transport**.
+
+Trois décisions valent la peine d'être dites :
+
+- **Un planteur à la fois, et le verrou se voit.** Cocher une ligne ferme les cases des autres planteurs. Un versement sort d'une caisse vers une personne ; mieux vaut l'empêcher que l'expliquer après coup.
+- **Un versement par pesée, sous une seule transaction.** Un paiement pointe sur une pesée, hier comme aujourd'hui, donc le reçu, le bilan, le grand livre et la réconciliation continuent de lire ce qu'ils lisent. Mais les trois écritures passent ou tombent ensemble : j'ai dû découper `executer()` en `ecrireEtDebiter()` (qui ne transacte pas) et `conclure()`, parce que trois appels séparés auraient laissé, sur une caisse à sec à la troisième, les deux premières payées — vous l'auriez découvert au comptage du soir.
+- **La borne est le reste à ENGAGER**, versements en vol compris. Une pesée qui n'a plus rien à engager est écartée en silence et le compte rendu annonce ce qui est *vraiment* sorti, pas ce qui avait été coché.
+
+La preuve d'atomicité a été faite en vrai, dans le navigateur : un lot de 10 390 000 F sur une caisse qui en contenait 963 080 a été refusé, et les deux pesées ont gardé l'intégralité de leur reste. Puis un lot accepté a soldé T-4507.
+
+## Le planteur identifié par son code
+
+`IndexFournisseurs` porte la règle : le code rapproche, le libellé ne sert plus que de repli — **vers une fiche sans code**, jamais vers un homonyme qui en porte déjà un. C'est cette nuance qui compte, et un cas de test l'a attrapée : sans elle, « Kouamé F-002 » atterrissait sur la fiche de « Kouamé F-001 » et lui volait son code.
+
+Ce que l'ancien rapprochement cachait : deux homonymes n'en faisaient qu'un, et un planteur renommé en devenait deux. Le nom ne se réécrit plus depuis le poste — il appartient au bureau, comme le numéro de téléphone. Aucune reprise de données : les fiches sans code se font marquer au premier envoi qui en porte un.
+
+## Les deux points courts
+
+Le code apparaît à côté du nom dans toutes les listes de choix, via un `nomAvecCode` publié par l'API — pas de libellé recomposé côté web. Et le kilométrage ne paraît plus qu'en mode forfait, le contrôleur vidant les bornes quand on repasse au kilo. Au passage, `collection.js` et `TrancheFormType` ont disparu : plus rien ne les utilisait depuis la refonte des tranches.
+
+## État
+
+```powershell
+cd C:\Users\adamo\Documents\Web\Webpesee\Backend-Webpesee-V2; php bin/phpunit
+```
+
+API 242 tests (8 ignorés, mobile money), web 26 tests, assets rebâtis. Les deux READMEs portent les sections « Ce qui identifie un planteur » et « Le versement groupé », plus deux pièges côté web. Rien n'est commité.
+
+Deux choses pour vous. Les planteurs des fixtures n'avaient pas de code, donc le filtre n'en affiche pas encore : j'ai ajouté la génération (`SOF010-P001`) mais **recharger les fixtures efface la base de développement**, et je ne l'ai pas fait. J'ai seulement posé un code sur « Bamba Sekou » pour vérifier l'affichage. Et la caisse physique de Pont de Soubré a reçu deux dotations d'essai (6 M puis 1 M) pendant les tests du versement groupé.
+
+
+
+
+
+
+
+
+- Concernant la barre qui apparaît quand on coche une ligne de pesée, je me dis qu'on devrait le faire remarqué du genre mettre un fond différent, aussi le rendre sticky !
+- Quand on coche une ligne de pesée pour un planteur ça devrait grisé les lignes des autres planteurs !
+- Concernant la disposition pour les alertes de la file du guichet, on vas aller sur le `A` plutôt que le `B` que j'avais choisi !
+
+
+
+
+
+
+
+Maintenant la barre collante et le grisage des autres lignes.
+
+Les trois sont faits.
+
+## La barre
+
+Teintée (`bg-primary/20`, bordure assortie) et collée en haut pendant qu'on défile. Deux choses ont demandé une correction que l'écran seul révélait :
+
+- **Elle se calait 24 px trop bas.** `.content` porte `overflow-y: auto` et `padding: 1.5rem` ; un élément collant se cale sur le bord *intérieur* du conteneur qui défile, donc les lignes du tableau passaient en clair dans cette bande. La barre est en `-top-6` avec un `pt-6` qui lui rend sa place.
+- **La teinte laissait voir le tableau au travers.** Une couleur transparente par définition. D'où deux boîtes : l'extérieure pose un fond opaque, l'intérieure la teinte.
+
+C'est noté dans le README du web, parce que la prochaine barre collante retombera dessus.
+
+## Les lignes des autres planteurs
+
+Elles passent à `opacity-40` dès qu'un planteur est choisi. Leur case était déjà fermée, mais une case grise au bout d'une ligne qui reste franche se remarque mal — on s'acharne dessus avant de comprendre. J'ai ajouté un `classeLigne` optionnel à `ServerDataTable` plutôt qu'une option de sélection : les dix autres écrans qui partagent cette table n'en veulent pas, et une ligne sans classe reste une ligne nue.
+
+L'opacité et non la disparition : ces pesées restent à payer, et les masquer ferait croire que la file s'est vidée.
+
+## Les alertes, en A
+
+La colonne d'état a disparu. Chaque message est retourné sur la propriété qu'il concerne : le triangle rouge sur le nom du planteur pour « pas de numéro », l'info grise sur le prix pour son origine, l'info grise sur le transport pour « 15 F le kilo », le triangle rouge sur le payable pour ce qui ferme le versement. Vous aviez raison sur ce point : groupée en tête de ligne, l'icône obligeait à ouvrir l'infobulle pour savoir de quelle colonne on parlait.
+
+Le déclencheur reste un vrai bouton, donc l'infobulle s'ouvre au survol, au clic et au clavier.
+
+## État
+
+```powershell
+cd C:\Users\adamo\Documents\Web\Webpesee\Frontend-Webpesee; npm run build
+```
+
+Web 26 tests, TypeScript propre, assets rebâtis. L'API n'a pas bougé, donc ses 242 tests tiennent toujours. Rien n'est commité.
+
+Une chose à savoir : **la sélection n'existe que sur le tableau**, pas sur les cartes du téléphone, où l'on garde le « Verser » par pesée. C'était déjà le cas avant ces ajustements, et vous ne l'aviez pas demandé — dites-moi si le guichet verse aussi depuis un téléphone.

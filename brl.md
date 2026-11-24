@@ -208,29 +208,25 @@ Priorité : pour définir les propriétés par entreprise du genre une entrepris
 
 
 
+Une chose à savoir : la sélection n'existe que sur le tableau, pas sur les cartes du téléphone, où l'on garde le « Verser » par pesée. C'était déjà le cas avant ces ajustements, et vous ne l'aviez pas demandé — dites-moi si le guichet verse aussi depuis un téléphone.
 
 
 
 
 
+activer les logs dans l'application vu que l'hébergeur ne montre pas
+Monolog pour les logs applicatifs.
+Activer les logs dans l'application en cas d'erreur en ligne
 
+
+
+
+- Bilan Log
+- Mettre le filtre pont bascule, produit en commentaire pour la partie `À payer`
+Je me dis qu'on vas avoir une page pour la modification, aussi on vas mettre un lien dans la partie versement qui y pointe
+- Filtre période(à rendre sticky)
 
 La logique concernant la suppression qu'est ce qu'il se passe et est ce que ça pose problème ! vu que moi je pense que s'il a déjà des pesées ne plus le supprimé ! Pas trop sur qu'il explique l'existant et me dise lequel est meilleur entre les 2
-
-
-
-
-
-
-
-Sur le page de `Grand livre`, le bloc de période.. se retrouve en bas du titre au lieu d'être à droite ! regarde dans iTransport comment les bloc d'actions sont à droite du titre
-vérifié si d'autres index unique ne pose pas de problème
-modifier aussi le prixtransport de la pesées
-Je me qu'on vas avoir une page pour la modification, aussi on vas mettre un lien dans la partie versement qui y pointe
-
-
-
-
 
 - Pour le planteur, (concernant le.. de.. on vas le mettre en place) iTransport a aussi un filtre remote avec autocomplétion distante. Au-delà de quelques centaines de planteurs c’est ce qu’il faudra ; je commencerais par une liste déroulante et je garderais le remote en réserve.
     - filtres par période sur les tableaux de listing de..
@@ -239,7 +235,7 @@ Je me qu'on vas avoir une page pour la modification, aussi on vas mettre un lien
 - Produit par entreprise, mais on peut ajouter un champ qui permet à un site de faire un surplus sur le prix à l'instant t lors de la pesées
 - Lors de la création et modification de l'entreprise, si entreprise à un seule site ou plusieurs -> si un on représente le solde de l'entreprise par celui du site !! Pas trop sure
 
-Les deux fiches gardent la lecture de leur grille et mènent à la saisie
+Les deux fiches gardent la lecture de leur grille et mènent à la saisie (categorie, planteur) ! 
 
 
 | 4 | **Comptabilité** : références et **pièces jointes** aux reçus et documents | Infrastructure neuve : **aucun mécanisme de fichier n'existe aujourd'hui** dans les deux dépôts. Stockage, dépôt, types et tailles, qui a le droit de lire, rattachement à un paiement / mouvement / demande | **5–8** | moyen — le stockage et les droits de lecture sont à trancher avant de coder |
@@ -247,18 +243,10 @@ Les deux fiches gardent la lecture de leur grille et mènent à la saisie
 3. **#4** — où vivent les pièces jointes, qui peut les lire, combien de temps les garde-t-on ?
 
 
-
-
 - Dans le `.sidebar-logo` de `base.html.twig` on vas afficher le nom de l'entreprise et son logo plutôt que `iTransport`
 commande utile, bd..
 
 
-
-
-
-
-
-- 
 On m'a parler d'un truc pour le faire de manière générique, du genre on a une table Tarif qui gère les différentes types de tarification, qui est différencié par une propriété `type` et qui est prioritaire à la table tranche !
 
 Tarif(categoriefournisseur, fournisseur, produit) -- prioritaire sur la table tranche
@@ -270,21 +258,8 @@ Tarif(categoriefournisseur, fournisseur, produit) -- prioritaire sur la table tr
     datedebut
     datefin
     type 
-TrancheTransport
-    [] interval de kilométrage
-    prixU -- si on le choisi on multipli par le poidsnet
-    montantfixe -- !! utilise le montant fixe de la tranche
-CategoryFournisseur
-    libelle
-    description
-    prixunitaireproduit
-CategoryTransportFournisseur
-    prixunitairetransport
-TarifFournisseur
-TarifTransportfournisseur
 
 - Syncronisation en API Platform
-- Lorsque les peseés arrivent, s'il n'y a de problème du genre le prixtransport ou le prix du produit est 0 et que côté web ça match directement, la syncrone se fait sinon on affiche la liste des syncro qui ont un soucis à l'opérateur et adminstrateur pour qu'il fasse des choix et sync les différents pesées
 - On ne reçois que les syncronisations terminé
 
 Dans la partie Frontend.., pour le Dashbord je veux qu'il soit au style réel de Shadcn (→ ui.shadcn.com) en (HTML, Css, etc...), responsive, moderne, etc...

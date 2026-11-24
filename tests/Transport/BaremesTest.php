@@ -11,21 +11,26 @@ use App\Entity\Entreprise;
 use App\Entity\Fournisseur;
 use App\Entity\Produit;
 use App\Entity\Site;
-use App\Entity\Tranche;
 use App\Entity\User;
 use App\Repository\OperationRepository;
 use App\Tests\InvariantTestCase;
 use Symfony\Component\Validator\Validator\ValidatorInterface;
 
 /*
-    - TROIS FAÇONS DE PAYER UN TRAJET, là où il n'y en avait qu'une. Ce qui est en jeu : le camion
+    - DEUX FAÇONS DE PAYER UN TRAJET, là où il n'y en avait qu'une. Ce qui est en jeu : le camion
       d'un planteur qui apporte deux cents kilos a fait la même route que celui qui en apporte dix
       tonnes, et un prix au kilo le payait vingt fois moins.
 
-    - LA MOITIÉ DE CES CAS PORTE SUR LES BORNES DES TRANCHES, et ce n'est pas du zèle : quatre
-      façons de produire un montant faux sans qu'une seule erreur n'apparaisse — un trou, un
-      chevauchement, une borne exacte ambiguë, une distance au-delà de la dernière tranche. Chacune
-      donne un transport à zéro ou un montant tiré au sort, puis se fige, puis s'arbitre.
+    - IL Y EN AVAIT TROIS, et la moitié de ce fichier gardait le troisième : un barème « par
+      tranches » tenait une suite d'intervalles, dont quatre façons de produire un montant faux
+      sans qu'une erreur n'apparaisse — un trou, un chevauchement, une borne ambiguë, un trajet
+      au-delà de la dernière tranche. Le mode allait surtout chercher une DISTANCE sur la fiche du
+      planteur, que personne ne saisissait : le transport valait alors zéro, se figeait, s'arbitrait.
+      Une tranche est maintenant un barème à elle seule, et les quatre façons de se tromper ont
+      disparu avec la suite.
+
+    - CE QUI RESTE À GARDER : les deux modes, la résolution en deux sauts, la revalorisation, et les
+      BORNES — dont il faut tenir qu'elles ne calculent rien, sans quoi quelqu'un les rebranchera.
 */
 final class BaremesTest extends InvariantTestCase
 {
@@ -79,25 +84,6 @@ final class BaremesTest extends InvariantTestCase
         self::assertSame('Forfait, quel que soit le tonnage', $petite->getExplicationTransport());
     }
 
-    public function testLesTranchesSuiventLaDistance(): void
-    {
-        $this->planteur->setBaremeTransport($this->parTranches())->setDistanceKm(35);
-        $this->em->flush();
-
-        $pesee = $this->creerPesee($this->site, $this->hevea, $this->planteur, 10_000, '1');
-
-        self::assertSame(12_000, $pesee->getMontanttransport());
-        self::assertSame(ModeTransport::TRANCHES, $pesee->getModeTransport());
-        self::assertSame(35, $pesee->getDistanceTransport());
-
-        /*
-            - LES BORNES SONT FIGÉES EN TOUTES LETTRES, et c'est tout l'intérêt : rééditer le barème
-              demain ne changera pas ce que cette pesée-là dit avoir payé. Une clé étrangère vers la
-              tranche rendrait, elle, une borne qui n'existe plus.
-        */
-        self::assertSame('de 20 à 50 km · trajet de 35 km', $pesee->getExplicationTransport());
-    }
-
     /* ---- Les bornes ----------------------------------------------------------------------- */
 
     /*
@@ -105,64 +91,6 @@ final class BaremesTest extends InvariantTestCase
           INCLUSES, un planteur à exactement 20 km relève de « 0 à 20 » ET de « 20 à 50 » : deux
           montants pour une distance, départagés par l'ordre de la requête — c'est-à-dire par rien.
           Les deux réponses sont plausibles, donc personne ne s'en aperçoit.
-
-        - Avec des bornes semi-ouvertes, 20 appartient à la seconde, et à elle seule. La lecture et
-          le contrôle de chevauchement disent alors la même chose.
-    */
-    public function testUneBorneExacteTombeDansUneSeuleTranche(): void
-    {
-        $bareme = $this->parTranches();
-
-        self::assertSame(5_000, $bareme->tranchePour(19)?->getMontant());
-        self::assertSame(12_000, $bareme->tranchePour(20)?->getMontant(), '20 appartient à la tranche qui COMMENCE à 20');
-        self::assertSame(12_000, $bareme->tranchePour(49)?->getMontant());
-        self::assertSame(20_000, $bareme->tranchePour(50)?->getMontant());
-        self::assertSame(20_000, $bareme->tranchePour(5_000)?->getMontant(), 'La dernière prend tout ce qui dépasse');
-    }
-
-    public function testUnTrouEntreDeuxTranchesEstRefuse(): void
-    {
-        $bareme = $this->bareme(ModeTransport::TRANCHES);
-        $this->tranche($bareme, 0, 20, 5_000);
-        $this->tranche($bareme, 30, null, 12_000); // 20 à 30 ne mène nulle part
-
-        self::assertStringContainsString('Il manque un intervalle', $this->refus($bareme));
-    }
-
-    public function testUnChevauchementEstRefuse(): void
-    {
-        $bareme = $this->bareme(ModeTransport::TRANCHES);
-        $this->tranche($bareme, 0, 30, 5_000);
-        $this->tranche($bareme, 20, null, 12_000); // 20 à 30 compte double
-
-        self::assertStringContainsString('chevauchent', $this->refus($bareme));
-    }
-
-    public function testUneSuiteQuiNePartPasDeZeroEstRefusee(): void
-    {
-        $bareme = $this->bareme(ModeTransport::TRANCHES);
-        $this->tranche($bareme, 5, null, 5_000); // Un planteur à 3 km ne trouve rien
-
-        self::assertStringContainsString('partir de 0 km', $this->refus($bareme));
-    }
-
-    public function testSansTrancheOuverteLesLongsTrajetsNeTrouventRien(): void
-    {
-        $bareme = $this->bareme(ModeTransport::TRANCHES);
-        $this->tranche($bareme, 0, 20, 5_000);
-        $this->tranche($bareme, 20, 50, 12_000); // Au-delà de 50 : rien
-
-        self::assertStringContainsString('SANS kilomètre de fin', $this->refus($bareme));
-    }
-
-    public function testDeuxTranchesOuvertesSontRefusees(): void
-    {
-        $bareme = $this->bareme(ModeTransport::TRANCHES);
-        $this->tranche($bareme, 0, null, 5_000);
-        $this->tranche($bareme, 20, null, 12_000);
-
-        self::assertStringContainsString('Une seule tranche peut rester ouverte', $this->refus($bareme));
-    }
 
     /*
         - LE MODE DÉCIDE DES CHAMPS, et les autres doivent rester vides. Les laisser coexister
@@ -177,6 +105,48 @@ final class BaremesTest extends InvariantTestCase
 
         $forfait = $this->bareme(ModeTransport::FORFAIT);
         self::assertStringContainsString('demande un montant', $this->refus($forfait));
+    }
+
+    /* ---- Les bornes ----------------------------------------------------------------------- */
+
+    /*
+        - LES BORNES NOMMENT, ELLES NE CALCULENT PAS, et c'est le seul cas qui l'affirme. Tout ce
+          fichier a longtemps tenu l'inverse : la distance du planteur choisissait un intervalle,
+          qui choisissait un montant. Si quelqu'un rebranche un jour les bornes sur le calcul, ce
+          cas tombe — et c'est exactement ce qu'on veut de lui.
+    */
+    public function testLesBornesNeChangentAucunMontant(): void
+    {
+        $borne = $this->forfait(8_000, 'Trajet moyen');
+        $borne->setKmMin(20)->setKmMax(50);
+
+        $this->planteur->setBaremeTransport($borne);
+        $this->em->flush();
+
+        $pesee = $this->creerPesee($this->site, $this->hevea, $this->planteur, 1_000, '1');
+
+        self::assertSame(8_000, $pesee->getMontanttransport(), 'Le forfait, et rien que lui');
+        self::assertStringContainsString('de 20 à 50 km', (string) $pesee->getExplicationTransport());
+    }
+
+    /* Un intervalle à l'envers ne désigne aucun planteur, et se lirait pourtant comme une ligne valide dans la liste. */
+    public function testUnIntervalleALEnversEstRefuse(): void
+    {
+        $bareme = $this->forfait(8_000);
+        $bareme->setKmMin(50)->setKmMax(10);
+
+        self::assertStringContainsString('doit dépasser celui de départ', $this->refus($bareme));
+    }
+
+    /* Aucune borne est un cas ordinaire : la plupart des tarifs ne parlent pas de distance. */
+    public function testUnBaremeSansBorneSExpliqueQuandMeme(): void
+    {
+        $this->planteur->setBaremeTransport($this->forfait(8_000));
+        $this->em->flush();
+
+        $pesee = $this->creerPesee($this->site, $this->hevea, $this->planteur, 1_000, '1');
+
+        self::assertSame('Forfait, quel que soit le tonnage', $pesee->getExplicationTransport());
     }
 
     /* ---- La résolution -------------------------------------------------------------------- */
@@ -212,44 +182,10 @@ final class BaremesTest extends InvariantTestCase
 
         self::assertSame(0, $pesee->getMontanttransport());
         self::assertSame(OrigineTransport::AUCUN, $pesee->getOrigineTransport());
-        self::assertNull($pesee->getMotifTransportIncalculable(), 'Ne pas payer de transport n\'est pas une anomalie');
+        self::assertNull($pesee->getExplicationTransport(), 'Ne pas payer de transport est normal : il n y a rien à expliquer');
     }
 
     /* ---- Les deux silences ---------------------------------------------------------------- */
-
-    /*
-        - UN BARÈME PAR TRANCHES SANS DISTANCE est refusé au moment où on les met ensemble. Sans ce
-          refus, le rattachement passe, la pesée suivante fige un transport à zéro, et ce zéro
-          s'arbitre — personne n'aura vu passer l'information.
-    */
-    public function testRattacherUnBaremeParTranchesSansDistanceEstRefuse(): void
-    {
-        $this->planteur->setBaremeTransport($this->parTranches());
-
-        $refus = $this->refus($this->planteur);
-
-        self::assertStringContainsString('renseignez la distance', $refus);
-    }
-
-    /*
-        - L'AUTRE MOITIÉ DU SILENCE : la catégorie peut recevoir un barème par tranches APRÈS coup,
-          sans que personne ne touche à la fiche du planteur. Aucun refus n'est possible là ; la
-          pesée doit donc le DIRE, au lieu de figer un zéro muet qui ressemble à tous les autres.
-    */
-    public function testUneDistanceManquanteSeDitSurLaPesee(): void
-    {
-        $categorie = $this->creerCategorie($this->entreprise);
-        $categorie->setBaremeTransport($this->parTranches());
-
-        $this->planteur->setCategorie($categorie); // Aucune distance sur sa fiche
-        $this->em->flush();
-
-        $pesee = $this->creerPesee($this->site, $this->hevea, $this->planteur, 1_000, '1');
-
-        self::assertSame(0, $pesee->getMontanttransport());
-        self::assertSame(OrigineTransport::CATEGORIE, $pesee->getOrigineTransport(), 'Un barème existait : ce n\'est pas « aucun »');
-        self::assertStringContainsString('pas de distance', (string) $pesee->getMotifTransportIncalculable());
-    }
 
     /* ---- La revalorisation ---------------------------------------------------------------- */
 
@@ -360,7 +296,6 @@ final class BaremesTest extends InvariantTestCase
         $this->em->flush();
 
         self::assertSame('Forfait village (par sa catégorie)', $this->planteur->getTransportApplique());
-        self::assertNull($this->planteur->getMotifTransportIndisponible());
 
         $this->planteur->setBaremeTransport($this->forfait(20_000, 'Le sien'));
 
@@ -369,22 +304,6 @@ final class BaremesTest extends InvariantTestCase
         $this->planteur->setBaremeTransport(null)->setCategorie(null);
 
         self::assertNull($this->planteur->getTransportApplique(), 'Rien à annoncer n\'est pas une anomalie');
-    }
-
-    /*
-        - LA FICHE DIT AUSSI CE QUE SA PROPRE VALIDATION NE PEUT PLUS REFUSER : la catégorie a pu
-          passer aux tranches après coup, et alors « il a un barème » ne veut plus dire « il touche
-          quelque chose ».
-    */
-    public function testLaFicheDitQuandLeBaremeHeriteNePeutRienPayer(): void
-    {
-        $categorie = $this->creerCategorie($this->entreprise);
-        $categorie->setBaremeTransport($this->parTranches());
-        $this->planteur->setCategorie($categorie); // Aucune distance sur sa fiche
-        $this->em->flush();
-
-        self::assertNotNull($this->planteur->getTransportApplique(), 'Un barème existe bel et bien');
-        self::assertStringContainsString('pas de distance', (string) $this->planteur->getMotifTransportIndisponible());
     }
 
     /* ---- Le filtre « sans transport » ------------------------------------------------------ */
@@ -475,31 +394,10 @@ final class BaremesTest extends InvariantTestCase
         return $bareme;
     }
 
-    /* 0–20 : 5 000 · 20–50 : 12 000 · 50 et au-delà : 20 000. Une suite complète, sans trou. */
-    private function parTranches(string $libelle = 'Par distance'): BaremeTransport
-    {
-        $bareme = $this->bareme(ModeTransport::TRANCHES, $libelle);
-
-        $this->tranche($bareme, 0, 20, 5_000);
-        $this->tranche($bareme, 20, 50, 12_000);
-        $this->tranche($bareme, 50, null, 20_000);
-
-        $this->em->persist($bareme);
-        $this->em->flush();
-
-        return $bareme;
-    }
-
-    /* La collection suffit : 'cascade: persist' emmène les tranches quand le barème part en base. */
-    private function tranche(BaremeTransport $bareme, int $min, ?int $max, int $montant): void
-    {
-        $bareme->addTranche((new Tranche())->setKmMin($min)->setKmMax($max)->setMontant($montant));
-    }
-
     /*
-        - TOUS les motifs de refus, en toutes lettres : une suite fautive en déclenche souvent deux
-          — deux tranches ouvertes laissent aussi un trou entre elles — et affirmer le premier
-          rendrait le cas dépendant de l'ordre dans lequel la validation les trouve.
+        - TOUS les motifs de refus, en toutes lettres : une saisie fautive en déclenche parfois deux,
+          et affirmer le premier rendrait le cas dépendant de l'ordre dans lequel la validation les
+          trouve.
 
         - Les cas affirment la PHRASE, pas un code : c'est elle que lit celui qui saisit, et une
           contrainte qui lève sans rien expliquer ne vaut guère mieux qu'un silence.

@@ -2,6 +2,7 @@
 
 namespace App\Repository;
 
+use App\Domain\Support\IndexFournisseurs;
 use App\Entity\Fournisseur;
 use App\Entity\Site;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
@@ -40,39 +41,49 @@ class FournisseurRepository extends ServiceEntityRepository
         return $indexes;
     }
 
-    /**
-     * Les seuls planteurs d'un lot, indexés par clé.
-     *
-     * Contrairement aux produits — quelques dizaines par poste — les planteurs se comptent en milliers sur un gros site : on ne charge que ceux présents dans l'envoi.
-     *
-     * Ceux à la corbeille en sont écartés, comme dans 'ProduitRepository::parCle()'.
-     *
-     * @param list<string> $cles
-     *
-     * @return array<string, Fournisseur>
-     */
-    public function parCles(Site $site, array $cles): array
+    /*
+        - LES DEUX INDEX DE LA SYNCHRONISATION, en UNE requete. Le code rapproche, le libelle sert
+          de repli pour les fiches creees avant les codes : voir 'IndexFournisseurs', qui porte
+          l'ordre dans lequel on les interroge.
+
+        - Un 'OR' plutot que deux requetes : les deux listes se recouvrent largement, et deux
+          allers-retours chargeraient deux fois les memes lignes pour les recoller ensuite.
+
+        @param list<string> $codes
+        @param list<string> $cles
+    */
+    public function pourLaSynchronisation(Site $site, array $codes, array $cles): IndexFournisseurs
     {
-        if($cles === []) {
-            return [];
+        if($codes === [] && $cles === []) {
+            return new IndexFournisseurs();
         }
 
-        $fournisseurs = $this->createQueryBuilder('f')
+        $qb = $this->createQueryBuilder('f')
             ->andWhere('f.site = :site')
-            ->andWhere('f.cle IN (:cles)')
             ->andWhere('f.deletedAt IS NULL')
-            ->setParameter('site', $site)
-            ->setParameter('cles', $cles)
-            ->getQuery()
-            ->getResult();
+            ->setParameter('site', $site);
 
-        $indexes = [];
+        $ou = [];
 
-        foreach($fournisseurs as $fournisseur) {
-            $indexes[(string) $fournisseur->getCle()] = $fournisseur;
+        if($codes !== []) {
+            $ou[] = 'f.codefournisseur IN (:codes)';
+            $qb->setParameter('codes', $codes);
         }
 
-        return $indexes;
+        if($cles !== []) {
+            $ou[] = 'f.cle IN (:cles)';
+            $qb->setParameter('cles', $cles);
+        }
+
+        $qb->andWhere(implode(' OR ', $ou));
+
+        $index = new IndexFournisseurs();
+
+        foreach($qb->getQuery()->getResult() as $fournisseur) {
+            $index->ajouter($fournisseur);
+        }
+
+        return $index;
     }
 
     /**

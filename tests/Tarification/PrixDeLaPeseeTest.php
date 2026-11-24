@@ -274,11 +274,123 @@ final class PrixDeLaPeseeTest extends InvariantTestCase
         self::assertCount(1, $this->em->getRepository(MouvementEpargne::class)->findAll());
     }
 
+    /* ---- Le transport, écrit à la main lui aussi ------------------------------------------- */
+
+    /*
+        - LE PENDANT SUR L'AUTRE PART : un détour imprévu, une route coupée, un second voyage.
+          Rien de tout cela ne se range dans un barème sans être donné à tous ceux qui le suivent.
+
+        - UN MONTANT, ET NON UN PRIX AU KILO : c'est le seul chiffre qui ait un sens dans les deux
+          modes, puisqu'un forfait n'a pas de prix unitaire. 'prixtransport' repasse donc à null.
+    */
+    public function testLAdministrateurEcritLeTransportDUnePesee(): void
+    {
+        $this->planteur->setBaremeTransport($this->creerBaremeAuKilo($this->entreprise, 15));
+        $this->em->flush();
+
+        $pesee = $this->creerPeseeArbitree($this->site, $this->produit, $this->planteur, self::POIDS);
+
+        self::assertSame(15 * self::POIDS, $pesee->getMontanttransport());
+        self::assertSame(15, $pesee->getPrixtransport());
+
+        $this->appeler('PATCH', $this->urlTransport($pesee), $this->admin, [
+            'montant' => 20_000,
+            'motif' => 'Détour par la piste',
+        ]);
+
+        self::assertSame(200, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
+
+        $pesee = $this->relire($pesee);
+        self::assertSame(20_000, $pesee->getMontanttransport());
+        self::assertNull($pesee->getPrixtransport(), 'Un montant écrit à la main n a pas de prix au kilo');
+        self::assertSame('Montant saisi sur cette pesée', $pesee->getExplicationTransport());
+        self::assertSame(20_000, $pesee->getPayabletransport());
+    }
+
+    /*
+        - ZÉRO EST UNE VALEUR, pas une absence : « finalement on ne lui paie pas ce trajet » est une
+          décision, et l'origine à 'MANUEL' la distingue d'un planteur sans barème.
+    */
+    public function testUnTransportMisAZeroResteUneDecision(): void
+    {
+        $this->planteur->setBaremeTransport($this->creerBaremeAuKilo($this->entreprise, 15));
+        $this->em->flush();
+
+        $pesee = $this->creerPeseeArbitree($this->site, $this->produit, $this->planteur, self::POIDS);
+
+        $this->appeler('PATCH', $this->urlTransport($pesee), $this->admin, ['montant' => 0]);
+
+        self::assertSame(200, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
+
+        $pesee = $this->relire($pesee);
+        self::assertSame(0, $pesee->getMontanttransport());
+        self::assertSame('Montant saisi sur cette pesée', $pesee->getExplicationTransport(), 'Ce n est pas « aucun barème »');
+    }
+
+    /*
+        - UNE MAIN FIGE LA PART TRANSPORT, comme elle fige la récolte : sans ce gel, la prochaine
+          retouche du barème effacerait le montant écrit sans que personne ne le voie partir.
+    */
+    public function testUneRetoucheDuBaremeNeBalaiePasLeTransportEcritALaMain(): void
+    {
+        $bareme = $this->creerBaremeAuKilo($this->entreprise, 15);
+        $this->planteur->setBaremeTransport($bareme);
+        $this->em->flush();
+
+        $pesee = $this->creerPesee($this->site, $this->produit, $this->planteur, self::POIDS, '3');
+
+        $this->appeler('PATCH', $this->urlTransport($pesee), $this->admin, ['montant' => 20_000]);
+        self::assertSame(200, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
+
+        $pesee = $this->relire($pesee);
+
+        self::assertFalse($pesee->calculerMontant(), 'Le calcul ne doit plus toucher le transport de cette pesée');
+        self::assertSame(20_000, $pesee->getMontanttransport());
+    }
+
+    /* La récolte ne ferme pas le transport : un planteur peut avoir touché sa récolte et attendre encore son carburant. */
+    public function testUnVersementSurLaRecolteNeFermePasLeTransport(): void
+    {
+        $this->planteur->setBaremeTransport($this->creerBaremeAuKilo($this->entreprise, 15));
+        $this->em->flush();
+
+        $pesee = $this->creerPeseeArbitree($this->site, $this->produit, $this->planteur, self::POIDS);
+
+        $this->verser($pesee, produit: 10_000);
+
+        $this->appeler('PATCH', $this->urlTransport($pesee), $this->admin, ['montant' => 20_000]);
+
+        self::assertSame(200, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
+        self::assertSame(20_000, $this->relire($pesee)->getMontanttransport());
+    }
+
+    /* Mais un versement sur le TRANSPORT le ferme, et c'est la symétrie exacte du prix. */
+    public function testUnVersementSurLeTransportFermeSonMontant(): void
+    {
+        $this->planteur->setBaremeTransport($this->creerBaremeAuKilo($this->entreprise, 15));
+        $this->em->flush();
+
+        $pesee = $this->creerPeseeArbitree($this->site, $this->produit, $this->planteur, self::POIDS);
+
+        $this->verser($pesee, transport: 1_000);
+
+        $this->appeler('PATCH', $this->urlTransport($pesee), $this->admin, ['montant' => 20_000]);
+
+        self::assertSame(422, $this->client->getResponse()->getStatusCode());
+        self::assertStringContainsString('ne se change plus', (string) ($this->reponse()['detail'] ?? ''));
+        self::assertSame(15 * self::POIDS, $this->relire($pesee)->getMontanttransport());
+    }
+
     /* ---- Outils ------------------------------------------------------------------------------- */
 
     private function url(Operation $pesee): string
     {
         return '/api/operations/' . $pesee->getId() . '/prix-unitaire';
+    }
+
+    private function urlTransport(Operation $pesee): string
+    {
+        return '/api/operations/' . $pesee->getId() . '/montant-transport';
     }
 
     private function verser(Operation $pesee, int $produit = 0, int $transport = 0): void

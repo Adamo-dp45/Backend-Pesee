@@ -4,6 +4,7 @@ namespace App\Domain\Service;
 
 use App\Domain\Enum\StatutOperation;
 use App\Domain\Support\Cle;
+use App\Domain\Support\IndexFournisseurs;
 use App\Entity\Fournisseur;
 use App\Entity\Operation;
 use App\Entity\Produit;
@@ -102,7 +103,11 @@ class SynchronisationService
 
         /* 2. Préchargement par lot : un envoi de deux cents pesées ne doit pas produire quatre cents lectures. */
         $produits = $this->produitRepository->parCle($site->getEntreprise());
-        $fournisseurs = $this->fournisseurRepository->parCles($site, $this->clesFournisseurs($lignes));
+        $fournisseurs = $this->fournisseurRepository->pourLaSynchronisation(
+            $site,
+            $this->codesFournisseurs($lignes),
+            $this->clesFournisseurs($lignes)
+        );
         $existantes = $this->operationRepository->parCodesecret(array_column($lignes, 'codesecret'));
 
         /* 3. Application. */
@@ -201,9 +206,8 @@ class SynchronisationService
 
         @param array{brute: array<string, mixed>, refDesktop: string, codesecret: string} $ligne
         @param array<string, Produit>     $produits
-        @param array<string, Fournisseur> $fournisseurs
      */
-    private function appliquer(Operation $operation, array $ligne, Site $site, array &$produits, array &$fournisseurs): void
+    private function appliquer(Operation $operation, array $ligne, Site $site, array &$produits, IndexFournisseurs $fournisseurs): void
     {
         $brute = $ligne['brute'];
 
@@ -304,31 +308,44 @@ class SynchronisationService
 
     /**
      * @param array<string, mixed>        $brute
-     * @param array<string, Fournisseur>  $fournisseurs
      */
-    private function resoudreFournisseur(array $brute, Site $site, array &$fournisseurs, ?Fournisseur &$fournisseur): void
+    private function resoudreFournisseur(array $brute, Site $site, IndexFournisseurs $fournisseurs, ?Fournisseur &$fournisseur): void
     {
         $fournisseur = null;
-        $libelle = $this->texte($brute, 'libellefournisseur');
 
-        if($libelle === null) {
+        $code = $this->texte($brute, 'codefournisseur');
+        $libelle = $this->texte($brute, 'libellefournisseur');
+        $cle = $libelle === null ? null : Cle::depuis($libelle);
+
+        /* Ni code ni libellé : rien ne désigne un planteur, et la pesée restera sans fiche plutôt que d'en inventer une. */
+        if($code === null && $cle === null) {
             return;
         }
 
-        $cle = Cle::depuis($libelle);
-        $fournisseur = $fournisseurs[$cle] ?? null;
+        $fournisseur = $fournisseurs->trouver($code, $cle);
 
         if($fournisseur === null) {
-            // Le poste n'envoie qu'un libellé : on le prend comme nom, sans prénom. La fiche se complète ensuite depuis le web
-            $fournisseur = (new Fournisseur())->setNom($libelle)->setSite($site);
+            /*
+                - Le poste envoie un libellé : on le prend comme nom, sans prénom, et la fiche se
+                  complète ensuite depuis le web. Sans libellé, le code tient lieu de nom le temps
+                  qu'on ouvre la fiche — une ligne sans nom ne se retrouve dans aucune liste.
+            */
+            $fournisseur = (new Fournisseur())->setNom($libelle ?? (string) $code)->setSite($site);
 
-            $fournisseurs[$cle] = $fournisseur;
             $this->em->persist($fournisseur);
         }
 
-        if(($codefournisseur = $this->texte($brute, 'codefournisseur')) !== null) {
-            $fournisseur->setCodefournisseur($codefournisseur);
+        /*
+            - LE CODE SE POSE, LE NOM NE SE RÉÉCRIT PAS. Poser le code est ce qui fait basculer les
+              fiches d'avant : retrouvées par leur nom aujourd'hui, par leur code demain. Le nom,
+              lui, appartient au bureau — le corriger au poste ne doit pas défaire la correction
+              faite en ligne, pas plus que le numéro de téléphone juste en dessous.
+        */
+        if($code !== null) {
+            $fournisseur->setCodefournisseur($code);
         }
+
+        $fournisseurs->ajouter($fournisseur);
 
         // Un numéro reçu du poste ne remplace jamais celui saisi en ligne : c'est le web qui rend un planteur payable
         if($fournisseur->getContact1() === null) {
@@ -432,6 +449,28 @@ class SynchronisationService
             // Le diagnostic ne doit jamais faire échouer un envoi de pesées qui a réussi
             $this->logger->error('Journal de synchronisation non écrit : {erreur}', ['erreur' => $e->getMessage()]);
         }
+    }
+
+    /*
+        - LES CODES DU LOT, pour le préchargement. C'est par eux que le rapprochement commence
+          désormais ; les clés de libellé juste en dessous ne servent plus qu'aux fiches d'avant.
+    */
+    /**
+     * @param list<array{brute: array<string, mixed>, refDesktop: string, codesecret: string}> $lignes
+     *
+     * @return list<string>
+     */
+    private function codesFournisseurs(array $lignes): array
+    {
+        $codes = [];
+
+        foreach($lignes as $ligne) {
+            if(($code = $this->texte($ligne['brute'], 'codefournisseur')) !== null) {
+                $codes[] = $code;
+            }
+        }
+
+        return array_values(array_unique($codes));
     }
 
     /**

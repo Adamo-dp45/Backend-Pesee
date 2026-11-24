@@ -23,8 +23,6 @@ use App\State\Processor\BaremeTransportProcessor;
 use App\State\Processor\PerimetreEntrepriseProcessor;
 use App\State\Processor\SuppressionLogiqueProcessor;
 use App\Validator\UniqueParEntreprise;
-use Doctrine\Common\Collections\ArrayCollection;
-use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
 use Symfony\Component\Validator\Constraints as Assert;
@@ -41,9 +39,20 @@ use Symfony\Component\Validator\Context\ExecutionContextInterface;
     - À L'ENTREPRISE, ET SEULEMENT À ELLE. Lui donner un pont bascule le rendrait invisible à
       l'opérateur, qui ne voit que les ressources de ses postes — et un barème n'a pas de poste.
 
-    - LE MODE DÉCIDE DES CHAMPS QUI COMPTENT, et les autres restent vides. Un barème au kilo n'a pas
-      de forfait, un forfait n'a pas de tranches. Les laisser coexister ouvrirait « lequel gagne ? »,
-      question à laquelle aucune réponse n'est bonne.
+    - LE MODE DÉCIDE DU CHAMP QUI COMPTE, et l'autre reste vide. Un barème au kilo n'a pas de
+      forfait. Les laisser coexister ouvrirait « lequel gagne ? », question à laquelle aucune
+      réponse n'est bonne.
+
+    - UNE TRANCHE EST UN BARÈME, et non une ligne dans une suite. « De 10 à 20 km : 1 000 F » est un
+      forfait de 1 000 F qui porte ses bornes ; le planteur pointe dessus, et on sait ce qu'il
+      touche. L'ancienne forme tenait une collection d'intervalles ici, et allait chercher la
+      DISTANCE sur la fiche du planteur — une distance que personne ne saisissait, parce que le
+      poste crée les planteurs avec un libellé et rien d'autre. Le barème ne savait alors rien
+      répondre, le transport valait zéro, et ce zéro se figeait sur la pesée.
+
+    - LES BORNES NE CALCULENT RIEN, elles NOMMENT. Deux barèmes à 1 000 F ne se distinguent que par
+      elles ; elles trient la liste et apparaissent sur la fiche de la pesée. Aucune règle ne les
+      lit pour choisir un montant — c'est précisément ce qu'on a retiré.
 */
 #[ORM\Entity(repositoryClass: BaremeTransportRepository::class)]
 #[ORM\Index(name: 'idx_bareme_entreprise_cle', fields: ['entreprise', 'cle'])]
@@ -78,7 +87,7 @@ use Symfony\Component\Validator\Context\ExecutionContextInterface;
             normalizationContext: ['groups' => ['read:BaremeTransport', 'read:BaremeTransport:item', 'read:Base']],
             openapi: new Operation(
                 summary: 'Le barème',
-                description: 'Le barème et, s\'il est par tranches, la suite de ses intervalles',
+                description: 'Le barème et, s\'il porte des bornes, le kilométrage couvert',
                 security: [['bearerAuth' => []]]
             )
         ),
@@ -91,12 +100,6 @@ use Symfony\Component\Validator\Context\ExecutionContextInterface;
             )
         ),
         /*
-            - LES TRANCHES S'ÉCRIVENT AVEC LE BARÈME, d'un seul envoi, et c'est la seule façon :
-              leur cohérence — ni trou, ni chevauchement, un départ à zéro, une seule tranche
-              ouverte — ne se juge que sur la suite ENTIÈRE. Une tranche seule ne voit pas ses
-              voisines, et l'enregistrer une par une laisserait la suite incohérente entre deux
-              saisies, le temps que quelqu'un valorise une pesée.
-
             - Pas d'aperçu avant écriture, contrairement à la grille de tarifs, et la différence est
               réelle : changer un transport ne touche pas 'montantdu', donc n'ouvre aucune mise en
               compte et ne fige aucune retenue. Une erreur de barème se corrige en ressaisissant.
@@ -107,7 +110,7 @@ use Symfony\Component\Validator\Context\ExecutionContextInterface;
             processor: BaremeTransportProcessor::class, // Revalorise le transport des pesées concernées
             openapi: new Operation(
                 summary: 'Modification d\'un barème',
-                description: 'Le mode, ses montants et, pour les tranches, la suite entière',
+                description: 'Le mode, son montant et ses bornes de kilométrage',
                 security: [['bearerAuth' => []]]
             )
         ),
@@ -173,41 +176,36 @@ class BaremeTransport extends EntityBase implements EntrepriseOwnedInterface
     private ?Entreprise $entreprise = null; // Posée par 'PerimetreEntrepriseProcessor', jamais saisie
 
     /*
-        - LA SUITE DES INTERVALLES, mode 'TRANCHES' seulement. Ordonnée par kilomètre de départ :
-          c'est l'ordre dans lequel on la lit, l'ordre dans lequel on la vérifie, et l'ordre dans
-          lequel l'écran doit l'afficher.
+        - LES BORNES DU TRAJET, facultatives et purement descriptives. Elles disent à qui ce barème
+          s'adresse — « de 10 à 20 km » — et c'est ce qui distingue deux forfaits de même montant
+          dans une liste. Aucun calcul ne les lit.
 
-        - 'orphanRemoval' : retirer une tranche de la collection la SUPPRIME. Sans lui, elle
-          resterait en base, détachée de rien, et continuerait de compter dans les contrôles de
-          chevauchement du prochain enregistrement.
+        - LES DEUX SONT NULLABLES, et les quatre combinaisons ont un sens : aucune borne (un barème
+          qui ne parle pas de distance), les deux (un intervalle), 'kmMin' seul (« au-delà de 50 km »),
+          'kmMax' seul (« moins de 10 km »). Les rendre obligatoires forcerait à inventer un zéro ou
+          un plafond là où l'entreprise n'a rien décidé.
+
+        - 'PositiveOrZero' et non 'Positive' sur le départ : un barème de proximité commence bien à
+          zéro kilomètre.
     */
-    /** @var Collection<int, Tranche> */
-    #[ORM\OneToMany(mappedBy: 'bareme', targetEntity: Tranche::class, cascade: ['persist'], orphanRemoval: true)]
-    #[ORM\OrderBy(['kmMin' => 'ASC'])]
-    #[Assert\Valid]
-    #[Groups(['read:BaremeTransport:item', 'write:BaremeTransport'])]
-    private Collection $tranches;
+    #[ORM\Column(nullable: true)]
+    #[Assert\PositiveOrZero(message: 'Le kilométrage de départ ne peut pas être négatif')]
+    #[Groups(['read:BaremeTransport', 'write:BaremeTransport', 'read:Fournisseur:item'])]
+    private ?int $kmMin = null;
 
-    public function __construct()
-    {
-        $this->tranches = new ArrayCollection();
-    }
+    #[ORM\Column(nullable: true)]
+    #[Assert\Positive(message: 'Le kilométrage de fin doit être supérieur à zéro')]
+    #[Groups(['read:BaremeTransport', 'write:BaremeTransport', 'read:Fournisseur:item'])]
+    private ?int $kmMax = null;
 
     /*
-        - LA COHÉRENCE DE LA SUITE, et c'est le cœur de ce fichier. Quatre façons de produire un
-          montant faux sans la moindre erreur, et chacune a sa ligne ici :
+        - LA COHÉRENCE DU BARÈME, et il n'en reste que deux façons de la perdre. Le fichier en
+          tenait quatre de plus — trou dans la suite, chevauchement, aucune tranche ouverte, départ
+          ailleurs qu'à zéro — et toutes les quatre ont disparu avec la suite elle-même. Un barème
+          ne répond plus que pour lui.
 
-          · UN TROU — « 0 à 20 », puis « 30 à 50 » : un planteur à 25 km ne trouve aucune tranche,
-            son transport vaut zéro, et ce zéro se fige puis s'arbitre ;
-          · UN CHEVAUCHEMENT — deux montants pour une même distance, départagés par l'ordre de la
-            requête, c'est-à-dire par rien ;
-          · AUCUNE TRANCHE OUVERTE — tout ce qui dépasse la dernière borne ne trouve rien, même
-            silence ;
-          · UN DÉPART AILLEURS QU'À ZÉRO — un planteur à 3 km d'une suite qui commence à 5 tombe
-            dans le même vide.
-
-        - La vérification porte sur la collection ENTIÈRE : une contrainte de champ ne voit qu'une
-          tranche à la fois, et aucune des quatre n'est visible depuis une seule ligne.
+        - IL RESTE L'INTERVALLE À L'ENVERS, « de 50 à 10 km », qui ne désigne aucun planteur et se
+          lirait pourtant comme une ligne valide dans la liste.
     */
     public function verifierLaCoherence(ExecutionContextInterface $contexte): void
     {
@@ -215,80 +213,11 @@ class BaremeTransport extends EntityBase implements EntrepriseOwnedInterface
             return; // 'NotNull' le dit déjà : ne pas répéter le même refus deux fois
         }
 
-        $tranches = $this->tranchesOrdonnees();
-
-        if($this->mode !== ModeTransport::TRANCHES) {
-            if($tranches !== []) {
-                $contexte->buildViolation('Un barème « %mode% » ne porte pas de tranches. Retirez-les, ou changez de mode.')
-                    ->setParameter('%mode%', $this->mode->libelle())
-                    ->atPath('tranches')
-                    ->addViolation();
-            }
-
-            $this->verifierLeChampDuMode($contexte);
-
-            return;
-        }
-
         $this->verifierLeChampDuMode($contexte);
 
-        if($tranches === []) {
-            $contexte->buildViolation('Un barème par tranches en demande au moins une.')
-                ->atPath('tranches')
-                ->addViolation();
-
-            return;
-        }
-
-        if($tranches[0]->getKmMin() !== 0) {
-            $contexte->buildViolation('La première tranche doit partir de 0 km : sinon un planteur plus proche ne trouve aucun montant.')
-                ->atPath('tranches')
-                ->addViolation();
-        }
-
-        $ouvertes = 0;
-
-        foreach($tranches as $rang => $tranche) {
-            if($tranche->getKmMax() === null) {
-                ++$ouvertes;
-            } elseif($tranche->getKmMax() <= $tranche->getKmMin()) {
-                $contexte->buildViolation('« %tranche% » : le kilomètre de fin doit dépasser celui de départ.')
-                    ->setParameter('%tranche%', (string) $tranche)
-                    ->atPath('tranches')
-                    ->addViolation();
-            }
-
-            $suivante = $tranches[$rang + 1] ?? null;
-
-            if($suivante === null) {
-                continue;
-            }
-
-            /*
-                - LA SEULE FORME SANS TROU NI CHEVAUCHEMENT : la fin de l'une EST le départ de la
-                  suivante. Avec des bornes semi-ouvertes, « 0 à 20 » puis « 20 à 50 » se touchent
-                  sans se recouvrir — 20 appartient à la seconde, et à elle seule.
-            */
-            if($tranche->getKmMax() !== $suivante->getKmMin()) {
-                $contexte->buildViolation(
-                    $tranche->getKmMax() === null || $tranche->getKmMax() < $suivante->getKmMin()
-                        ? 'Il manque un intervalle entre « %a% » et « %b% » : une distance entre les deux ne trouverait aucun montant.'
-                        : 'Les intervalles « %a% » et « %b% » se chevauchent : une même distance aurait deux montants.'
-                )
-                    ->setParameter('%a%', (string) $tranche)
-                    ->setParameter('%b%', (string) $suivante)
-                    ->atPath('tranches')
-                    ->addViolation();
-            }
-        }
-
-        if($ouvertes !== 1) {
-            $contexte->buildViolation(
-                $ouvertes === 0
-                    ? 'Il faut une dernière tranche SANS kilomètre de fin : sans elle, un trajet plus long ne trouve aucun montant.'
-                    : 'Une seule tranche peut rester ouverte, et c\'est forcément la dernière.'
-            )
-                ->atPath('tranches')
+        if($this->kmMin !== null && $this->kmMax !== null && $this->kmMax <= $this->kmMin) {
+            $contexte->buildViolation('Le kilométrage de fin doit dépasser celui de départ.')
+                ->atPath('kmMax')
                 ->addViolation();
         }
     }
@@ -320,47 +249,43 @@ class BaremeTransport extends EntityBase implements EntrepriseOwnedInterface
         }
     }
 
-    /** @return list<Tranche> */
-    public function tranchesOrdonnees(): array
-    {
-        $vivantes = [];
-
-        foreach($this->tranches as $tranche) {
-            if($tranche->getDeletedAt() === null) {
-                $vivantes[] = $tranche;
-            }
-        }
-
-        usort($vivantes, static fn(Tranche $a, Tranche $b) => $a->getKmMin() <=> $b->getKmMin());
-
-        return $vivantes;
-    }
-
     /*
-        - CE QUE CE BARÈME DONNE pour un poids et une distance, ou null s'il ne peut rien donner.
-          'null' n'est PAS zéro : il veut dire « ce barème ne sait pas répondre », et l'appelant doit
-          le dire au lieu de figer un transport nul.
+        - CE QUE CE BARÈME DONNE pour un poids, ou null s'il ne peut rien donner. 'null' n'est PAS
+          zéro : il veut dire « ce barème ne sait pas répondre », et l'appelant doit le dire au lieu
+          de figer un transport nul.
+
+        - LE SEUL CAS QUI RESTE est un poids absent, c'est-à-dire une pesée non terminée — que le
+          calcul écarte déjà en amont. Le forfait, lui, répond toujours.
     */
-    public function montantPour(?int $poidsnet, ?int $distanceKm): ?int
+    public function montantPour(?int $poidsnet): ?int
     {
         return match($this->mode) {
             ModeTransport::AU_KILO => $poidsnet === null || $this->prixAuKilo === null ? null : $poidsnet * $this->prixAuKilo,
             ModeTransport::FORFAIT => $this->montant,
-            ModeTransport::TRANCHES => $distanceKm === null ? null : $this->tranchePour($distanceKm)?->getMontant(),
             default => null,
         };
     }
 
-    /* La tranche qui contient cette distance. Avec une suite cohérente, il y en a toujours exactement une. */
-    public function tranchePour(int $distanceKm): ?Tranche
+    /*
+        - LES BORNES EN TOUTES LETTRES, ou null quand le barème n'en porte pas. C'est ce qui se fige
+          sur la pesée : les bornes s'éditent, et une référence au barème rendrait demain un
+          intervalle qui n'a jamais servi à ce montant-là.
+    */
+    public function libelleBornes(): ?string
     {
-        foreach($this->tranchesOrdonnees() as $tranche) {
-            if($tranche->contient($distanceKm)) {
-                return $tranche;
-            }
+        if($this->kmMin === null && $this->kmMax === null) {
+            return null;
         }
 
-        return null;
+        if($this->kmMin === null) {
+            return sprintf('moins de %d km', $this->kmMax);
+        }
+
+        if($this->kmMax === null) {
+            return sprintf('au-delà de %d km', $this->kmMin);
+        }
+
+        return sprintf('de %d à %d km', $this->kmMin, $this->kmMax);
     }
 
     public function getId(): ?int
@@ -440,27 +365,37 @@ class BaremeTransport extends EntityBase implements EntrepriseOwnedInterface
         return $this;
     }
 
-    /** @return Collection<int, Tranche> */
-    public function getTranches(): Collection
+    public function getKmMin(): ?int
     {
-        return $this->tranches;
+        return $this->kmMin;
     }
 
-    public function addTranche(Tranche $tranche): static
+    public function setKmMin(?int $kmMin): static
     {
-        if(!$this->tranches->contains($tranche)) {
-            $this->tranches->add($tranche);
-            $tranche->setBareme($this);
-        }
+        $this->kmMin = $kmMin;
 
         return $this;
     }
 
-    public function removeTranche(Tranche $tranche): static
+    public function getKmMax(): ?int
     {
-        $this->tranches->removeElement($tranche);
+        return $this->kmMax;
+    }
+
+    public function setKmMax(?int $kmMax): static
+    {
+        $this->kmMax = $kmMax;
 
         return $this;
+    }
+
+    /* Le libellé suivi de ses bornes : c'est sous cette forme que le barème se nomme partout. */
+    #[Groups(['read:BaremeTransport', 'read:Fournisseur:item', 'read:CategorieFournisseur'])]
+    public function getLibelleComplet(): string
+    {
+        $bornes = $this->libelleBornes();
+
+        return $bornes === null ? (string) $this->libelle : sprintf('%s (%s)', (string) $this->libelle, $bornes);
     }
 
     public function __toString(): string

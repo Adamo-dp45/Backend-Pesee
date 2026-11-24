@@ -46,7 +46,6 @@ use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
 use Symfony\Component\Serializer\Attribute\SerializedName;
 use Symfony\Component\Validator\Constraints as Assert;
-use Symfony\Component\Validator\Context\ExecutionContextInterface;
 
 /*
     - Le planteur. Le patron emploie indifféremment « planteur » et « fournisseur » ; on garde « fournisseur » côté code puisque c'est le vocabulaire du logiciel de pesée et de sa charge utile.
@@ -250,8 +249,7 @@ use Symfony\Component\Validator\Context\ExecutionContextInterface;
 */
 #[ApiFilter(SansTransportFilter::class)]
 #[ApiFilter(AvecTarifPropreFilter::class)]
-#[ApiFilter(OrderFilter::class, properties: ['codefournisseur', 'nom', 'distanceKm', 'createdAt'])]
-#[Assert\Callback('verifierSonTransport')]
+#[ApiFilter(OrderFilter::class, properties: ['codefournisseur', 'nom', 'createdAt'])]
 class Fournisseur extends EntityBase implements SiteOwnedInterface
 {
     #[ORM\Id]
@@ -324,20 +322,6 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
     #[ORM\JoinColumn(nullable: true, onDelete: 'SET NULL')]
     #[Groups(['read:Fournisseur', 'write:Fournisseur', 'read:Fournisseur:item'])]
     private ?BaremeTransport $baremeTransport = null;
-
-    /*
-        - LA DISTANCE DE SON TRAJET, en kilomètres. Elle ne sert qu'aux barèmes par TRANCHES, et
-          elle leur est indispensable : sans elle, aucune tranche ne contient quoi que ce soit.
-
-        - Nullable, et elle le restera : le poste crée les planteurs avec un libellé et rien
-          d'autre. C'est pour ça que rattacher un barème par tranches à un planteur sans distance
-          est refusé — sinon son transport vaudrait zéro, se figerait, et personne n'aurait vu
-          passer l'information.
-    */
-    #[ORM\Column(nullable: true)]
-    #[Assert\PositiveOrZero(message: 'La distance ne peut pas être négative')]
-    #[Groups(['read:Fournisseur', 'write:Fournisseur', 'read:Fournisseur:item'])]
-    private ?int $distanceKm = null;
 
     /*
         - Les mises en compte du planteur, UNE PAR PRODUIT : à chaque pesée, le taux du produit pesé décide de la part qui va sur son épargne au lieu de lui être remise au guichet. La grande majorité des planteurs n'en a aucune.
@@ -483,6 +467,27 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
         return trim(($this->nom ?? '') . ' ' . ($this->prenom ?? ''));
     }
 
+    /*
+        - LE NOM AVEC SON CODE, pour les listes où l'on CHOISIT un planteur. Deux homènymes dans un
+          même village ne se distinguent pas autrement, et c'est précisément ce qui se passe quand
+          le poste crée les fiches à partir d'un libellé : « Kouamé » désigne trois personnes.
+
+        - LE CODE EST L'IDENTITÉ depuis que la synchronisation rapproche par lui : le voir à côté du
+          nom, c'est voir ce qui départage réellement, et non ce qui s'affiche le plus volontiers.
+
+        - IL NE REMPLACE PAS 'nomComplet', qui reste la façon de NOMMER un planteur dans une phrase
+          ou sur une ligne de tableau. Celui-ci sert à le RETROUVER dans une liste de deux cents.
+    */
+    #[Groups(['read:Fournisseur'])]
+    public function getNomAvecCode(): string
+    {
+        $nom = $this->getNomComplet();
+
+        return $this->codefournisseur === null || $this->codefournisseur === ''
+            ? $nom
+            : sprintf('%s (%s)', $nom, $this->codefournisseur);
+    }
+
     public function getContact1(): ?string
     {
         return $this->contact1;
@@ -553,27 +558,6 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
     }
 
     /*
-        - UN BARÈME PAR TRANCHES SANS DISTANCE NE PEUT RIEN DONNER, et le refus tombe ICI, au
-          moment où on les met ensemble. Sans lui, le rattachement passe, la pesée suivante fige
-          un transport à zéro, et ce zéro s'arbitre — personne n'aura vu passer l'information.
-
-        - Le refus ne couvre QUE le barème propre du planteur. Celui de sa catégorie peut devenir
-          « par tranches » après coup, sans que personne ne touche à sa fiche : ce cas-là se dit
-          sur la pesée, par 'getMotifTransportIncalculable()'. Les deux se complètent.
-    */
-    public function verifierSonTransport(ExecutionContextInterface $contexte): void
-    {
-        if($this->baremeTransport?->getMode()?->exigeUneDistance() === true && $this->distanceKm === null) {
-            $contexte->buildViolation(
-                'Le barème « %bareme% » se calcule par tranches de kilomètres : renseignez la distance de ce planteur, sinon son transport resterait à zéro.'
-            )
-                ->setParameter('%bareme%', (string) $this->baremeTransport)
-                ->atPath('distanceKm')
-                ->addViolation();
-        }
-    }
-
-    /*
         - CE QUE CE PLANTEUR TOUCHE VRAIMENT, en une phrase, barème de sa catégorie compris. Sans
           elle, la liste affichait « Aucun » pour un planteur parfaitement réglé par sa catégorie —
           la colonne mentait sur le seul cas qu'elle existe pour signaler.
@@ -594,30 +578,6 @@ class Fournisseur extends EntityBase implements SiteOwnedInterface
             ? sprintf('%s (par sa catégorie)', (string) $transport->bareme)
             : (string) $transport->bareme;
     }
-
-    /*
-        - LE SEUL BARÈME QUI NE PAIE RIEN : par tranches, sur un planteur sans distance. Sa propre
-          fiche refuse déjà ce couple ('verifierSonTransport'), mais la catégorie peut passer aux
-          tranches après coup sans que personne ne rouvre la fiche — et alors plus rien ne le dit.
-    */
-    #[Groups(['read:Fournisseur', 'read:Fournisseur:item'])]
-    public function getMotifTransportIndisponible(): ?string
-    {
-        return TransportApplicable::pour($this)->motifIndisponible();
-    }
-
-    public function getDistanceKm(): ?int
-    {
-        return $this->distanceKm;
-    }
-
-    public function setDistanceKm(?int $distanceKm): static
-    {
-        $this->distanceKm = $distanceKm;
-
-        return $this;
-    }
-
 
     public function getStatut(): StatutActivation
     {

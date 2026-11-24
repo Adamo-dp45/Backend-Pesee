@@ -17,8 +17,11 @@ use App\Domain\Enum\ReseauMobile;
 use App\Domain\Enum\StatutPaiement;
 use App\Domain\Enum\TypeCaisse;
 use App\Entity\Input\PaiementInput;
+use App\Entity\Input\PaiementLotInput;
+use App\Entity\Output\PaiementLotOutput;
 use App\Entity\Interface\SiteOwnedInterface;
 use App\Repository\PaiementRepository;
+use App\State\Processor\PaiementLotProcessor;
 use App\State\Processor\PaiementProcessor;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Serializer\Attribute\Groups;
@@ -71,6 +74,29 @@ use Symfony\Component\Serializer\Attribute\Groups;
             openapi: new OpenApiOperation(
                 summary: 'Paiement d\'un planteur',
                 description: 'Verse tout ou partie du montant dû sur une pesée. Les fonds sont réservés sur la caisse du site dès la création, et rendus si le versement échoue',
+                security: [['bearerAuth' => []]]
+            )
+        ),
+        /*
+            - PLUSIEURS PESÉES D'UN MÊME PLANTEUR, en un geste et sous UNE transaction. Une route à
+              part plutôt qu'un tableau facultatif sur la précédente : les deux ne prennent pas les
+              mêmes champs — celle-ci n'accepte AUCUN montant, puisque cocher une pesée veut dire
+              la régler en entier — et les mêler aurait donné un corps de requête dont la moitié
+              des champs est ignorée selon l'autre moitié.
+
+            - ELLE REND LA LISTE des versements écrits, un par pesée : c'est ce que le guichet
+              imprime, et c'est aussi ce qui permet à l'écran de dire combien de lignes sont parties.
+        */
+        new Post(
+            uriTemplate: '/paiements/lot',
+            security: "is_granted('PAYER', 'Paiement')",
+            input: PaiementLotInput::class,
+            denormalizationContext: ['groups' => ['write:Paiement:lot']],
+            output: PaiementLotOutput::class,
+            processor: PaiementLotProcessor::class,
+            openapi: new OpenApiOperation(
+                summary: 'Versement groupé',
+                description: 'Règle en une fois plusieurs pesées du même planteur, chacune pour la totalité de ce qui lui reste. La part choisie borne le geste : la récolte seule, le transport seul, ou les deux',
                 security: [['bearerAuth' => []]]
             )
         ),
