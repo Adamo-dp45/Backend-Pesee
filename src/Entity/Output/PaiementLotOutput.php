@@ -38,6 +38,21 @@ final class PaiementLotOutput
 
         #[Groups(['read:Paiement'])]
         public array $references = [],
+
+        /*
+            - LES IDENTIFIANTS DES LIGNES ÉCRITES, et non leurs seules références. Les deux ne
+              servent pas à la même chose : une référence se recopie sur un reçu quand un planteur
+              conteste, un identifiant désigne la ligne dans l'API — et c'est à elle qu'un
+              justificatif se rattache.
+
+            - Au guichet, un versement groupé donne UN papier pour N pesées : le planteur signe une
+              seule décharge. Sans ces identifiants, l'écran ne savait à laquelle des N lignes
+              l'accrocher, et aucune n'était justifiée.
+
+            @var list<int>
+        */
+        #[Groups(['read:Paiement'])]
+        public array $ids = [],
     )
     {
     }

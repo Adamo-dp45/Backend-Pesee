@@ -88,6 +88,8 @@ final class PaiementLotProcessor implements ProcessorInterface
             $sortie->montantProduit += $paiement->getMontantproduit();
             $sortie->montantTransport += $paiement->getMontanttransport();
             $sortie->references[] = (string) $paiement->getReference();
+            /* C'est à ces lignes-là que l'écran accrochera la décharge signée pour le lot entier */
+            $sortie->ids[] = (int) $paiement->getId();
         }
 
         return $sortie;

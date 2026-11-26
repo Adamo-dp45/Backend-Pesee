@@ -56,4 +56,31 @@ class DemandeRetraitRepository extends ServiceEntityRepository
             ->getQuery()
             ->getResult();
     }
+
+    /*
+        - COMBIEN ATTENDENT UNE DÉCISION, pour le tableau de bord. Le périmètre passe par le SITE
+          que la demande porte elle-même, figé au dépôt.
+
+        - EN_ATTENTE SEULEMENT, et c'est une vraie restriction ici : un retrait a trois temps —
+          l'opérateur demande, l'administrateur accorde, l'opérateur verse. Une demande APPROUVÉE
+          mais pas encore servie n'attend plus de décision, elle attend un guichet, et la compter
+          avec les autres enverrait l'administrateur chercher ce qu'il a déjà tranché.
+    */
+    /** @param list<int> $siteIds */
+    public function compterParStatut(array $siteIds, StatutDemande $statut): int
+    {
+        if($siteIds === []) {
+            return 0;
+        }
+
+        return (int) $this->createQueryBuilder('d')
+            ->select('COUNT(d.id)')
+            ->andWhere('d.site IN (:sites)')
+            ->andWhere('d.statut = :statut')
+            ->andWhere('d.deletedAt IS NULL')
+            ->setParameter('sites', $siteIds)
+            ->setParameter('statut', $statut)
+            ->getQuery()
+            ->getSingleScalarResult();
+    }
 }

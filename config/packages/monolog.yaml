@@ -1,0 +1,124 @@
+monolog:
+    channels: # To see all channels, run bin/console debug:autowiring logger
+        - deprecation # Deprecations are logged in the dedicated "deprecation" channel when it exists
+
+when@dev:
+    monolog:
+        handlers:
+            main:
+                type: stream
+                path: "%kernel.logs_dir%/%kernel.environment%.log"
+                level: debug
+                channels: ["!event"]
+            console:
+                type: console
+                process_psr_3_messages: false
+                channels: ["!event", "!doctrine", "!console"]
+
+when@test:
+    monolog:
+        handlers:
+            main:
+                type: fingers_crossed
+                action_level: error
+                handler: nested
+                excluded_http_codes: [404, 405]
+                channels: ["!event"]
+            nested:
+                type: stream
+                path: "%kernel.logs_dir%/%kernel.environment%.log"
+                level: debug
+
+#
+#   - L'API A ÉCRIT DIX APPELS AU LOGGER AVANT D'AVOIR MONOLOG. Passerelle injoignable,
+#     réconciliation impossible, échec de synchronisation d'un poste, journal d'activité non
+#     écrit, courriel non parti : ce sont exactement les pannes qui ne lèvent rien côté écran, et
+#     elles partaient dans 'php://stderr' faute de Monolog — c'est-à-dire dans le journal
+#     d'erreurs d'Apache, auquel on n'a pas accès sur un hébergement mutualisé. Elles vivent
+#     désormais dans 'var/log/', qu'on ouvre par FTP ou par le gestionnaire de fichiers.
+#
+#   - 'var/log' N'EST PAS SERVI PAR LE WEB, et c'est ce qui rend ce choix tenable : la racine du
+#     site est 'public/'. Un journal contient des messages d'erreur et des traces d'exécution ;
+#     posé sous la racine, il se lirait depuis un navigateur. À vérifier le jour où l'hébergeur
+#     impose de tout mettre dans 'public_html'.
+#
+when@prod:
+    monolog:
+        handlers:
+            #
+            #   - RIEN NE S'ÉCRIT TANT QUE TOUT VA BIEN. 'fingers_crossed' garde les messages de la
+            #     requête en mémoire et ne les déverse QUE si une erreur survient — on obtient
+            #     alors le chemin qui y menait, et pas seulement la dernière ligne. Sur un lot de
+            #     synchronisation qui casse à la cent-quatrième pesée, c'est toute la différence.
+            #
+            #   - LES 4xx LE DÉCLENCHENT AUSSI, et c'est le piège de ce fichier. Symfony journalise
+            #     une exception HTTP de statut < 500 en 'error' et non en 'warning'
+            #     ('ErrorListener::resolveLogLevel()') : un jeton périmé (401) ou un versement
+            #     refusé (422) déverserait donc tout le tampon. Ce sont les refus ORDINAIRES de
+            #     l'API — l'opérateur les lit à l'écran, ils arrivent par milliers, et ils
+            #     noieraient les vraies pannes. D'où une liste explicite, là où la recette n'en
+            #     écarte que deux. Tout le reste passe : les 5xx, et les 'logger->error()' du code,
+            #     qui ne portent aucun statut.
+            #
+            main:
+                type: fingers_crossed
+                action_level: error
+                handler: nested
+                excluded_http_codes: [400, 401, 403, 404, 405, 409, 422]
+                channels: ["!deprecation"]
+                buffer_size: 50 # How many messages should be saved? Prevent memory leaks
+            #
+            #   - UN FICHIER PAR JOUR, ET QUINZE JOURS GARDÉS. Un 'stream' unique grossit sans fin,
+            #     et un quota disque atteint sur un mutualisé ne se signale pas : l'écriture
+            #     échoue, puis c'est l'application. La rotation donne aussi le bon réflexe —
+            #     « l'erreur était mardi » se cherche dans 'prod-2026-11-24.log'.
+            #
+            #   - EN LIGNES, PAS EN JSON. La recette posait 'monolog.formatter.json', qui est fait
+            #     pour un collecteur qu'on n'a pas ici. Ce fichier se lit dans l'éditeur de texte
+            #     d'un client FTP, donc il se lit comme du texte.
+            #
+            nested:
+                type: rotating_file
+                path: "%kernel.logs_dir%/%kernel.environment%.log"
+                max_files: 15
+                level: debug
+            console:
+                type: console
+                process_psr_3_messages: false
+                channels: ["!event", "!doctrine"]
+            # Les dépréciations ont leur fichier : ce sont des avertissements de mise à jour, pas des incidents, et elles noieraient les erreurs.
+            deprecation:
+                type: rotating_file
+                channels: [deprecation]
+                path: "%kernel.logs_dir%/deprecation.log"
+                max_files: 3
+            #
+            #   - ÊTRE PRÉVENU PAR COURRIEL, le jour où personne ne surveille le fichier. Il suffit
+            #     de décommenter les deux blocs : Monolog empile les gestionnaires déclarés au même
+            #     niveau, donc 'alerte' recevra les mêmes messages que 'main' sans rien lui retirer,
+            #     et le fichier continuera d'être écrit comme avant.
+            #
+            #   - DEUX BLOCS ET NON UN : 'fingers_crossed' regroupe la requête en UN courriel. Sans
+            #     lui, une panne qui se répète envoie un message par ligne de journal, et la boîte
+            #     devient inutilisable au moment précis où on en a besoin.
+            #
+            #   - 'critical' ET NON 'error', volontairement plus haut que le fichier : on veut être
+            #     réveillé par ce qui casse l'API, pas par une passerelle injoignable que la
+            #     réconciliation rattrapera toute seule.
+            #
+            #   - IL FAUT UNE ADRESSE : poser 'ALERTE_EMAIL' dans '.env.local' sur le serveur, et
+            #     s'assurer que 'MAILER_DSN' pointe sur le SMTP de l'hébergement — sinon l'alerte se
+            #     perd sans rien dire, et c'est le pire des deux mondes.
+            #
+            # alerte:
+            #     type: fingers_crossed
+            #     action_level: critical
+            #     handler: courriel
+            # courriel:
+            #     type: symfony_mailer
+            #     from_email: '%env(MAILER_FROM_EMAIL)%'
+            #     to_email: '%env(ALERTE_EMAIL)%'
+            #     subject: '[Webpesee — l''API] %%message%%'
+            #     level: debug
+            #     formatter: monolog.formatter.html
+            #     content_type: text/html

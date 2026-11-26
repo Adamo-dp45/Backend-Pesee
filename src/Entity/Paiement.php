@@ -240,6 +240,29 @@ class Paiement extends EntityBase implements SiteOwnedInterface
         return 'WP' . date('ymd') . strtoupper(bin2hex(random_bytes(4)));
     }
 
+    /*
+        - LE JUSTIFICATIF DE CE VERSEMENT, s'il y en a un : le reçu signé du planteur, le talon du
+          chèque. C'est la PIÈCE qui porte la clé — d'ici on ne fait que la lire, et aucune colonne
+          ne s'ajoute à cette table d'argent.
+        - Les champs de la pièce portent 'read:Paiement', sans quoi la relation ne rendrait que son
+          IRI et l'écran afficherait un tiret là où il y a un document.
+    */
+    #[ORM\OneToOne(mappedBy: 'paiement')]
+    #[Groups(['read:Paiement'])]
+    private ?PieceJointe $pieceJointe = null;
+
+    public function getPieceJointe(): ?PieceJointe
+    {
+        return $this->pieceJointe;
+    }
+
+    public function setPieceJointe(?PieceJointe $pieceJointe): static
+    {
+        $this->pieceJointe = $pieceJointe;
+
+        return $this;
+    }
+
     public function getId(): ?int
     {
         return $this->id;

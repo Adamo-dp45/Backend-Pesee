@@ -164,6 +164,13 @@ Si tu préfères quand même les formulaires, je les fais — mais je garderai l
 
 
 
+Une chose à savoir : la sélection n'existe que sur le tableau, pas sur les cartes du téléphone, où l'on garde le « Verser » par pesée. C'était déjà le cas avant ces ajustements, et vous ne l'aviez pas demandé — dites-moi si le guichet verse aussi depuis un téléphone.
+
+
+
+
+
+
 ## La liste
 
 | # | Fonctionnalité | Ce que ça touche | Jours | Risque |
@@ -178,11 +185,22 @@ Si tu préfères quand même les formulaires, je les fais — mais je garderai l
 
 Un barème par tranches sur un planteur sans distance est refusé à la saisie ; quand c’est sa catégorie qui bascule après coup, la pesée et la fiche le disent au lieu de figer un zéro muet. Et getTransportApplique() répond « qui touche quoi » en suivant les deux sauts — la colonne lisait baremeTransport, donc le sien, et annonçait « Aucun » à des planteurs parfaitement réglés par leur catégorie.
 
+| 5 | **Recherche et suivi** : tables mieux filtrables, libellés plus précis | Filtres par période partout, colonnes supplémentaires, libellés métier. Le socle est sain — on vient de l'éprouver écran par écran | **3–5** | faible — mais le chiffre dépend du nombre d'écrans retenus |
+
+| 3 | **Tableau de bord détaillé** (à qui doit-on, etc.) | Agrégats SQL + providers de stats, cartes et tables React. Lecture seule | **3–5** | faible |
+- **#3 tableau de bord** — partiellement fait ; reste la lecture *par planteur* (« à qui doit-on, et combien »)
+
+| 4 | **Comptabilité** : références et **pièces jointes** aux reçus et documents | Stockage, dépôt, types et tailles, qui a le droit de lire, rattachement à un paiement / mouvement / demande | moyen — le stockage et les droits de lecture sont à trancher avant de coder |
+
+- **#9 relevés bancaires** — le chemin est ouvert (`Domain/Export/Etat`), reste à savoir ce que les banques attendent
+| 9 | **Relevés imprimables** pour les établissements financiers | L'export existe pour le bilan seul (PDF + Excel). Cinq états de plus, filtrés par période, planteur, site, avec leurs totaux |
+
+- Relevés : consulter et imprimer des états détaillés des pesées, paiements de produits, règlements de transport, épargnes et retraits, filtrés par période, fournisseur, site ou autre critère utile aux établissements financiers. 
+
 | 7 | **Prix datés** + historique consultable | Le prix cesse d'être une valeur et devient un intervalle. Une pesée se valorise au prix **de sa date**, pas au prix du jour — ce qui change le sens même de la revalorisation automatique | **5–8** | **élevé** — couplé à #6 |
 - Prix : programmer les dates d'application des tarifs et conserver un historique consultable des prix effectivement appliqués.
 - **#6 et #7 ensemble.** Ils modifient le même geste — « quel prix s'applique à cette pesée ». Faits séparément, le second réécrit le premier.
 
-| 5 | **Recherche et suivi** : tables mieux filtrables, libellés plus précis | Filtres par période partout, colonnes supplémentaires, libellés métier. Le socle est sain — on vient de l'éprouver écran par écran | **3–5** | faible — mais le chiffre dépend du nombre d'écrans retenus |
 
 
 
@@ -195,35 +213,84 @@ Un barème par tranches sur un planteur sans distance est refusé à la saisie ;
 
 
 
+Salut Claude Code,
 
-| 3 | **Tableau de bord détaillé** (à qui doit-on, etc.) | Agrégats SQL + providers de stats, cartes et tables React. Lecture seule | **3–5** | faible |
+dans la session précédente, on a travaillé sur l'application de gestion de pesées à partir d'un autre compte `bakayoko@socafpesage.com` sur cette machine.
 
-| 9 | **Relevés imprimables** pour les établissements financiers | L'export existe pour le bilan seul (PDF + Excel). Cinq états de plus, filtrés par période, planteur, site, avec leurs totaux | **4–6** | faible — mais dépend de #2 pour séparer produit et transport |
-- Relevés : consulter et imprimer des états détaillés des pesées, paiements de produits, règlements de transport, épargnes et retraits, filtrés par période, fournisseur, site ou autre critère utile aux établissements financiers. 
-Plus sur les fournisseurs : permet de faire des documents comme un relevé de qui peut aller en banque 
+# Consignes
 
+- **Ignore les fichiers et dossiers `brl*`** du projet : ce sont juste des brouillons
 
-Priorité : pour définir les propriétés par entreprise du genre une entreprise peut dire moi c'est le prix de la categorie qui est prioritaire par rapport au prix fournisseur etc... :: Gérer du côté super admin
+## Ce que j'attends
 
+Analyse le projet pour :
+- te remettre à jour sur l'architecture générale et les modules existants
+- retrouver l'état d'avancement du projet
+- être prêt pour la suite des instructions que je vais te donner
 
-
-
-Une chose à savoir : la sélection n'existe que sur le tableau, pas sur les cartes du téléphone, où l'on garde le « Verser » par pesée. C'était déjà le cas avant ces ajustements, et vous ne l'aviez pas demandé — dites-moi si le guichet verse aussi depuis un téléphone.
-
-
-
-
-
-activer les logs dans l'application vu que l'hébergeur ne montre pas
-Monolog pour les logs applicatifs.
-Activer les logs dans l'application en cas d'erreur en ligne
+Analyse à nouveau car jaii.. sur la même machine
 
 
 
+
+
+
+Sept droits que le web n'interroge jamais, à savoir sans être à corriger. Les cinq *_JOINDRE : le champ justificatif s'affiche sans vérifier le droit de déposer — ça tient parce que tous les rôles qui atteignent ces formulaires l'ont, par coïncidence de la table et non par construction. MOUVEMENTEPARGNE_VOIR : aucun écran ne le teste, alors que le relevé lit le livre d'épargne — même coïncidence, mais si elle cesse le document échoue bruyamment, ce qui est le bon comportement. Et USER_SUPPRIMER, un droit sans geste. C'est écrit dans A-FAIRE.md.
+
+
+php -S ne lit pas les .htaccess, donc /documents/sonde.txt répond 200 en développement là où Apache rendrait 403 — ce que le fichier annonce lui-même. La seconde barrière tient (pas de listage, nom aléatoire sur 128 bits jamais exposé), et sous Apache ou avec la règle Nginx le dossier est fermé.
+
+Trois champs servis par l'API et absents des modèles TypeScript : droitsSurCeCompte, motifNonGerable, libelleComplet. Les deux premiers sont lus côté PHP par UtilisateurController, donc rien n'est cassé — ils resteront inatteignables depuis React le jour où une table en aura besoin.
+
+
+commande utile, bd..
+
+
+
+
+
+
+- Comptabilité : renseigner les références de caisse, de chèque et d'autres justificatifs, avec la possibilité de joindre les pièces aux reçus et documents concernés
+    - Concernant les champs `reference` et `libelle` sur `PieceJointe`, ils n'ont pas lieu d'être car la référence à laquelle je faisait allusion était juste un champ de référence de caisse comme on l'a fait pour la partie chèque !! Ici je me dis qu'il a raison vu le `renseigner les références de caisse, de chèque et d'autres justificatifs` !! peut être que c'est le numéro de chèque qui devient redondant
+
+
+
+## Ma divergence avec iTransport
+
+Vous m'y avez envoyé et le précédent est excellent — j'ai repris Vich, le namer aléatoire, la redirection des uploads en test. **Sauf l'emplacement.** iTransport pose ses documents sous `public/documents` et les interdit par un `.htaccess` ; son propre commentaire en nomme la faiblesse : « le `.htaccess` ne vaut que sous APACHE ». Hors de la racine, il n'y a plus de configuration à ne pas oublier. J'ai gardé le nom aléatoire quand même — il ne coûte rien et il tient si le dossier se retrouve servi par erreur. C'est une ligne de configuration à changer si vous préférez l'autre.
+
+## Le stockage, comme iTransport
+
+`public/documents`, avec son `.htaccess` versionné, le nom aléatoire de 128 bits en seconde barrière, et la **sonde** — j'ai repris l'idée : `/documents/sonde.txt` est versionné, et si son texte s'affiche dans un navigateur au lieu d'un 403, le dossier n'est pas protégé. Le `.gitignore` ignore le contenu et garde les deux gardiens.
+
+J'ai vu au passage que vous aviez retiré `/public/images/` du `.gitignore` — je n'y ai pas touché.
+
+## L'API a dû bouger, et c'était le vrai sujet
+
+Les deux gestes rendaient l'`Entreprise` ou le `Site` — c'est-à-dire un **solde**, qui se relit à tout moment. Jamais la ligne qui venait de naître. Le web n'avait donc aucune cible pour son bordereau, alors que `CaisseService` renvoyait déjà ses mouvements : personne ne les lisait. Elles rendent maintenant un `EcritureOutput` (`id`, `contrepartieId`, `caisse`, `montant`, `soldeApres`). Aucune règle d'argent n'a été rouverte.
+
+**Pour la dotation, j'ai tranché l'entrée côté poste**, avec la sortie de l'entreprise en contrepartie. L'opérateur lit les écritures de sa caisse et jamais celles de l'entreprise : poser la décharge sur la sortie l'aurait rendue invisible à celui-là même qui l'a signée. L'administrateur voit les deux de toute façon, donc c'est le sens le plus large sans rien ouvrir à qui n'y a pas droit. Le test le garde par le `soldeApres`, qui serait celui de l'entreprise si je m'étais trompé de jambe.
+
+## Bloquer un poste ne bloque rien
+
+Trouvé en déplaçant ce formulaire. `StatutSite::BLOQUE` est écrit, journalisé, affiché — et **jamais lu** : une seule occurrence dans tout `src/`, et c'est dans les fixtures. Aucune règle, ni dans `CaisseService`, ni dans les processors, ni dans les voters, ne consulte le statut d'un poste.
+
+Ce qui le rend coûteux, c'est ce que l'écran promet : la fiche d'un poste bloqué annonce « il ne reçoit plus de pesées **et sa caisse est gelée** ». La seconde moitié n'est vraie nulle part. Le seul garde-fou était le bouton « Doter » désactivé sur cette fiche — du décor : un POST forgé passait.
+
+**Je n'y ai pas touché.** Geler une caisse se décide : refuse-t-on la dotation, les versements, les deux, et que fait-on des versements déjà en vol au moment du blocage ? En attendant, le nouvel écran **nomme** les postes bloqués dans sa liste (« Pont de Daloa — bloqué ») plutôt que de les cacher ou de faire semblant de les interdire. C'est au §3 de `A-FAIRE.md`.
+
+
+
+
+
+
+- Priorité : pour définir les propriétés par entreprise du genre une entreprise peut dire moi c'est le prix de la categorie qui est prioritaire par rapport au prix fournisseur etc... :: Gérer du côté super admin
+
+- C'est le troisième cas de la famille « relayé mais inatteignable » du tableau des pièges :: vérifier si d'autres cas de genre existe
 
 - Bilan Log
 - Mettre le filtre pont bascule, produit en commentaire pour la partie `À payer`
-Je me dis qu'on vas avoir une page pour la modification, aussi on vas mettre un lien dans la partie versement qui y pointe
+- Je me dis qu'on vas avoir une page pour la modification, aussi on vas mettre un lien dans la partie versement qui y pointe
 - Filtre période(à rendre sticky)
 
 La logique concernant la suppression qu'est ce qu'il se passe et est ce que ça pose problème ! vu que moi je pense que s'il a déjà des pesées ne plus le supprimé ! Pas trop sur qu'il explique l'existant et me dise lequel est meilleur entre les 2
@@ -238,13 +305,8 @@ La logique concernant la suppression qu'est ce qu'il se passe et est ce que ça 
 Les deux fiches gardent la lecture de leur grille et mènent à la saisie (categorie, planteur) ! 
 
 
-| 4 | **Comptabilité** : références et **pièces jointes** aux reçus et documents | Infrastructure neuve : **aucun mécanisme de fichier n'existe aujourd'hui** dans les deux dépôts. Stockage, dépôt, types et tailles, qui a le droit de lire, rattachement à un paiement / mouvement / demande | **5–8** | moyen — le stockage et les droits de lecture sont à trancher avant de coder |
-- Comptabilité : renseigner les références de caisse, de chèque et d'autres justificatifs, avec la possibilité de joindre les pièces aux reçus et documents concernés.
-3. **#4** — où vivent les pièces jointes, qui peut les lire, combien de temps les garde-t-on ?
-
-
+- Compris : pas de surveillance des versements en vol tant que la passerelle est simulée. :: Stat tableau de bord
 - Dans le `.sidebar-logo` de `base.html.twig` on vas afficher le nom de l'entreprise et son logo plutôt que `iTransport`
-commande utile, bd..
 
 
 On m'a parler d'un truc pour le faire de manière générique, du genre on a une table Tarif qui gère les différentes types de tarification, qui est différencié par une propriété `type` et qui est prioritaire à la table tranche !
@@ -264,6 +326,111 @@ Tarif(categoriefournisseur, fournisseur, produit) -- prioritaire sur la table tr
 
 Dans la partie Frontend.., pour le Dashbord je veux qu'il soit au style réel de Shadcn (→ ui.shadcn.com) en (HTML, Css, etc...), responsive, moderne, etc...
 - Tu n'a pas mis de sidebar dans le Dashbord ! Quand je dis que je veux que le tableau de bord soit au style réel de [shadcn/ui](https://ui.shadcn.com) je faisais allusion au [sidebar-07 de shadcn/ui](https://ui.shadcn.com/view/new-york-v4/sidebar-07) !
+
+
+
+
+
+
+
+Le .gitignore de l'API réserve déjà /public/images/. C'est précisément le mauvais endroit : sous la racine web, un fichier est servi par URL devinable, et le cloisonnement par entreprise ne s'y applique pas.
+
+
+
+
+
+On vas mettre en place `Monolog` vu que je suis sur un hébergeur mutualisé et qu'en cas d'erreur je n'arrive pas voir les logs de l'hébergeur !
+
+
+
+
+J'ai trouvé l'état exact, et il est pire côté API que je ne pensais.
+
+**L'API n'a pas Monolog du tout** — ni le bundle, ni de `monolog.yaml`. Or elle contient déjà **dix appels au logger**, et ce sont exactement ceux qu'on voudrait lire : passerelle injoignable, réconciliation impossible, échec de synchronisation d'un poste, journal d'activité non écrit. Sans le bundle, Symfony se rabat sur un logger qui écrit dans `php://stderr`, c'est-à-dire dans le journal Apache que vous ne pouvez pas ouvrir.
+
+**Le web a Monolog**, mais avec la recette par défaut : en production, `nested` pointe sur `php://stderr`. Même impasse.
+
+Deux décisions avant que je configure.
+
+
+Les logs iront dans var/log/prod.log sur le serveur. Comment comptez-vous les lire ?
+FTP / cPanel suffit (Recommandé)
+Voulez-vous être prévenu par courriel quand une erreur survient en production ?
+Le 1, mais met en commentaire le 2 au cas où je voudrais le mettre en place
+
+
+Bien reçu : le fichier, et le bloc courriel en commentaire.
+
+Une vérification m'a détrompé sur un point — je corrige avant d'aller plus loin.
+
+Monolog est en place et vérifié des deux côtés : les fichiers s'écrivent, les configs se résolvent. Je laisse la suite de tests de l'API finir avant de conclure — elle tourne depuis cinq minutes et en prend seize.
+
+C'est en place et vérifié des deux côtés.
+
+## Ce qui a changé
+
+**L'API n'avait pas Monolog du tout.** J'ai installé `symfony/monolog-bundle` (v4.1), enregistré le bundle et appliqué la recette — la contrainte est `^3.0|^4.0`, la même que côté web, parce que Composer avait écrit `*` après un premier essai interrompu. `config/reference.php` a gagné le type `MonologConfig` ; c'est le fichier que Symfony régénère au vidage du cache, pas une modification de ma main.
+
+**Les deux `when@prod` écrivent dans `var/log/prod-AAAA-MM-JJ.log`** au lieu de `php://stderr` : un fichier par jour, quinze jours gardés, en texte et non en JSON puisqu'il se lit dans l'éditeur d'un client FTP. Les dépréciations ont leur propre fichier, trois jours, pour ne pas noyer les erreurs. Le bloc courriel est écrit et commenté en bas des deux fichiers — deux handlers à décommenter et une adresse à poser dans `.env.local`.
+
+## Le point qui m'a détrompé en cours de route
+
+J'avais écrit, dans la config et dans le README, que les 4xx ne déclenchaient pas le journal parce que Symfony les enregistre en `warning`. C'est faux : `ErrorListener::resolveLogLevel()` journalise en `error` toute exception HTTP de statut inférieur à 500, et `critical` au-delà. Avec les deux codes de la recette, **chaque jeton périmé et chaque versement refusé en 422 aurait déversé cinquante lignes** — les refus ordinaires de l'API, qui arrivent par milliers et que l'opérateur lit déjà à l'écran. J'ai élargi la liste : `[400, 401, 403, 404, 405, 409, 422]` pour l'API, `[401, 403, 404, 405]` pour le web, et corrigé les deux textes. C'est le seul réglage qui décide de ce que vous verrez.
+
+## Ce que Monolog ne verra jamais
+
+Une erreur fatale qui tue PHP avant le démarrage du noyau — un `composer install` à moitié fait, une mémoire épuisée, une erreur de syntaxe — n'a ni requête ni conteneur, donc personne pour l'écrire. Et c'est précisément le cas où l'on cherche un journal. Le README donne les deux lignes à poser dans un `.user.ini` (`log_errors`, `error_log`) pour que PHP lui-même écrive dans `var/log/php.log`. Je ne l'ai pas créé : il dépend du chemin absolu de votre hébergement et de son mode d'exécution.
+
+## Vérifications
+
+Le conteneur se compile en dev, test et prod dans les deux applications. J'ai provoqué une vraie erreur en environnement de production de chaque côté : le fichier apparaît, avec l'exception complète suivie du contexte tamponné. La suite de l'API passe — **242 tests, 1462 assertions, 8 ignorés, aucun échec**, en 19 minutes. Les fichiers de test ont été nettoyés, et `var/` est de toute façon ignoré par git.
+
+Deux remarques pour finir. `composer audit` signale 31 avis de sécurité sur 14 paquets de l'API ; c'est antérieur à ce travail et sans rapport, mais ça mérite un regard un jour. Et `brl.md` et `tools/brl.2.md` apparaissent toujours modifiés : je n'y ai pas touché.
+
+
+
+
+
+## Avec SSH : lire les logs en direct
+
+```bash
+cd /chemin/vers/votre/projet
+
+# Suivre les logs en temps réel
+tail -f var/log/prod.log
+
+# Les 100 dernières lignes
+tail -n 100 var/log/prod.log
+
+# Filtrer les erreurs
+grep -i "CRITICAL\|ERROR" var/log/prod.log
+
+# Avec rotating_file, les fichiers sont datés
+tail -f var/log/prod-$(date +%Y-%m-%d).log
+```
+
+Avec `tail -f`, vous provoquez l'erreur dans le navigateur et la voyez apparaître immédiatement.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

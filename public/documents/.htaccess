@@ -1,0 +1,21 @@
+# LES PIÈCES JOINTES — reçus signés, bordereaux de banque, talons de chèque : des PIÈCES COMPTABLES.
+#
+# Ce dossier est sous 'public/' mais NE DOIT JAMAIS être servi par le serveur web. Une pièce se lit
+# uniquement par 'GET /api/piece_jointes/{id}/fichier', qui applique les droits de la LIGNE qui la
+# porte — table des droits et périmètre d'entreprise compris. Cf. le docbloc de 'App\Entity\PieceJointe'.
+#
+# !! CE FICHIER NE PROTÈGE QUE SOUS APACHE, avec 'AllowOverride' — ce que 'symfony/apache-pack'
+# suppose déjà. Le serveur de développement ('php -S') et Nginx l'IGNORENT. La seconde barrière est
+# le nom des fichiers, aléatoire sur 128 bits et jamais exposé ('App\Upload\NomAleatoireNamer').
+# Sous Nginx, ajouter l'équivalent dans la configuration du site :  location ^~ /documents/ { deny all; }
+#
+# POUR VÉRIFIER QUE ÇA TIENT : ouvrir '/documents/sonde.txt' dans un navigateur. Un 403 est la
+# bonne réponse ; si le texte s'affiche, le dossier n'est pas protégé.
+
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order deny,allow
+    Deny from all
+</IfModule>

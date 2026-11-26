@@ -13,7 +13,15 @@
 /config/jwt/*.pem
 ###< lexik/jwt-authentication-bundle ###
 
-/public/images/
+###> les pièces jointes ###
+# Les justificatifs ne sont PAS versionnés : ce sont des documents de production, et le dossier se
+# sauvegarde à part. Seuls le garde-fou et sa sonde suivent le dépôt — sans eux, un déploiement
+# neuf poserait des pièces comptables dans un dossier ouvert à tous.
+/public/documents/*
+!/public/documents/.htaccess
+!/public/documents/sonde.txt
+###< les pièces jointes ###
+
 ###> phpunit/phpunit ###
 /phpunit.xml
 /.phpunit.cache/

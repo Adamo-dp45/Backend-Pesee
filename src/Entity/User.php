@@ -255,8 +255,8 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface, Entrepr
     #[ORM\Id]
     #[ORM\GeneratedValue]
     #[ORM\Column]
-    /* 'read:Paiement' : l'auteur d'un versement se sérialisait AVEC SON LIEN ET RIEN D'AUTRE — un objet qui a l'air rempli et ne porte aucun nom. */
-    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde', 'read:DemandeRetrait', 'read:Paiement'])]
+    /* 'read:Paiement' : l'auteur d'un versement se sérialisait AVEC SON LIEN ET RIEN D'AUTRE — un objet qui a l'air rempli et ne porte aucun nom. 'read:PieceJointe' : celui qui a déposé le justificatif, pour la même raison. */
+    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde', 'read:DemandeRetrait', 'read:Paiement', 'read:PieceJointe'])]
     private ?int $id = null;
 
     #[ORM\Column(length: 180)]
@@ -506,7 +506,7 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface, Entrepr
         return $this;
     }
 
-    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:DemandeRetrait', 'read:Paiement'])]
+    #[Groups(['read:User', 'read:Site', 'read:MouvementCaisse', 'read:DemandeSolde', 'read:DemandePrelevement', 'read:MouvementEpargne', 'read:DemandeRetrait', 'read:Paiement', 'read:PieceJointe'])]
     public function getNomComplet(): string
     {
         return trim(($this->prenom ?? '') . ' ' . ($this->nom ?? ''));

@@ -1,0 +1,45 @@
+#
+#   - LES PIÈCES JOINTES NE SONT PAS DES IMAGES DE SITE. Ce sont des justificatifs comptables — un
+#     reçu signé par un planteur, un bordereau de banque, le talon d'un chèque. Rien ici ne
+#     s'affiche dans une balise 'img' et rien ne se redimensionne : un seul stockage, et il est
+#     PRIVÉ. L'application n'a aucun fichier public, et n'en aura pas tant que personne n'en
+#     demandera.
+#
+#   - 'public/documents', INTERDIT AU SERVEUR WEB par son '.htaccess' (versionné, lui). Même
+#     dispositif qu'iTransport, volontairement : les deux applications se déploient au même
+#     endroit, et un développeur qui passe de l'une à l'autre retrouve le même dossier au même
+#     endroit plutôt que deux conventions à se rappeler.
+#
+#   - !! LE '.htaccess' NE VAUT QUE SOUS APACHE, avec 'AllowOverride' — ce que 'symfony/apache-pack'
+#     suppose déjà. Le serveur de développement ('php -S') et Nginx l'IGNORENT et serviraient le
+#     document à qui en connaît l'adresse. D'où la SECONDE BARRIÈRE, celle qui ne dépend d'aucune
+#     configuration : un nom de 128 bits tirés au sort, jamais exposé. Sous Nginx, ajouter
+#     'location ^~ /documents/ { deny all; }'.
+#
+#   - POUR VÉRIFIER QUE ÇA TIENT : ouvrir '/documents/sonde.txt' dans un navigateur. Un 403 est la
+#     bonne réponse ; si le texte s'affiche, le dossier n'est pas protégé et il faut le régler
+#     avant d'y déposer quoi que ce soit.
+#
+#   - CE DOSSIER DOIT ÊTRE SAUVEGARDÉ. Il est hors de git — sauf ses deux gardiens — et il survit
+#     aux déploiements, qui n'y touchent pas. Une pièce comptable perdue ne se refait pas, et la
+#     base n'en garde que le nom.
+#
+vich_uploader:
+    db_driver: orm
+    form: false # L'API reçoit du multipart et pose le fichier à la main : aucun formulaire Symfony ici
+
+    mappings:
+        piece_jointe:
+            # Factice, et il le restera : rien ne résout d'URL pour ce mapping. Une pièce n'en a pas.
+            uri_prefix: /documents-sans-url
+            upload_destination: '%kernel.project_dir%/public/documents'
+            namer: App\Upload\NomAleatoireNamer
+
+# Les tests téléversent de vrais fichiers : ils ne doivent atterrir ni dans 'public/', où le serveur
+# de développement les verrait, ni parmi les pièces d'un vrai dossier. Ils vont dans 'var/test',
+# que la suite peut vider sans rien détruire.
+when@test:
+    vich_uploader:
+        mappings:
+            piece_jointe:
+                upload_destination: '%kernel.project_dir%/var/test/pieces'

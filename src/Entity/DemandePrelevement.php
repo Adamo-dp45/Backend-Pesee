@@ -213,6 +213,23 @@ class DemandePrelevement extends EntityBase implements SiteOwnedInterface
     #[Groups(['read:DemandePrelevement'])]
     private ?string $motifRejet = null; // Ce que l'opérateur lit avant de redemander
 
+    /* La pièce qui motive la demande, s'il y en a une. Elle porte la clé ; d'ici on ne fait que la lire. */
+    #[ORM\OneToOne(mappedBy: 'demandePrelevement')]
+    #[Groups(['read:DemandePrelevement'])]
+    private ?PieceJointe $pieceJointe = null;
+
+    public function getPieceJointe(): ?PieceJointe
+    {
+        return $this->pieceJointe;
+    }
+
+    public function setPieceJointe(?PieceJointe $pieceJointe): static
+    {
+        $this->pieceJointe = $pieceJointe;
+
+        return $this;
+    }
+
     public function getId(): ?int
     {
         return $this->id;

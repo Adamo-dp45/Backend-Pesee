@@ -220,6 +220,39 @@ Quatre ressources de lecture, toutes sous `/stats`, toutes calculées **par la b
 | `/stats/caisses` | Ce qui a **bougé** en caisse : entrées et sorties, par caisse, par cause, par poste |
 | `/stats/a-payer` | Ce que la **file du guichet** pèse : reste, déjà versé, en vol, pesées en attente |
 
+Une cinquième, à part, parce qu'elle ne répond pas à une question mais à toutes celles qu'on se
+pose en arrivant : `/stats/tableau-de-bord`. **Tout l'écran d'accueil en UNE réponse** — sur une
+connexion de terrain, enchaîner six appels le rend inutilisable. Ce qui s'y est ajouté avec les
+notions récentes, et les deux pièges que ça a ouverts :
+
+| | Ce que ça rend, et pourquoi |
+|---|---|
+| `totaux` | La période, décomposée par part : `montantDu`, `montantTransport`, `retenue`. Les trois existaient ; l'écran n'en montrait qu'un. |
+| `creance` | **Toute la file du guichet, hors période.** Elle sort de `totauxAPayer($siteIds, [])` — la MÊME méthode que `/stats/a-payer`, appelée sans critères, et non une requête qui lui ressemble. |
+| `soldes` | Les **trois chiffres d'un poste** : solde, immobilisé, et `disponible = solde − immobilisé`. L'épargne due est à côté, jamais dedans. |
+| `demandes` | Les trois files de décisions — solde, mise en compte, retrait — comptées en `EN_ATTENTE`. |
+
+**`creance` et `totaux.montantRestant` ne sont pas le même nombre**, et c'est le premier piège. Le
+second s'arrête à la période affichée ; la première compte toutes les pesées non soldées, quelle
+que soit leur date. Ils portaient le même nom — « reste à payer » — sur l'accueil et sur le
+guichet, et personne ne pouvait savoir lequel il lisait. Ils sont désormais nommés à part :
+« Reste sur la période » et « Créance totale ». C'est la seconde qui dimensionne la trésorerie.
+
+**`disponible` n'est pas le solde, et l'écran annonçait le solde.** L'immobilisé est déjà sorti de
+la caisse sans réponse de la passerelle : sur le jeu de démonstration, un opérateur voit 4 500 000
+au compteur et ne peut en engager que 1 500 000. Afficher le brut, c'est l'apprendre au guichet,
+devant le planteur.
+
+> **L'épargne due ne se retranche de rien**, et c'est le piège symétrique. Au prélèvement, pas un
+> billet ne bouge : l'argent reste dans le tiroir et c'est une DETTE qui naît à côté. La soustraire
+> du disponible ferait disparaître deux fois des espèces qui sont bien là. Même règle que
+> `CaisseOutput`, où elle se lit à côté des soldes et jamais dedans.
+
+> `soldes.entreprise` et `soldes.epargneDue` valent **`null` pour un opérateur**, pas zéro — qui se
+> lirait « l'entreprise n'a plus rien ». Et ça se filtre dans le provider, pas dans le gabarit :
+> sinon la valeur voyage quand même dans le JSON, où elle se lit en deux clics. Même découpage que
+> `CaisseProvider`.
+
 **Un agrégat ne se recompose jamais depuis les pages d'une collection.** L'API plafonne une page à
 `pagination_maximum_items_per_page` et tronque en silence : un total additionné côté web serait
 faux dès la cent-unième ligne, sans la moindre erreur. C'est exactement ce qui était arrivé à
@@ -292,7 +325,8 @@ montantpayable   = la somme des deux, et rien d'autre
 - Ce qui a produit chaque montant est **figé** sur la pesée à côté de lui : un chiffre qu'on ne
   sait pas réexpliquer est inexplicable devant un planteur qui conteste. Pour la récolte,
   `prixunitaire` et `origineTarif` ; pour le transport, `modeTransport`, `origineTransport`,
-  `distanceTransport`, `trancheTransport` et, au kilo seulement, `prixtransport`.
+  `trancheTransport` et, au kilo seulement, `prixtransport`. Un montant écrit à la main remet tous
+  les autres à `null` et ne garde que son origine : il n'y a plus de barème à citer.
 - Une pesée dont le produit n'est pas tarifé (`montantdu <= 0`) **paie quand même son transport**.
   C'était l'inverse tant qu'une pesée se réglait d'un bloc — régler le seul transport aurait laissé
   une pesée à moitié payée que plus personne ne rouvre. Ce qui l'empêche aujourd'hui de disparaître
@@ -363,6 +397,77 @@ moitié parti que la réconciliation devrait démêler ligne à ligne.
 engager est écartée **en silence** plutôt que de faire tomber le lot : elle a pu être réglée à
 l'autre guichet pendant que l'opérateur cochait. Le compte rendu (`PaiementLotOutput`) dit donc ce
 qui est **vraiment** sorti, et non ce qui avait été demandé.
+
+### Le justificatif d'une ligne
+
+Une ligne d'argent peut porter **une** pièce : le reçu signé du planteur, le bordereau d'une
+recharge bancaire, le talon d'un chèque, le document qui motive une demande. Cinq cibles possibles
+— versement, mouvement de caisse, et les trois demandes — et c'est la **pièce qui porte la clé**.
+Mettre la clé sur les cibles aurait ajouté une colonne à `paiement` et à `mouvement_caisse`, deux
+tables d'argent qu'on ne touche pas pour un besoin d'affichage.
+
+**Le fichier n'est pas en base.** Il vit dans `public/documents`, **interdit au serveur web** par
+son `.htaccess` — versionné, lui — et sous un nom de 128 bits tirés au sort. Aucune URL n'y mène :
+il ne se lit que par `GET /api/piece_jointes/{id}/fichier`. Même dispositif qu'iTransport, et
+volontairement : les deux applications se déploient au même endroit, et un développeur qui passe de
+l'une à l'autre retrouve le même dossier plutôt que deux conventions à se rappeler.
+
+> ⚠ **Le `.htaccess` ne vaut que sous Apache**, avec `AllowOverride` — ce que `symfony/apache-pack`
+> suppose déjà. Le serveur de développement et Nginx l'ignorent. D'où la **seconde barrière**,
+> celle qui ne dépend d'aucune configuration : le nom aléatoire, jamais exposé. Sous Nginx,
+> ajouter `location ^~ /documents/ { deny all; }`.
+>
+> **Pour vérifier que ça tient** : ouvrir `/documents/sonde.txt` dans un navigateur. Un 403 est la
+> bonne réponse ; si le texte s'affiche, le dossier n'est pas protégé.
+
+**Qui voit la ligne voit sa pièce, et ce n'est pas une formule** : le contrôle de lecture est
+littéralement `is_granted('VOIR', $cible)`. Pas de droit sur la pièce, pas de seconde table de
+visibilité — celle qui existe suffit, et deux auraient divergé. L'écriture, elle, a son action :
+**`JOINDRE`**, parce que voir un versement et pouvoir y coller un document ne sont pas la même
+permission. L'agent, qui supervise, lit les justificatifs et n'en pose aucun.
+
+> **Charger la cible par son identifiant contourne le cloisonnement**, et c'est le piège de ce
+> mécanisme : les extensions Doctrine ne s'appliquent qu'aux requêtes d'API Platform. Sans le
+> `is_granted` du processor, changer un chiffre dans le formulaire attachait un document au
+> versement d'une autre entreprise.
+
+**Exactement une cible par pièce**, et c'est la base qui le tient — une contrainte `CHECK` sur la
+somme des cinq colonnes. Zéro cible ferait une pièce orpheline que le contrôle d'accès ne saurait
+pas juger, faute de ligne à interroger ; deux en feraient une pièce que deux lignes revendiquent,
+où la plus permissive déciderait. Les deux arrivent par un simple oubli de code, et aucun ne lève.
+
+> Cette contrainte vit dans la **migration**, pas dans le mapping. Le schéma de test étant
+> construit depuis le mapping, elle n'est pas exercée par la suite : elle a été vérifiée à la main
+> sur la base de développement.
+
+**Un second dépôt remplace le premier**, dans la même ligne : on se trompe de scan, on recommence,
+et Vich efface le fichier précédent. Créer une seconde pièce après avoir effacé l'ancienne aurait
+laissé le fichier orphelin sur le disque — et les index uniques l'auraient refusée de toute façon.
+
+PDF, JPEG, PNG et WEBP, **5 Mo au plus**. Le PDF d'abord parce qu'un bordereau arrive numérisé, les
+images parce qu'au guichet on photographie un reçu avec le téléphone qu'on a.
+
+**Recharger et doter rendent l'écriture, pas le solde.** C'est la seule chose que les pièces
+jointes ont fait bouger dans une opération existante. Les deux gestes répondaient par l'`Entreprise`
+ou le `Site` — un solde, qui se relit à tout moment — et rien ne nommait la ligne de grand livre
+qui venait de naître : le web n'avait donc aucune cible pour son bordereau. Elles rendent désormais
+un `EcritureOutput` (`id`, `contrepartieId`, `caisse`, `montant`, `soldeApres`). Aucune règle
+d'argent n'a été rouverte : `CaisseService` renvoyait déjà ses mouvements, personne ne les lisait.
+
+**Un versement groupé rend aussi ses `ids`.** `PaiementLotOutput` ne portait que les `references`,
+qui se recopient sur un reçu quand un planteur conteste — jamais de quoi désigner les lignes dans
+l'API. Le planteur signe pourtant UNE décharge pour ses N pesées, et le web doit la poser sur
+chacune : le modèle tient une pièce par ligne d'argent sans exception. Ce sont les identifiants des
+versements **réellement écrits**, pas de ceux qui avaient été demandés — une pesée réglée à l'autre
+guichet pendant qu'on cochait est écartée en silence par le service.
+
+> **Une dotation en écrit deux, et le bordereau va sur celle du POSTE.** `id` porte l'entrée,
+> `contrepartieId` la sortie de l'entreprise. L'opérateur lit les écritures de sa caisse et jamais
+> celles de l'entreprise : accrocher la décharge à la sortie l'aurait rendue invisible à celui-là
+> même qui l'a signée. L'administrateur voit les deux de toute façon — c'est donc le sens le plus
+> large sans rien ouvrir à qui n'y a pas droit.
+
+---
 
 ## 6. Les droits
 
@@ -518,6 +623,36 @@ qu'une catégorie règle déjà.
 
 La pesée fige **le libellé** des bornes retenues, pas une clé étrangère : rééditer le barème ne
 doit pas rendre un intervalle qui n'a jamais servi à ce montant-là.
+
+### Le transport écrit à la main
+
+Le montant du transport d'**une** pesée s'écrit aussi : `PATCH /api/operations/{id}/montant-transport`.
+Un détour imprévu, une route coupée, un second voyage — des choses qu'aucun barème ne saurait
+porter sans les donner à tous ceux qui le suivent. C'est le pendant exact de la prime sur l'autre
+part, et ce qui les sépare mérite d'être lu avant d'y toucher.
+
+**Un MONTANT, et non un prix au kilo.** C'est le seul chiffre qui ait un sens dans les deux modes :
+un forfait n'a pas de prix unitaire. `prixtransport`, `modeTransport` et `trancheTransport`
+repassent donc à `null` — les laisser ferait mentir toute multiplication, et nommerait un barème
+qui n'a pas décidé ce montant. `getExplicationTransport()` répond alors « Montant saisi sur cette
+pesée », parce qu'il n'y a plus de barème à citer.
+
+**Zéro est une valeur, pas une absence.** « Finalement on ne lui paie pas ce trajet » est une
+décision, et `OrigineTransport::MANUEL` la distingue d'un planteur sans barème — c'est la même
+raison qui fait exister `AUCUN` à côté d'un forfait à zéro. Comme `OrigineTarif::MANUEL`, elle
+**ferme la part transport** dans `calculerMontant()` : sans ce gel, la prochaine retouche du barème
+effacerait le montant écrit à la main sans que personne ne le voie partir.
+
+**Deux routes et non un appel à deux champs**, parce que les deux parts se ferment
+indépendamment : un seul appel refuserait le transport d'une pesée dont la récolte est déjà réglée,
+qui est le cas courant depuis qu'on paie les deux séparément. `isTransportModifiable()` porte la
+règle — jusqu'au premier versement sur le TRANSPORT, en vol compris, et la récolte n'y entre pas.
+
+Et il est **plus simple que la prime d'une chose** : la mise en compte ne mord jamais sur le
+transport, que le planteur a avancé de sa poche. Il n'y a donc pas d'épargne à consulter, aucun
+arbitrage à rouvrir, et aucun refus possible de ce côté-là. À l'administrateur seul
+(`Operation => MODIFIER`), avec un motif facultatif qui part au journal : il se relit le jour où un
+autre planteur demandera pourquoi son voisin a touché plus.
 
 ### Où se LISENT les grilles
 
@@ -732,6 +867,7 @@ Si l'un d'eux saute, c'est de l'argent qui se perd ou qui se crée.
 | **`deletedAt` dans un processor** | Les extensions Doctrine ne s'appliquent qu'aux requêtes d'API Platform. Dans un repository appelé par un processor, filtrer `deletedAt IS NULL` à la main. |
 | **Une garde de purge qui ne compte qu'une table** | La suppression définitive d'un planteur ne regardait que ses PESÉES. Sept autres tables le référencent en `NO ACTION` — tarif propre, mise en compte, demandes, versements, compte d'épargne — et un planteur sans pesée mais avec l'une d'elles passait la garde : c'est la CLÉ ÉTRANGÈRE qui refusait, en 500 brut, sans un mot sur ce qu'il fallait faire. Même défaut sur un produit (ses tarifs, ses prélèvements) et sur une catégorie (sa grille). `motifDesReferences()` les énumère toutes et nomme la première trouvée. Le contrôle est mécanique : `information_schema.KEY_COLUMN_USAGE` donne la liste exacte de ce qui retient une ligne. |
 | **Un cas d'énumération retiré ne dort pas en base** | Retirer `TRANCHES` de `ModeTransport` et convertir les barèmes ne suffit pas : les PESÉES avaient figé ce mode à côté de leur montant. À la première lecture, Doctrine lève « is not a valid backing value » et c'est TOUTE la file du guichet qui tombe en 502 — pas seulement les lignes concernées. Toute migration qui retire un cas doit balayer **chaque colonne** qui porte cette énumération, y compris les copies figées sur les pesées. |
+| **Un journal qui part dans `php://stderr`** | C'est ce que pose la recette de Monolog, et sur un hébergement mutualisé cela veut dire le journal d'erreurs d'Apache : la trace est produite, et personne ne peut l'ouvrir. L'API a tenu plus longtemps encore **sans Monolog du tout**, alors que dix appels au logger étaient déjà écrits dans le code — passerelle injoignable, réconciliation impossible, échec de synchronisation d'un poste — et tombaient dans le même trou par le logger de repli de Symfony. Ces pannes-là ne lèvent rien côté écran : le journal est le seul endroit où elles existent. Voir §12. |
 | **Fins de ligne** | Le dépôt est en **LF**. Un éditeur qui réécrit en CRLF produit un diff de fichier entier. |
 | **L'adresse du compte machine ne suit pas le code** | Elle est dérivée du code **à la création** puis figée : un poste renommé garde la sienne, et son ancien code reste occupé. Recomposer l'adresse depuis le code — à l'affichage ou au renouvellement — rendait un identifiant faux, ou tuait la requête sur l'unicité de `user.email` (500 à la création d'un site **et** au renouvellement). Toujours lire `identifiantDe()`, jamais `identifiant()`. |
 
@@ -757,6 +893,7 @@ src/
   Filter/                Les filtres d'API qu'aucun filtre livré n'exprime (SansTransportFilter)
   Repository/            Les requêtes. Les requêtes GROUPÉES y vivent aussi (éviter les N+1)
   Security/              Droits, Perimetre, UserGuard, AccesVoter
+  Upload/                NomAleatoireNamer : le nom sur disque d'une pièce jointe, 128 bits au sort
   Validator/             UniqueParPerimetre et ses trois déclinaisons (site, entreprise, périmètre)
   State/
     Processor/           Ce qui écrit : validation métier + effet
@@ -779,11 +916,15 @@ tests/Caisse/ReconciliationTest    les versements restés en vol
 tests/Caisse/ResteAEngagerTest     un versement en vol baisse le reste à engager, pas le payé
 tests/Caisse/PeseeNonPayableTest   un montant nul N'EST PAS une pesée soldée   ← le canari
 tests/Caisse/PrixTransportTest     le transport s'ajoute au payable, jamais au montant dû
-tests/Transport/BaremesTest        les trois modes, les quatre bornes fausses, les deux silences
+tests/Transport/BaremesTest        les deux modes, les bornes qui ne calculent rien, les deux sauts
 tests/Caisse/DeuxPartsTest         récolte et transport se règlent séparément, chacun avec sa borne
+tests/Caisse/VersementGroupeTest   plusieurs pesées d'un planteur sous UNE transaction, et ce qui tombe avec elle
+tests/Tarification/PrixDeLaPeseeTest  la prime et le transport écrits à la main : ce qu'ils figent, ce qui les ferme
 tests/Caisse/DemandeSoldeTest      une seule demande en attente par poste
 tests/Caisse/ChequeEtRetraitTest   le chèque vide la banque et non le poste, le retrait les deux livres
 tests/Api/FiltresDeListeTest       un filtre qui ne filtre pas ne lève rien : actif, et la recherche par code
+tests/Api/TableauDeBordTest        l'accueil dit la même chose que le guichet, et pas à qui il ne faut pas
+tests/Api/PieceJointeTest          un justificatif revient entier, jamais à l'entreprise d'à côté, et la décharge d'une dotation suit l'opérateur
 tests/Api/ChampsNulsTest           un champ nul sort à null, même là où une opération pose son propre contexte
 tests/Epargne/MiseEnCompteTest     le prélèvement ne touche aucune caisse, ne crédite qu'une fois
 tests/Epargne/DemandePrelevementTest  l'ouverture, le rejet, l'arrêt, le taux sous le prix
@@ -844,6 +985,56 @@ du taux, et un cas qui veut éprouver le plafond doit pouvoir poser un taux dél
         > php bin/console doctrine:migrations:migrate --no-interaction
         > php bin/console cache:clear --env=prod
         > php bin/console cache:warmup --env=prod
+
+- **Les pièces jointes**
+    > public/documents/   les justificatifs, sous un nom aléatoire — dossier INTERDIT par son .htaccess
+
+  ⚠ **Ce dossier doit être SAUVEGARDÉ.** Son contenu est hors de git — seuls le `.htaccess` et la
+  sonde suivent le dépôt — et il survit aux déploiements, qui n'y touchent pas. Mais aucune
+  migration ne rendra une pièce comptable perdue, et la base n'en garde que le nom. À mettre dans
+  la sauvegarde au même titre que la base elle-même.
+
+  **Après le premier déploiement**, ouvrir `/documents/sonde.txt` : un 403 est la bonne réponse. Si
+  le texte s'affiche, le dossier est servi en clair et il faut le régler avant d'y déposer quoi que
+  ce soit.
+
+  Il compte aussi sur le **quota disque** du mutualisé, qui est la vraie limite : 5 Mo par pièce,
+  une pièce par ligne d'argent.
+
+- **Les journaux**
+    > var/log/prod-AAAA-MM-JJ.log          un fichier par jour, quinze jours gardés
+    > var/log/deprecation-AAAA-MM-JJ.log   les avertissements de mise à jour, trois jours
+
+  Ils se lisent **par FTP ou par le gestionnaire de fichiers de l'hébergeur**, et c'est ce qui a
+  décidé de leur forme : du texte en lignes, pas du JSON. La recette de Symfony les envoyait dans
+  `php://stderr`, c'est-à-dire dans le journal d'erreurs d'Apache — produits, et illisibles.
+
+  **Rien ne s'écrit tant que tout va bien** : `fingers_crossed` garde les messages de la requête
+  en mémoire et ne les déverse qu'à la première erreur, de sorte qu'on lit le chemin qui y menait
+  et pas seulement la dernière ligne. Un journal vide veut donc dire « aucune erreur », pas « rien
+  n'est branché ».
+
+  ⚠ **Un 4xx compte comme une erreur** pour Symfony, qui journalise toute exception HTTP de statut
+  inférieur à 500 en `error` et non en `warning`. Sans précaution, un jeton périmé ou un versement
+  refusé en 422 — les refus ordinaires de l'API, que l'opérateur lit à l'écran — déverseraient
+  cinquante lignes chacun et noieraient les vraies pannes. D'où `excluded_http_codes`, dont la
+  liste est explicite ici et ne se limite pas aux deux codes de la recette. Y toucher est le seul
+  réglage qui décide de ce qu'on verra.
+
+  ⚠ **Ce que Monolog ne verra jamais** : une erreur fatale qui tue PHP avant que le noyau ne
+  démarre — un `composer install` à moitié fait, une mémoire épuisée, une erreur de syntaxe. Il
+  n'y a alors ni requête, ni conteneur, donc personne pour écrire, et c'est exactement le cas où
+  l'on cherche un journal. Pour celles-là, c'est PHP lui-même qu'on branche, par un `.user.ini` à
+  la racine du site (hébergement en CGI/FPM, le cas courant) :
+
+    > log_errors = On
+    > error_log = /chemin/absolu/vers/var/log/php.log
+
+  En mod_php, les deux mêmes lignes vont dans `.htaccess`, en `php_value`.
+
+  **Pour être prévenu par courriel**, le bloc est écrit et commenté en bas de
+  `config/packages/monolog.yaml` : deux handlers à décommenter, et une adresse à poser dans
+  `.env.local`.
 
 ---
 

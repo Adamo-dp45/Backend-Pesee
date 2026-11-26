@@ -33,12 +33,22 @@ final class Droits
     public const PAYER = 'PAYER';
     public const PROMOUVOIR = 'PROMOUVOIR';
     public const PRELEVER = 'PRELEVER'; // Ouvrir ou arrêter la mise en compte d'un planteur
+    /*
+        - JOINDRE une pièce à une ligne d'argent — un reçu signé, un bordereau de banque, le talon
+          d'un chèque. C'est une action à part et non 'MODIFIER' : une ligne d'argent ne se modifie
+          JAMAIS, et confondre les deux ferait croire qu'on peut corriger un versement.
+
+        - LA LECTURE, ELLE, N'A PAS D'ACTION. Une pièce se lit avec la ligne qui la porte : le
+          contrôle se fait sur 'VOIR' de la CIBLE, et rien n'est à tenir d'accord ici. Qui voit le
+          versement voit son justificatif, par construction et non par une seconde table.
+    */
+    public const JOINDRE = 'JOINDRE';
 
     /** @var list<string> */
     public const ACTIONS = [
         self::VOIR, self::CREER, self::MODIFIER, self::SUPPRIMER, self::BLOQUER,
         self::ATTRIBUER, self::RECHARGER, self::TRAITER, self::PAYER, self::PROMOUVOIR,
-        self::PRELEVER,
+        self::PRELEVER, self::JOINDRE,
     ];
 
     /*
@@ -92,12 +102,13 @@ final class Droits
                   précisément voulu supprimer.
             */
             'Operation' => [self::VOIR, self::MODIFIER],
-            'Paiement' => [self::VOIR, self::PAYER],
-            'MouvementCaisse' => [self::VOIR],
+            /* 'JOINDRE' sur les lignes d'argent : c'est lui qui tient la comptabilité et qui classe les bordereaux. */
+            'Paiement' => [self::VOIR, self::PAYER, self::JOINDRE],
+            'MouvementCaisse' => [self::VOIR, self::JOINDRE],
             'MouvementEpargne' => [self::VOIR],
-            'DemandeSolde' => [self::VOIR, self::TRAITER],
-            'DemandePrelevement' => [self::VOIR, self::TRAITER],
-            'DemandeRetrait' => [self::VOIR, self::TRAITER], // Lui seul accorde un retrait : l'argent qu'on gardait sort de la caisse
+            'DemandeSolde' => [self::VOIR, self::TRAITER, self::JOINDRE],
+            'DemandePrelevement' => [self::VOIR, self::TRAITER, self::JOINDRE],
+            'DemandeRetrait' => [self::VOIR, self::TRAITER, self::JOINDRE], // Lui seul accorde un retrait : l'argent qu'on gardait sort de la caisse
             'SynchronisationLot' => [self::VOIR],
             'Activite' => [self::VOIR], // Le journal des decisions : une lecture de supervision
         ],
@@ -145,12 +156,19 @@ final class Droits
             /* Même raison : le barème décide de ce que son trajet rapporte. */
             'BaremeTransport' => [self::VOIR],
             'Operation' => [self::VOIR],
-            'Paiement' => [self::VOIR, self::PAYER],
+            /*
+                - 'JOINDRE' SUR CE QU'IL PRODUIT, et c'est le cœur du besoin : le reçu signé, c'est
+                  lui qui l'a entre les mains, au guichet, avec le planteur devant lui. Le faire
+                  remonter à un administrateur pour qu'il le scanne ferait voyager du papier.
+                - PAS sur 'MouvementCaisse' : il ne crée aucune écriture de caisse, elles sont la
+                  CONSÉQUENCE de ses gestes. Il n'a aucun bordereau à y joindre.
+            */
+            'Paiement' => [self::VOIR, self::PAYER, self::JOINDRE],
             'MouvementCaisse' => [self::VOIR],
             'MouvementEpargne' => [self::VOIR],
-            'DemandeSolde' => [self::VOIR, self::CREER, self::MODIFIER], // Il corrige et annule la sienne ; « tant qu'elle n'est pas traitée » est vérifié par les processors
-            'DemandePrelevement' => [self::VOIR, self::CREER, self::MODIFIER], // Il a le planteur devant lui : c'est à lui qu'on demande d'épargner
-            'DemandeRetrait' => [self::VOIR, self::CREER, self::MODIFIER], // Il a le planteur devant lui, qui vient chercher son argent
+            'DemandeSolde' => [self::VOIR, self::CREER, self::MODIFIER, self::JOINDRE], // Il corrige et annule la sienne ; « tant qu'elle n'est pas traitée » est vérifié par les processors
+            'DemandePrelevement' => [self::VOIR, self::CREER, self::MODIFIER, self::JOINDRE], // Il a le planteur devant lui : c'est à lui qu'on demande d'épargner
+            'DemandeRetrait' => [self::VOIR, self::CREER, self::MODIFIER, self::JOINDRE], // Il a le planteur devant lui, qui vient chercher son argent
         ],
     ];
 

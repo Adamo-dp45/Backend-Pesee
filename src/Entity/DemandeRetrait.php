@@ -225,6 +225,23 @@ class DemandeRetrait extends EntityBase implements SiteOwnedInterface
     #[Groups(['read:DemandeRetrait'])]
     private ?Paiement $paiement = null;
 
+    /* La pièce qui motive la demande, s'il y en a une. Elle porte la clé ; d'ici on ne fait que la lire. */
+    #[ORM\OneToOne(mappedBy: 'demandeRetrait')]
+    #[Groups(['read:DemandeRetrait'])]
+    private ?PieceJointe $pieceJointe = null;
+
+    public function getPieceJointe(): ?PieceJointe
+    {
+        return $this->pieceJointe;
+    }
+
+    public function setPieceJointe(?PieceJointe $pieceJointe): static
+    {
+        $this->pieceJointe = $pieceJointe;
+
+        return $this;
+    }
+
     public function getId(): ?int
     {
         return $this->id;

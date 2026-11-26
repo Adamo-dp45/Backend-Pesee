@@ -39,4 +39,30 @@ class DemandePrelevementRepository extends ServiceEntityRepository
             'deletedAt' => null,
         ]);
     }
+
+    /*
+        - COMBIEN ATTENDENT UNE DÉCISION, pour le tableau de bord. Le périmètre passe par le SITE
+          et non par le planteur : la demande le porte elle-même, figé au dépôt, et joindre le
+          planteur pour y arriver rendrait la même réponse par un chemin de plus.
+
+        - Un COUNT et non une liste comptée : l'accueil n'affiche qu'un nombre, et charger des
+          demandes pour les dénombrer coûte une hydratation entière.
+    */
+    /** @param list<int> $siteIds */
+    public function compterParStatut(array $siteIds, StatutDemande $statut): int
+    {
+        if($siteIds === []) {
+            return 0;
+        }
+
+        return (int) $this->createQueryBuilder('d')
+            ->select('COUNT(d.id)')
+            ->andWhere('d.site IN (:sites)')
+            ->andWhere('d.statut = :statut')
+            ->andWhere('d.deletedAt IS NULL')
+            ->setParameter('sites', $siteIds)
+            ->setParameter('statut', $statut)
+            ->getQuery()
+            ->getSingleScalarResult();
+    }
 }

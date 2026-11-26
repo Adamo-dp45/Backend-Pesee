@@ -144,6 +144,27 @@ class MouvementCaisse extends EntityBase implements EntrepriseOwnedInterface, Si
     #[Groups(['read:MouvementCaisse'])]
     private ?User $effectuePar = null;
 
+    /*
+        - LE JUSTIFICATIF DE CETTE ÉCRITURE, s'il y en a un : le bordereau d'une recharge, la
+          pièce d'une dotation. C'est ce qu'un comptable rapproche du relevé de banque.
+        - La pièce porte la clé : une écriture comptable ne gagne pas de colonne pour ça.
+    */
+    #[ORM\OneToOne(mappedBy: 'mouvementCaisse')]
+    #[Groups(['read:MouvementCaisse'])]
+    private ?PieceJointe $pieceJointe = null;
+
+    public function getPieceJointe(): ?PieceJointe
+    {
+        return $this->pieceJointe;
+    }
+
+    public function setPieceJointe(?PieceJointe $pieceJointe): static
+    {
+        $this->pieceJointe = $pieceJointe;
+
+        return $this;
+    }
+
     public function getId(): ?int
     {
         return $this->id;

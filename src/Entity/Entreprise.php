@@ -16,6 +16,7 @@ use App\Domain\Enum\CompteMouvement;
 use App\Domain\Enum\TypeCaisse;
 use App\Entity\Input\MontantInput;
 use App\Entity\Interface\CompteInterface;
+use App\Entity\Output\EcritureOutput;
 use App\Repository\EntrepriseRepository;
 use App\State\Processor\AuditProcessor;
 use App\State\Processor\BasculerStatutEntrepriseProcessor;
@@ -108,10 +109,13 @@ use Symfony\Component\Validator\Constraints as Assert;
             security: "is_granted('RECHARGER', 'Entreprise')",
             input: MontantInput::class,
             denormalizationContext: ['groups' => ['write:Montant']],
+            /* L'écriture, et non l'entreprise : c'est elle que l'écran a besoin de nommer pour y joindre le bordereau */
+            output: EcritureOutput::class,
+            normalizationContext: ['groups' => ['read:Ecriture']],
             processor: RechargerEntrepriseProcessor::class,
             openapi: new Operation(
                 summary: 'Recharge du solde de l\'entreprise',
-                description: 'Crédite le solde global et écrit la ligne de grand livre correspondante. C\'est de cet argent que sortent les dotations aux ponts bascules',
+                description: 'Crédite le solde global et écrit la ligne de grand livre correspondante. C\'est de cet argent que sortent les dotations aux ponts bascules. Rend l\'écriture écrite, et non l\'entreprise : c\'est à elle qu\'un justificatif se rattache, et une recharge n\'a pas de contrepartie',
                 security: [['bearerAuth' => []]]
             )
         ),

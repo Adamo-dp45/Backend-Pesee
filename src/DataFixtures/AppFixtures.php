@@ -61,6 +61,15 @@ class AppFixtures extends Fixture
     /** @var array<int, CompteEpargne> Les comptes d'épargne du jeu, indexés par planteur : rien n'est encore en base pendant la construction */
     private array $comptesEpargne = [];
 
+    /*
+        - CE QUI EST DÉJÀ ENGAGÉ SUR CHAQUE PESÉE, part par part. On ne peut pas le relire sur la
+          pesée : 'montantpaye' ne compte que le CONFIRMÉ, et sa collection de versements reste
+          vide tant que rien n'est écrit — 'setOperation' ne tient pas le côté inverse. Comme les
+          comptes d'épargne plus haut, on le suit donc à la main pendant la construction.
+    */
+    /** @var array<int, array{produit: int, transport: int}> Indexé par pesée */
+    private array $engage = [];
+
     public function __construct(
         private UserPasswordHasherInterface $hasher,
         private CompteMachineService $compteMachine
@@ -203,7 +212,12 @@ class AppFixtures extends Fixture
         // Terminée, un versement en vol : c'est la pesée qui exerce la réconciliation
         $enVol = $this->creerPesee($manager, $soubre, $palme, $yao, '1002', 'T-4502', 9_000, 25_000, '-2 days');
         $this->mettreEnCompte($manager, $enVol, $yao); // Il épargne : une part part sur son compte avant tout versement
-        $this->verser($manager, $enVol, 3_000_000, StatutPaiement::ENVOYE);
+        /*
+            - TOUT LE PAYABLE, et pas un montant rond écrit à la main : celui-ci valait 3 000 000 F
+              pour une pesée qui n'en accepte que 2 240 000, et le surplus partait gonfler la part
+              transport. Demander le payable tient tout seul le jour où le poids ou le prix bouge.
+        */
+        $this->verser($manager, $enVol, $enVol->getMontantpayable(), StatutPaiement::ENVOYE);
 
         /*
             - Le planteur n'a pas de numéro : impayable par mobile money, mais réglable en ESPÈCES. C'est
@@ -505,6 +519,20 @@ class AppFixtures extends Fixture
 
     /*
         - Un versement, avec les écritures de caisse qu'il entraîne : le débit à la réservation, et le remboursement si la passerelle a refusé.
+
+        - LE DÉCOR NE PEUT PLUS ÉCRIRE CE QUE L'APPLICATION REFUSE, et c'est ce qu'il faisait. La
+          cascade plafonnait la récolte à son payable puis jetait TOUT le reste sur le transport,
+          sans regarder ce que le transport devait : un versement de 3 000 000 F sur une pesée qui
+          n'en acceptait que 2 240 000 sortait une part transport de 1 000 000 F là où elle en
+          devait 240 000. 'PaiementService::exigerUnMontantTenable()' refuserait ce versement — le
+          jeu de démonstration naissait donc dans un état que le code interdit.
+
+        - Ce n'est pas un détail de décor : tout contrôle passé sur la base de développement butait
+          dessus, et la pesée affichait une part transport en vol valant quatre fois son dû.
+
+        - D'où un REFUS, et non un écrêtage. Rogner le montant en silence aurait caché la faute de
+          celui qui écrit le décor, exactement comme la cascade le faisait — et un jeu de données
+          faux ne se signale jamais de lui-même.
     */
     private function verser(ObjectManager $manager, Operation $pesee, int $montant, StatutPaiement $statut, ModeReglement $mode = ModeReglement::MOBILE_MONEY): void
     {
@@ -512,16 +540,42 @@ class AppFixtures extends Fixture
         $planteur = $pesee->getFournisseur();
         $mobile = $mode->passeParLaPasserelle();
 
+        $cle = spl_object_id($pesee);
+        $deja = $this->engage[$cle] ?? ['produit' => 0, 'transport' => 0];
+
+        $resteRecolte = max(0, $pesee->getPayableproduit() - $deja['produit']);
+        $resteTransport = max(0, $pesee->getPayabletransport() - $deja['transport']);
+
+        if($montant > $resteRecolte + $resteTransport) {
+            throw new \LogicException(sprintf(
+                'Décor intenable : %d F versés sur la pesée %s, qui n\'en accepte plus que %d (récolte %d, transport %d).',
+                $montant,
+                $pesee->getNumticket() ?? '(sans ticket)',
+                $resteRecolte + $resteTransport,
+                $resteRecolte,
+                $resteTransport
+            ));
+        }
+
         /*
             - La même cascade qu'à la reprise des données : la récolte d'abord jusqu'à son payable, le
               surplus au transport. C'est l'ordre dans lequel un humain lirait un versement global,
               et il faut bien en choisir un : le décor doit porter des parts qui font le total.
         */
-        $surLaRecolte = min($montant, max(0, $pesee->getPayableproduit() - $pesee->getMontantpayeproduit()));
+        $surLaRecolte = min($montant, $resteRecolte);
+        $surLeTransport = $montant - $surLaRecolte;
+
+        /* Un versement REFUSÉ est remboursé : il ne retient rien et la pesée reste payable d'autant. */
+        if($statut !== StatutPaiement::ECHOUE) {
+            $this->engage[$cle] = [
+                'produit' => $deja['produit'] + $surLaRecolte,
+                'transport' => $deja['transport'] + $surLeTransport,
+            ];
+        }
 
         $paiement = (new Paiement())
             ->setReference(Paiement::genererReference())
-            ->setMontants($surLaRecolte, $montant - $surLaRecolte)
+            ->setMontants($surLaRecolte, $surLeTransport)
             ->setModeReglement($mode)
             ->setOperation($pesee)
             ->setFournisseur($planteur)

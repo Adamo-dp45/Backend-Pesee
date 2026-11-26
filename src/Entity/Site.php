@@ -21,6 +21,7 @@ use App\Domain\Enum\TypeCaisse;
 use App\Entity\Input\AssignerOperateurInput;
 use App\Entity\Input\MontantInput;
 use App\Entity\Interface\CompteInterface;
+use App\Entity\Output\EcritureOutput;
 use App\Entity\Interface\EntrepriseOwnedInterface;
 use App\Repository\SiteRepository;
 use App\State\Provider\CompteurPeseesProvider;
@@ -134,10 +135,13 @@ use Symfony\Component\Validator\Constraints as Assert;
             requirements: ['id' => '\d+'],
             input: MontantInput::class,
             denormalizationContext: ['groups' => ['write:Montant']],
+            /* Les DEUX écritures nommées, celle du poste en tête : sans elles, le bordereau de dotation n'avait aucune ligne où se poser */
+            output: EcritureOutput::class,
+            normalizationContext: ['groups' => ['read:Ecriture']],
             processor: DoterSiteProcessor::class,
             openapi: new Operation(
                 summary: 'Dotation de la caisse d\'un pont bascule',
-                description: 'Transfère de l\'argent de l\'entreprise vers la caisse du site. Deux écritures : l\'argent se déplace, il ne se crée pas',
+                description: 'Transfère de l\'argent de l\'entreprise vers la caisse du site. Deux écritures : l\'argent se déplace, il ne se crée pas. Rend celle du POSTE, celle qui reçoit, avec la sortie de l\'entreprise en contrepartie — c\'est à l\'entrée que la décharge se rattache, puisque c\'est la seule que l\'opérateur puisse relire',
                 security: [['bearerAuth' => []]]
             )
         ),

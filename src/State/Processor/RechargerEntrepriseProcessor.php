@@ -5,8 +5,8 @@ namespace App\State\Processor;
 use ApiPlatform\Metadata\Operation;
 use ApiPlatform\State\ProcessorInterface;
 use App\Domain\Service\Caisse\CaisseService;
-use App\Entity\Entreprise;
 use App\Entity\Input\MontantInput;
+use App\Entity\Output\EcritureOutput;
 use App\Entity\User;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
@@ -16,7 +16,7 @@ use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 */
 
 /**
- * @implements ProcessorInterface<MontantInput, Entreprise>
+ * @implements ProcessorInterface<MontantInput, EcritureOutput>
  */
 class RechargerEntrepriseProcessor implements ProcessorInterface
 {
@@ -27,7 +27,7 @@ class RechargerEntrepriseProcessor implements ProcessorInterface
     {
     }
 
-    public function process(mixed $data, Operation $operation, array $uriVariables = [], array $context = []): Entreprise
+    public function process(mixed $data, Operation $operation, array $uriVariables = [], array $context = []): EcritureOutput
     {
         $auteur = $this->security->getUser();
         $entreprise = $auteur instanceof User ? $auteur->getEntreprise() : null;
@@ -40,8 +40,12 @@ class RechargerEntrepriseProcessor implements ProcessorInterface
             throw new UnprocessableEntityHttpException('Précisez la caisse à alimenter.');
         }
 
-        $this->caisse->rechargerEntreprise($entreprise, $data->caisse, (int) $data->montant, $data->motif);
-
-        return $entreprise;
+        /*
+            - On rend L'ÉCRITURE et non l'entreprise : le solde se relit à tout moment, la ligne qui
+              vient de naître, non. C'est à elle que l'écran rattache son bordereau.
+        */
+        return EcritureOutput::depuis(
+            $this->caisse->rechargerEntreprise($entreprise, $data->caisse, (int) $data->montant, $data->motif)
+        );
     }
 }

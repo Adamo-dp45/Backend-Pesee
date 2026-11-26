@@ -896,3 +896,783 @@ cd C:\Users\adamo\Documents\Web\Webpesee\Frontend-Webpesee; npm run build
 Web 26 tests, TypeScript propre, assets rebâtis. L'API n'a pas bougé, donc ses 242 tests tiennent toujours. Rien n'est commité.
 
 Une chose à savoir : **la sélection n'existe que sur le tableau**, pas sur les cartes du téléphone, où l'on garde le « Verser » par pesée. C'était déjà le cas avant ces ajustements, et vous ne l'aviez pas demandé — dites-moi si le guichet verse aussi depuis un téléphone.
+
+
+
+
+
+
+
+
+
+
+
+
+
+I'll start by exploring the project structure to get back up to speed.
+
+Je suis à jour. Voici ce que j'ai retrouvé.
+
+## L'application
+
+Une entreprise de pesage achète des récoltes à des planteurs. Trois acteurs, trois logiciels : le **peseur** sur le pont bascule (logiciel tiers qui pousse ses pesées), l'**opérateur** au guichet (il paie), l'**administrateur** (caisses, comptes, référentiels).
+
+## Les deux dépôts
+
+| | Rôle |
+|---|---|
+| `Backend-Webpesee-V2` | API Platform / Symfony. **Toute** la règle métier, la base MySQL (`bk_webpesee_v2`), port 8000 |
+| `Frontend-Webpesee` | Symfony + Twig + React (îlots de tables) + Tailwind 4. Aucune base, JWT, **ne décide rien**, port 8001 |
+
+Les deux README sont des documents de référence sérieux (57 Ko et 33 Ko) : ils disent le *pourquoi*, avec des sections entières de pièges déjà payés. Je m'y suis appuyé plutôt que de tout relire dans le code.
+
+## L'ossature métier, telle qu'elle est aujourd'hui
+
+- **Le poste pèse, il ne tarife pas.** `prix` et `prixtransport` de la charge utile sont lus et jetés. Un planteur se rapproche par son **code**, le libellé n'est qu'un repli vers une fiche d'avant la bascule.
+- **Le produit est à l'entreprise, le planteur au poste.** Le référentiel est passé en lecture pour l'opérateur : il ne crée plus de planteur ni de prix depuis le web.
+- **Trois montants sur une pesée** — `montantdu` (récolte seule, ne bouge jamais), `montanttransport`, `montantpayable` — et le payable se règle en **deux parts** indépendantes, chacune avec sa propre borne.
+- **Le prix se résout en trois sauts** (tarif planteur → tarif catégorie → prix produit), le **transport en deux** (barème planteur → barème catégorie → aucun). Deux classes statiques sans requête : `TarifApplicable`, `TransportApplicable`.
+- **Trois caisses** (physique, numérique, bancaire — la bancaire à l'entreprise seule), un seul service qui écrit (`CaisseService`), chaînage `soldeAvant`/`soldeApres` vérifié.
+- **La mise en compte** est par produit, s'arbitre **une fois** et sans retour, protégée par quatre barrières contre le double crédit.
+- **Les droits** : une table (`Security/Droits.php`), un voter, `/api/me` les publie à plat. Le frontend fait un `in_array` et rien d'autre.
+
+
+
+
+
+
+
+
+
+On vas enrichir le tableau de bord au vue de toutes les notions qu'on a rajoutés !
+
+
+
+
+J'ai l'inventaire. Le point notable : **une grande partie de ce qui manque existe déjà dans l'API** — `/stats/caisse` publie l'immobilisé, l'épargne due, les versements en vol et les demandes en attente, et `totaux` calcule déjà le transport et la retenue de la période. L'accueil ne les affiche simplement pas.
+
+Deux choses me gênent dans l'écran actuel, au-delà du manque :
+
+- **« Ma caisse » affiche le solde brut.** Le README dit qu'un opérateur ne peut pas dépenser tout ce que son solde affiche — il y a l'immobilisé et l'épargne due. L'accueil annonce donc plus d'argent qu'il n'y en a de disponible.
+- **« Reste à payer » n'est pas le même chiffre que celui de la file du guichet.** Ici c'est le reste des pesées **de la période**, là-bas c'est toute la file. Même nom, deux nombres, et rien ne le dit.
+
+Un seul manque demande du SQL neuf : l'agrégat **par planteur**, « à qui doit-on, et combien » — c'est le cœur de la #3 et il n'existe nulle part.
+
+
+Quels blocs ajouter au tableau de bord ? (plusieurs choix possibles)
+Aussi, je me dis qu'on n'a pas besoin de géré le `les versements en vol depuis trop longtemps (signe d'un cron de réconciliation arrêté)` ! vu qu'on n'a pas encore intégré un vrai agrégateur, Les deux parts et l'épargne, Ce qui bloque l'argent, Les décisions en attente
+Que faire du « Reste à payer » de l'accueil, qui ne compte que la période alors que la file du guichet compte tout ?
+Les deux, nommés à part (Recommandé)
+
+
+Compris : pas de surveillance des versements en vol tant que la passerelle est simulée.
+
+Tout ce qu'il me faut existe déjà. Je commence par l'API.
+
+Les nouvelles classes Tailwind ne sont pas dans le CSS compilé — il faut reconstruire.
+
+J'ai marché droit dans un piège que le README documente déjà — un commentaire Twig dans un littéral.
+
+Je peux écrire le test maintenant.
+
+Le tableau de bord est en place et vérifié dans les deux rôles. J'attends la suite de tests complète de l'API avant de conclure.
+
+Le tableau de bord est enrichi. Le point qui m'a surpris en commençant : **presque rien ne manquait à l'API**. L'immobilisé, l'épargne due, les demandes en attente, le transport et la retenue de la période existaient déjà ; l'écran d'accueil ne les demandait simplement pas. Seule la créance totale a demandé du code, et encore : elle appelle `totauxAPayer()` sans critères, la méthode même du guichet.
+
+## Ce que l'écran dit maintenant
+
+**Deux rangées, qui ne répondent pas à la même question.** La première : tonnage, récolte, **transport**, **mise en compte**. La seconde : reste sur la période, créance totale, disponible, caisses de l'entreprise. L'écran d'avant mettait « Montant dû » à côté de « Ma caisse » — deux grandeurs sans rapport que l'œil additionne.
+
+**Les deux restes sont enfin nommés à part.** « Reste sur la période » s'arrête au mois affiché, « Créance totale » compte toute la file. Sur le jeu de démonstration ils tombent égaux, ce qui ne prouve rien — c'est le test qui le prouve, avec une pesée datée de quatorze mois.
+
+**« Disponible » a remplacé le solde brut**, et c'est la correction la plus concrète : l'opératrice Awa voyait 4 500 000 F au compteur, elle ne peut en engager que 1 500 000. Les trois millions sont partis sans réponse de la passerelle. L'épargne due, elle, n'en est **pas** retranchée — les billets sont dans le tiroir, c'est une dette qui naît à côté, et c'est le piège que le test garde.
+
+**Deux bandes** : les pesées dont le produit n'est pas tarifé, et les trois files de demandes avec leurs liens.
+
+## Côté API
+
+`TableauDeBordOutput` gagne `creance`, `demandes` et trois clés sur `soldes` ; le provider les remplit en réutilisant `CompteEpargneRepository::totalDu()` et `PaiementRepository::montantsImmobilises()`, les mêmes sources que l'écran Trésorerie. Les deux repositories de demandes gagnent un `compterParStatut()` calqué sur celui des demandes de solde. `tests/Api/TableauDeBordTest` tient quatre cas : la créance égale celle du guichet, elle ignore la période que le reste suit, l'épargne ne se retranche pas du disponible, et un opérateur ne reçoit ni trésorerie ni dette.
+
+## Ce que j'ai vérifié, et ce que je n'ai pas pu
+
+Les deux rôles ont été ouverts dans le navigateur. **246 tests passent** (1489 assertions, 8 ignorés), dont les 4 nouveaux. Aucune tuile n'est tronquée — j'ai mesuré, et deux détails ont dû être raccourcis.
+
+**La bande « produits sans prix » n'a jamais été rendue.** Elle se déclenche sur des pesées dont le produit n'est pas tarifé, et votre base n'en a aucune : le seul produit à zéro, le Cacao, n'a pas de pesée, et la seule pesée sans valeur est encore sur le pont. Créer le cas aurait voulu dire écrire dans vos tables d'argent. J'ai vérifié à la place ce qui pouvait réellement casser : la route `produit.index`, l'icône, et le même gabarit d'alerte que la bande des demandes, qui s'affiche.
+
+Deux choses que ce travail a coûtées, et qui sont désormais écrites dans le README du web. J'ai mis un commentaire Twig à l'intérieur d'un `include` — le piège est documenté depuis des mois, j'y suis tombé quand même, et ça sort en 500 sur toute la page. Et mes classes Tailwind neuves n'ont rien fait tant que je n'avais pas relancé `npm run build` : aucune erreur, trois liens collés, et un `getComputedStyle()` pour comprendre.
+
+Les deux serveurs de développement tournent encore si vous voulez regarder — l'API sur `127.0.0.1:8000`, le web sur `127.0.0.1:8001`.
+
+
+
+
+
+
+
+On attaque le **#4 pièces jointes**.
+
+J'ai sondé le terrain. Trois choses à savoir avant les questions.
+
+**Rien n'existe, sauf deux bouts de plomberie oubliés.** `ApiHelper` porte déjà un `multipart()` pour envoyer un fichier à l'API et un `raw()` pour en récupérer un — jamais appelés, jamais testés. Les deux chargent le fichier **entier en mémoire**, et `multipart()` le fait deux fois (`file_get_contents` puis `bodyToString`). Sur un mutualisé à 128 Mo, ça plafonne la taille utile bien avant la limite d'upload de PHP.
+
+**Le `.gitignore` de l'API réserve déjà `/public/images/`.** C'est précisément le mauvais endroit : sous la racine web, un fichier est servi par URL devinable, et le cloisonnement par entreprise ne s'y applique pas.
+
+**Je lis « références » comme un numéro de pièce comptable** saisi à la main à côté du fichier — distinct de `Paiement::reference`, qui est la référence marchand de la passerelle et sert de clé d'idempotence au webhook. Dites-moi si vous entendiez autre chose.
+
+
+Où stocke-t-on les fichiers téléversés ?
+Pour l'instant, c'est sur le serveur et pour le coup tu peut voir le projet `iTransport` dans lequel j'ai déjà géré l'uploads de fichiers
+Qui a le droit de lire une pièce jointe ?
+Qui voit la ligne voit sa pièce (Recommandé)
+Quels types de fichiers, et jusqu'à quelle taille ?
+PDF et images, 5 Mo (Recommandé)
+
+
+Vous m'envoyez voir iTransport — je le cherche.
+
+Le précédent d'iTransport est solide et documenté. Je le reprends, avec une seule divergence que je justifierai.
+
+Vich 3 a changé la signature depuis la version d'iTransport.
+
+Le piège de la « relation sérialisée sans aucun champ » — `deposePar` ne rend que son IRI.
+
+L'API fonctionne de bout en bout. Je la protège par des tests.
+
+`BinaryFileResponse::getContent()` rend `false` : il faut capturer le flux.
+
+L'API est complète et testée. Avant d'attaquer les écrans, je vérifie où ils iraient.
+
+La suite de tests a été coupée avec la session. Je la relance.
+
+Le travail est intact dans les deux dépôts. J'attends la suite complète — elle prend vingt minutes.
+
+**252 tests, 1522 assertions, 8 ignorés, aucun échec.** La moitié API du #4 est complète.
+
+## Ce qui est livré
+
+`PieceJointe` porte le fichier **et sa cible** — versement, mouvement de caisse, ou l'une des trois demandes. Mettre la clé de l'autre côté aurait ajouté une colonne à `paiement` et à `mouvement_caisse` ; aucune table d'argent n'a bougé.
+
+**Le dépôt** se fait en multipart sur `POST /api/piece_jointes`, **la lecture** par `GET /api/piece_jointes/{id}/fichier`. Les fichiers vivent dans `var/uploads/pieces`, hors de la racine web, sous un nom de 128 bits tirés au sort.
+
+## Les trois décisions qui tiennent le reste
+
+**« Qui voit la ligne voit sa pièce » n'est pas une formule** : le contrôle de lecture est littéralement `is_granted('VOIR', $cible)`. Aucun droit sur la pièce, aucune seconde table de visibilité. L'écriture a son action, `JOINDRE`, parce que voir un versement et pouvoir y coller un document ne sont pas la même permission — l'agent lit les justificatifs et n'en pose aucun.
+
+**Le piège que ça ouvrait** : charger la cible par son identifiant contourne le cloisonnement, les extensions Doctrine ne s'appliquant qu'aux requêtes d'API Platform. Sans le `is_granted` du processor, changer un chiffre dans le formulaire attachait un document au versement d'une autre entreprise. Vérifié : 403.
+
+**Exactement une cible par pièce**, tenu par une contrainte `CHECK`. Zéro ferait une pièce orpheline que le contrôle d'accès ne saurait pas juger ; deux en feraient une que deux lignes revendiquent, où la plus permissive déciderait.
+
+## Ma divergence avec iTransport
+
+Vous m'y avez envoyé et le précédent est excellent — j'ai repris Vich, le namer aléatoire, la redirection des uploads en test. **Sauf l'emplacement.** iTransport pose ses documents sous `public/documents` et les interdit par un `.htaccess` ; son propre commentaire en nomme la faiblesse : « le `.htaccess` ne vaut que sous APACHE ». Hors de la racine, il n'y a plus de configuration à ne pas oublier. J'ai gardé le nom aléatoire quand même — il ne coûte rien et il tient si le dossier se retrouve servi par erreur. C'est une ligne de configuration à changer si vous préférez l'autre.
+
+## Vérifié pour de vrai
+
+Dépôt d'un PDF, relecture **octet pour octet**, en-têtes `inline` / `nosniff` / `no-store`. Cross-entreprise en lecture : 403. Cross-entreprise en dépôt : 403. Agent qui lit : 200, qui joint : 403. Un `.txt` : 422 « Seuls les fichiers PDF, JPEG, PNG et WEBP ». Un PDF de 7 Mo : 422 « ne doit pas dépasser 5 Mo ». Second dépôt : même pièce, ancien fichier effacé du disque, une seule ligne en base. J'ai supprimé la pièce d'essai et son fichier de votre base de développement.
+
+**Trois choses que je n'ai pas pu ou pas fait.** La contrainte `CHECK` vit dans la migration, pas dans le mapping : le schéma de test étant construit depuis le mapping, la suite ne l'exerce pas — je l'ai vérifiée à la main sur la base de développement, où un `INSERT` sans cible est bien refusé. La **durée de conservation** n'a pas été tranchée et rien ne purge : une pièce vit tant que sa ligne vit. Et `.gitignore` réserve toujours `/public/images/`, qui ne sert à rien et pointe vers le mauvais endroit — à retirer un jour.
+
+## Pourquoi je m'arrête ici
+
+Les trois demandes ont déjà leur écran par élément (`/{id}/traitement`), où une pièce se poserait naturellement. **Un versement et un mouvement de caisse n'en ont aucun** : depuis que `/paiements` a été retiré, ils ne vivent que comme lignes du bilan et du grand livre.
+
+Je penche pour la modale — c'est le geste que la file du guichet a déjà, l'opérateur reste dans sa liste avec ses filtres, et ça n'ajoute pas deux écrans à tenir. Une fiche par versement coûte plus cher mais donnerait enfin un endroit où lire l'historique d'une ligne. Si vous voyez plutôt un écran « ce qui attend son justificatif », dites-le et je pars là-dessus.
+
+
+
+
+
+
+
+
+Concernant le `var/uploads/pieces`, pour l'instant je préfère que les mettes dans `public/documents` avec le `.htaccess`.
+
+Et où sont les écrans pour uploadé, du genre lorsqu'on veut verser à un planteur on aurait un champ justificatif, aussi lorsqu'on veut doter un site on aurait un champ justificatif, etc... !
+
+
+
+
+Entendu pour `public/documents` — je reprends le dispositif d'iTransport au complet, `.htaccess` compris.
+
+L'édition a basculé le `.gitignore` en CRLF alors qu'il était en LF — je le remets.
+
+Pas de bascule en réalité — le fichier était déjà en CRLF, le diff est minimal. Je repointe le stockage.
+
+Le stockage est en place. Je passe aux écrans.
+
+Le service de caisse rend déjà ses mouvements — c'est donc du ressort des processors, pas de l'argent. Je commence par les quatre formulaires débloqués.
+
+`GestionController` n'a pas d'`ApiHelper` — les sous-classes l'injectent en privé. Ça demande un service.
+
+Maintenant le contrôleur : il doit récupérer l'identifiant du versement créé.
+
+Maintenant les trois formulaires et leurs gabarits.
+
+Le script se bat avec les échappements — trois éditions directes seront plus sûres.
+
+Le `sed` a mangé les antislashs — exactement le piège que je connais. Je corrige à la main.
+
+Les trois gabarits maintenant, puis je câble aussi la modification d'une demande — c'est elle qui donne une seconde chance si la pièce manque.
+
+Un sélecteur de fichier ne se pilote pas ; je poste le formulaire réel avec un fichier fabriqué.
+
+Le `multipart()` dormant encodait les champs texte en JSON — `DEMANDE_SOLDE` partait avec ses guillemets.
+
+Je mets la documentation à jour pendant que je relance les tests des pièces.
+
+Tout est en place dans les deux dépôts. J'attends le résultat des tests des pièces pour conclure.
+
+Les deux points sont faits. **6 tests des pièces au vert** après le déménagement.
+
+## Le stockage, comme iTransport
+
+`public/documents`, avec son `.htaccess` versionné, le nom aléatoire de 128 bits en seconde barrière, et la **sonde** — j'ai repris l'idée : `/documents/sonde.txt` est versionné, et si son texte s'affiche dans un navigateur au lieu d'un 403, le dossier n'est pas protégé. Le `.gitignore` ignore le contenu et garde les deux gardiens.
+
+J'ai vu au passage que vous aviez retiré `/public/images/` du `.gitignore` — je n'y ai pas touché.
+
+## Le champ justificatif, là où le geste se fait
+
+Vous aviez raison sur la forme : il n'y a pas d'écran séparé, le champ est **dans le formulaire qui crée la ligne**. Quatre y sont :
+
+| Écran | Ce qu'on y joint |
+|---|---|
+| Verser à un planteur | Le reçu signé, le talon du chèque |
+| Demande de solde | Le bordereau qui motive la demande |
+| Mise en compte | La demande écrite du planteur |
+| Retrait d'épargne | Idem |
+
+**La ligne part d'abord, la pièce ensuite** — deux appels. Faire voyager le fichier avec le versement aurait obligé à ouvrir le multipart jusque dans les processors de caisse, qu'on ne touche pas pour un besoin d'affichage. Les trois champs (fichier, numéro de pièce, intitulé) sont décrits à un seul endroit, avec les mêmes limites que l'API — en double exprès : **ici elles refusent le fichier avant que la ligne n'existe**.
+
+**Le champ est aussi sur la correction d'une demande**, et c'est délibéré : c'est la seule seconde chance si le papier arrive plus tard. Un versement n'en a pas — si le dépôt échoue, le message le dit franchement (« Le versement est enregistré. En revanche, le justificatif n'a pas pu être joint : … ») plutôt que de laisser croire le document attaché.
+
+## Un bug dormant, trouvé en le branchant
+
+`ApiHelper::multipart()` existait depuis longtemps **sans aucun appelant**. Il passait chaque champ par `json_encode`, donc `DEMANDE_SOLDE` partait en `"DEMANDE_SOLDE"`, guillemets compris — l'API refusait un type de ligne inconnu. Mon premier essai réel l'a montré du premier coup, et le message d'erreur nommait exactement la valeur attendue. Un scalaire part désormais tel quel ; un tableau garde son JSON.
+
+Ça dit quelque chose sur les deux helpers de fichiers : ils chargent encore le fichier **entier en mémoire**, `multipart()` deux fois. C'est ce qui plafonne la taille utile bien avant la limite de PHP, et c'est noté dans le tableau des pièges.
+
+## Vérifié dans le navigateur
+
+Formulaire soumis pour de vrai : `enctype` posé automatiquement, les trois champs rendus proprement par le thème de formulaire (qui avait déjà un bloc `file_widget`), la pièce en base sur la bonne demande avec sa référence et son intitulé, le fichier sur le disque sous son nom aléatoire. J'ai supprimé les pièces d'essai et leurs fichiers.
+
+## Ce qui manque encore
+
+**La recharge de l'entreprise et la dotation d'un site** — vos deux exemples « doter un site ». Ce sont les seuls endroits qui créent un `MouvementCaisse` depuis un formulaire, et leurs opérations rendent l'`Entreprise` ou le `Site`, pas l'écriture : le web ne sait pas à quelle ligne rattacher la pièce. Bonne nouvelle, `CaisseService` **renvoie déjà** les mouvements qu'il écrit — c'est du travail de processor et de DTO de sortie, aucune règle d'argent à rouvrir. Pour la dotation il restera à trancher laquelle des deux écritures porte le bordereau.
+
+Restent aussi la modale du guichet et le versement groupé, qui postent en React, et le fait que **rien n'affiche encore une pièce** : l'API la sert et les lignes la publient, mais aucune liste ni fiche n'en montre le lien.
+
+Je fais la recharge et la dotation, qui demandent un petit changement côté API ?
+
+
+
+
+
+
+
+
+
+Sur la question de où pose t'on la pièce d'un versement, je me dis qu'on vas avoir une page de détail pour les versements mais d'abord montre moi un exemple en image concernant le `Modale depuis la liste` dont tu parle pour que je fasse un choix entre la modale et la fiche par versement !
+
+Ensuite, on enchaîne sur la recharge et la dotation.
+
+Aussi :
+- On vas faire ressortir l'action de dotation d'un site vers une page dédié au lieu de le faire sur la fiche d'un site
+
+Et pour le reste (la modale du guichet et le versement groupé, qui postent en React, et le fait que rien n'affiche encore une pièce : l'API la sert et les lignes la publient, mais aucune liste ni fiche n'en montre le lien), on les fera après avoir fini
+
+
+
+
+
+
+
+
+Voici la modale telle qu'elle se présenterait depuis la liste des versements — le dessin suit.
+
+La modale s'ouvrirait depuis le menu « ⋯ » de chaque ligne, à côté de « Reçu à imprimer ». Elle sert les deux cas d'un coup : **lire** la pièce quand il y en a une, **en déposer une** quand le papier arrive après coup — ce qu'aucun écran ne permet aujourd'hui pour un versement, puisque le champ n'existe qu'au moment de la saisie.
+
+Pendant que vous choisissez, j'enchaîne sur la recharge et la dotation.
+
+Maintenant les deux processors.
+
+Le piège des antislashs dans les scripts, encore. Je corrige avec l'outil d'édition.
+
+Maintenant les formulaires.
+
+Maintenant le gabarit de la page de dotation, et le justificatif sur la recharge.
+
+Maintenant je retire la carte de dotation de la fiche du poste.
+
+Et je retire la route POST devenue sans gabarit.
+
+Je rajoute le cas qui garde la chaîne complète : doter, nommer l'écriture, y poser la décharge, et que l'opérateur la relise.
+
+Je soumets une dotation réelle, puis je remets la base dans l'état où je l'ai trouvée.
+
+J'attends la suite complète. En attendant, un point que je dois vous signaler, trouvé en sortant la dotation de la fiche.
+
+Pendant que la suite tourne, je vérifie aussi la recharge de bout en bout.
+
+Les deux écrans sont vérifiés en base, la suite complète tourne encore. Je termine dès qu'elle rend son verdict.
+
+## L'API a dû bouger, et c'était le vrai sujet
+
+Les deux gestes rendaient l'`Entreprise` ou le `Site` — c'est-à-dire un **solde**, qui se relit à tout moment. Jamais la ligne qui venait de naître. Le web n'avait donc aucune cible pour son bordereau, alors que `CaisseService` renvoyait déjà ses mouvements : personne ne les lisait. Elles rendent maintenant un `EcritureOutput` (`id`, `contrepartieId`, `caisse`, `montant`, `soldeApres`). Aucune règle d'argent n'a été rouverte.
+
+**Pour la dotation, j'ai tranché l'entrée côté poste**, avec la sortie de l'entreprise en contrepartie. L'opérateur lit les écritures de sa caisse et jamais celles de l'entreprise : poser la décharge sur la sortie l'aurait rendue invisible à celui-là même qui l'a signée. L'administrateur voit les deux de toute façon, donc c'est le sens le plus large sans rien ouvrir à qui n'y a pas droit. Le test le garde par le `soldeApres`, qui serait celui de l'entreprise si je m'étais trompé de jambe.
+
+## La dotation a son écran
+
+`/caisse/dotation`, à côté de `/caisse/recharge` — les deux gestes d'argent au même endroit. Trois choses changent, et la troisième n'était pas prévue :
+
+- le poste est un **champ** : doter trois postes le matin ne demande plus trois fiches ;
+- les **soldes de l'entreprise** sont sous les yeux pendant la saisie. C'est la question qu'on se pose en dotant, et la fiche d'un site ne les montre pas — on dotait sans voir ce qu'on prélevait ;
+- l'ancienne route postait sur `site.dotation`, **qui n'avait pas de vue**. Un « solde insuffisant » devenait un bandeau rouge sur la fiche, saisie perdue. Il revient maintenant sous le champ fautif. J'ai retiré la route plutôt que de la laisser : une route de geste d'argent que plus aucun écran n'emprunte ne se vérifie plus.
+
+Le bouton « Doter » de la trésorerie y amène avec le poste déjà choisi ; la fiche garde un lien, parce que c'est là qu'on constate un tiroir vide.
+
+## Bloquer un poste ne bloque rien
+
+Trouvé en déplaçant ce formulaire. `StatutSite::BLOQUE` est écrit, journalisé, affiché — et **jamais lu** : une seule occurrence dans tout `src/`, et c'est dans les fixtures. Aucune règle, ni dans `CaisseService`, ni dans les processors, ni dans les voters, ne consulte le statut d'un poste.
+
+Ce qui le rend coûteux, c'est ce que l'écran promet : la fiche d'un poste bloqué annonce « il ne reçoit plus de pesées **et sa caisse est gelée** ». La seconde moitié n'est vraie nulle part. Le seul garde-fou était le bouton « Doter » désactivé sur cette fiche — du décor : un POST forgé passait.
+
+**Je n'y ai pas touché.** Geler une caisse se décide : refuse-t-on la dotation, les versements, les deux, et que fait-on des versements déjà en vol au moment du blocage ? En attendant, le nouvel écran **nomme** les postes bloqués dans sa liste (« Pont de Daloa — bloqué ») plutôt que de les cacher ou de faire semblant de les interdire. C'est au §3 de `A-FAIRE.md`.
+
+## Vérifié pour de vrai, puis effacé
+
+Dotation soumise depuis le navigateur : deux écritures (487 sortie entreprise, 488 entrée poste), la pièce accrochée à **488**, les soldes déplacés de 1 000 F. Recharge soumise de même : une écriture sans contrepartie, son bordereau dessus. J'ai ensuite remis la base exactement où je l'ai trouvée — dernier mouvement 486, vos trois pièces intactes, trois fichiers plus la sonde dans `public/documents`.
+
+Côté tests : **7 au vert sur les pièces jointes**, dont le nouveau cas qui garde toute la chaîne — doter, nommer l'écriture, y poser la décharge, et que l'opérateur la relise. Et 121 sur caisse, cloisonnement et journal. La suite complète tourne encore ; je vous dis ce qu'elle rend dès qu'elle finit.
+
+
+
+
+
+
+
+
+
+Pour la pièce d'un versement, ce n'est qu'au moment du versement qu'on peut joindre un justificatif donc on ne devrait pas pouvoir le modifier sur la liste des versements mais seulement pouvoir lire la pièce quand il y en a une ! donc je me dis qu'on ira sur `fiche par versement`, aussi sur le listing avoir une colonne `Justificatif` qui contient le lien s'il y en a
+
+
+
+Maintenant la fiche d'un versement et sa route.
+
+Maintenant le modèle TS et la colonne.
+
+Votre raisonnement tient, et il change le dessin : la pièce se **lit** partout, elle ne se **dépose** qu'au guichet. J'ai écrit la règle dans les deux écrans plutôt que de la laisser dans ma tête.
+
+## Le vrai obstacle n'était pas l'affichage
+
+**Un lien ne porte pas de jeton.** La pièce est servie par l'API derrière un `Bearer` : un `<a href>` pointant droit dessus arrive les mains vides — 401, ou l'écran de connexion de l'API dans un nouvel onglet, sans rien qui explique pourquoi. Le web va donc la chercher avec **son** jeton et la relaie : `/justificatifs/{id}`.
+
+Il ne décide de rien. Pas de contrôle de périmètre, pas de liste de ressources autorisées : l'API répond 403 ou 404, et le `ApiExceptionSubscriber` qui existait déjà les traduit. Et **un seul chemin pour les cinq cibles** — une pièce est une pièce, qu'elle justifie un versement, une dotation ou une demande, et c'est la ligne qui décide de qui la voit. Cinq routes auraient fini par diverger sur exactement cette question.
+
+Le `Content-Disposition` de l'API est relayé tel quel : elle seule connaît le nom d'origine, le disque ne porte qu'un nom aléatoire. Vérifié sur un vrai document : **687 195 octets, `%PDF-1.5`, `inline; filename="LA POLITIQUE DE LENTREPRISE.pdf"`**, `nosniff`, `no-store`.
+
+## La colonne
+
+En lecture seule, avec le libellé saisi ou le nom du fichier à défaut, et un tiret quand il n'y en a pas — jamais un lien mort.
+
+Une **colonne** et non une entrée de menu, parce que la question qu'on pose à cette liste est « lesquels n'en ont pas » : cachée sous « ⋯ », il aurait fallu ouvrir chaque ligne pour y répondre. Elle est tronquée à 176 px avec le nom entier en infobulle — un scan sort de l'appareil avec un nom de quarante caractères, et cette table fait déjà 1 390 px de large.
+
+## La fiche
+
+`/paiements/{id}`, atteinte aussi depuis « Voir le versement » dans le menu de ligne. Elle répond à « que s'est-il passé sur celui-là » : les deux parts, le règlement, l'origine, et le document.
+
+Deux choses s'y voient mieux qu'ailleurs. Un **échec** met en tête ce que la passerelle a répondu — c'est la seule chose qu'on vient lire sur un versement raté, et la chercher dans un tableau de champs fait perdre le planteur qui attend. Un versement **en vol** dit que l'argent a déjà quitté la caisse sans être confirmé.
+
+La carte Justificatif **reste quand il n'y en a pas**, et dit « Aucune pièce n'a été jointe à ce versement ». La faire disparaître laisserait croire qu'un versement n'en porte jamais.
+
+## Ce qui n'est pas fait
+
+Le chemin existe maintenant, et les quatre autres cibles ne demandent qu'une URL composée dans leur contrôleur : le grand livre et les trois listes de demandes n'ont pas encore leur colonne. Les demandes ont en plus une fiche, où la pièce a sa place. Et l'export Excel des versements ne dit pas lesquels en ont un — il ne peut pas embarquer le document, mais il pourrait le signaler. C'est noté dans `A-FAIRE.md`.
+
+Lints PHP et Twig au vert, `tsc` sans erreur, `public/build` reconstruit.
+
+
+J'enchaîne sur la modale du guichet et le versement groupé ?
+
+
+
+
+
+
+
+
+Oui, enchaîne
+
+J'ai une correction à faire avant de continuer.
+
+**Correction** : j'ai dit tout à l'heure que bloquer un poste ne bloquait rien. C'est faux. La garde existe, elle passe par `Site::accepteLaSynchronisation()` — mon `grep` portait sur `StatutSite::BLOQUE` et l'a manquée. `PaiementService` la vérifie à ses trois entrées et `SynchronisationService` à la sienne : rien ne sort d'une caisse bloquée, aucune pesée n'y remonte. Le seul trou réel est `CaisseService::doterSite()`, qui laisse **entrer** de l'argent dans une caisse gelée. J'ai réécrit la note dans `A-FAIRE.md`.
+
+Je reprends sur les deux modales.
+
+Maintenant les deux actions du guichet.
+
+Votre base est utilisée en même temps que je travaille — je vois vos essais (pièce 10 sur le versement 118, pièce 9 sur l'écriture 490). Je vérifie sans toucher à vos lignes.
+
+Les deux modales sont faites et vérifiées en base. J'attends la suite de tests sur le versement groupé pour conclure.
+
+## Le piège que ces deux écrans portaient
+
+`form_start()` pose `enctype="multipart/form-data"` tout seul dès qu'un champ fichier apparaît. **Un `<form>` écrit en JSX, non** — personne ne le pose à votre place. Sans lui, le navigateur n'envoie que le *nom* du fichier, `$request->files` est vide, le dépôt est sauté sans erreur, et l'écran annonce « Versement enregistré » sur un versement sans pièce. Je l'ai mis explicitement sur les deux, avec le pourquoi à côté, et ajouté la ligne au tableau des pièges — le contrôle tient en une ligne de console : `document.querySelector('form').enctype`.
+
+Ces modales n'ont pas de `FormInterface`, donc rien ne validait. `PieceJointeService` a maintenant un `deposer()` qui prend l'`UploadedFile` directement et refuse taille et format **sur les constantes de `Form\Champ\Justificatif`** — une seule borne pour les deux chemins. Ça évite surtout d'envoyer vingt mégaoctets à l'API pour s'en faire refuser : `multipart()` charge le fichier entier en mémoire, deux fois.
+
+**Un seul champ dans les modales**, là où les formulaires en ont trois. Le numéro de pièce comptable est une notion de classeur ; debout au guichet, planteur en face, personne ne l'a. Deux champs de plus sont deux champs qu'on saute.
+
+## Le versement groupé a redemandé quelque chose à l'API
+
+`PaiementLotOutput` ne portait que les `references` — ce qu'on recopie sur un reçu quand un planteur conteste, jamais de quoi désigner les lignes. Il rend maintenant les `ids` des versements **réellement écrits** : une pesée réglée à l'autre guichet pendant qu'on cochait est écartée en silence par le service, et sa ligne n'existe pas.
+
+Le planteur signe **une** décharge pour ses N pesées, et elle se pose sur **chacune**. Le modèle tient une pièce par ligne d'argent sans exception : c'est ce qui permet de dire d'une ligne qu'elle est justifiée sans remonter à un lot. Oui, cela fait N copies du même fichier sur le disque — l'accrocher à la première seulement ferait paraître les autres injustifiées, et c'est le genre de détail qui se découvre devant un contrôleur. C'est noté avec la question du quota.
+
+J'ai ajouté un garde-fou là où le faux silencieux était le plus probable : si des `ids` arrivent vides alors qu'un fichier est en main, le service le **dit** au lieu de boucler sur rien et de rendre « tout va bien ».
+
+## Vérifié, puis effacé
+
+Modale simple : versement 120 de 100 F, pièce 11 dessus, écriture 493 au débit du poste. Groupé : versements 121 et 122 de 12 000 F chacun, **deux pièces** du même document sur deux fichiers distincts, deux écritures chaînées, et le message « 2 pesées réglées : 24 000 F CFA remis au planteur. » Tout remis en place ensuite — identifiants, soldes, et les trois champs dérivés des pesées.
+
+**Votre session en parallèle est intacte.** J'ai vu vos essais arriver pendant que je travaillais — pièce 10 sur le versement 118, pièce 9 sur l'écriture 490 — et je n'ai supprimé que des lignes dont j'avais relevé l'identifiant juste avant de les créer. Vos cinq pièces et leurs fichiers sont toujours là.
+
+La suite `VersementGroupeTest` + `PieceJointeTest` tourne encore ; je vous dis ce qu'elle rend.
+
+**15 tests au vert, 94 assertions** — `VersementGroupeTest` et `PieceJointeTest`. L'ajout des `ids` à `PaiementLotOutput` ne touche rien d'autre : c'est un champ de sortie en plus, aucun appelant n'en dépendait.
+
+Les deux modales du guichet portent un champ justificatif ; l'API rend maintenant les ids d'un versement groupé, et la décharge se pose sur chacune de ses lignes. Vérifié en base pour les deux, puis tout effacé — votre session en parallèle n'a pas été touchée. La suite de tests tourne encore.
+
+Je fais le lien justificatif sur le grand livre et les trois demandes ?
+
+
+
+
+
+
+
+Oui, enchaîne
+
+Je remplace la version recopiée dans la table des versements par la cellule partagée.
+
+
+Les accents sont tombés dans le script. Je les remets.
+
+Maintenant le grand livre, qui n'a pas de type de ligne.
+
+Maintenant les trois contrôleurs de demandes.
+
+Il reste à passer l'URL aux trois écrans de décision.
+
+Je remets les accents dans ces trois blocs.
+
+## La lecture est complète
+
+| Écran | Ce qu'il montre |
+|---|---|
+| Les cinq listes — versements, grand livre, les trois demandes | Une colonne **Justificatif** |
+| La fiche d'un versement | Une carte : nom, taille, numéro de pièce |
+| Les trois écrans de décision | La même carte, **entre les chiffres et le formulaire** |
+| Les trois écrans de correction | La pièce en place, **au-dessus** du champ qui la remplacerait |
+
+L'écran de décision est celui où le papier sert le plus : c'est le seul endroit où quelqu'un d'autre que le demandeur lit la demande, et un état de caisse scanné vaut mieux qu'un motif tapé en trois mots.
+
+Sur la correction, montrer la pièce en place n'est pas décoratif. **Un nouveau dépôt écrase le précédent sans rien demander** — sans ce bloc, on perd le document en croyant en ajouter un second.
+
+## Trois endroits pour toute la règle
+
+`CelluleJustificatif` pour les colonnes, `partials/_justificatif.html.twig` pour les cartes, `GestionController::urlJustificatif()` pour l'adresse. J'ai au passage replié dedans la version que j'avais recopiée à la main dans la table des versements.
+
+Le nom de route se serait sinon recopié dans huit contrôleurs, où un oubli ne lève pas à la compilation : il rend un lien mort sur un écran, et seulement sur celui-là.
+
+## Le cloisonnement, vérifié de bout en bout
+
+Connecté comme **Awa Kone**, opératrice du Pont de Soubré : elle ouvre la pièce de sa demande de solde — 482 Ko de PDF servis entiers — et reçoit **403** sur le bordereau de la recharge de l'entreprise. Le web ne décide rien, c'est `is_granted('VOIR', $cible)` côté API qui tranche, et le proxy relaie le refus.
+
+Au passage, un comportement que vous connaissez sans doute déjà : l'administrateur n'a pas `DEMANDESOLDE_MODIFIER`. Corriger une demande appartient à qui l'a déposée, pas à qui la traite. C'est pour ça que j'ai dû changer de compte pour voir l'écran de correction.
+
+## Le grand livre affiche surtout des tirets
+
+Et c'est exact. Seules deux natures d'écriture portent une pièce — la recharge et la dotation, les deux seuls gestes de caisse qui partent d'un formulaire. Les autres naissent d'un versement ou d'une demande, et c'est **celle-là** qui porte le papier. Votre recharge avec son bordereau ressort bien dans la colonne ; les quinze paiements au-dessus, non.
+
+## Ce qui reste du #4
+
+L'export Excel des versements. Un relevé ne peut pas embarquer le document, mais il pourrait dire lesquels en ont un — utile pour une revue de pièces avant un contrôle. C'est la dernière ligne de la section dans `A-FAIRE.md`.
+
+Lints PHP et Twig au vert, `tsc` sans erreur, `public/build` reconstruit. Les deux dépôts sont entièrement non commités : ça fait maintenant Monolog, le tableau de bord, les filtres de période et tout le #4.
+
+
+
+
+
+
+
+- Dans les colonnes `Justificatif` au lieu de mettre le nom du fichier j'aurais préféré un lien `Voir` avec la couleur primary par exemple !
+- Fait la colonne dans l'export Excel
+
+Ensuite, on attaque le **#9 relevés bancaires** mais d'abord propose moi des exemples
+
+
+
+
+
+
+Quels relevés voulez-vous que je construise en premier ?
+- Concernant le 2 (relevé de compte d'un planteur), est ce que ça contient le `consulter et imprimer des états détaillés des pesées, paiements de produits, règlements de transport, épargnes et retraits, filtrés par période, fournisseur, site ou autre critère utile aux établissements financiers` !
+- Aussi le relevé de compte d'un planteur (tout les mouvements d'un planteur sur une période), on doit avoir la possibilité d'inclure ou pas ses mises en compte
+- L'entreprise aussi peut faire son relevé du genre ce qu'ils ont fait sur une période par exemple pour une visibilité détaillé des mouvements de l'entreprise !, Relevé de compte d'un planteur
+
+
+Avant de construire, votre question mérite une réponse franche.
+
+**Non, le relevé d'un planteur ne couvre pas le #9 à lui seul** — et ce que le #9 demande est en partie déjà là :
+
+| Ce que le #9 demande | Où ça se lit aujourd'hui |
+|---|---|
+| États détaillés des **pesées** | Bilan des pesées — PDF et Excel, filtré par période, planteur, produit, poste |
+| **Paiements de produits** | Bilan des versements, colonne Récolte — mêmes filtres |
+| **Règlements de transport** | Même état, colonne Transport |
+| **Épargnes et retraits** | **Rien.** Aucun export ne les porte |
+| Filtré par période / planteur / poste | Existe sur les deux états ci-dessus |
+
+Le vrai trou du #9 est donc l'**épargne**, et deux documents qui manquent : celui qui met la position entière d'un planteur sur une page, et celui qui donne la vue d'ensemble de l'entreprise. Les trois détails existants restent les annexes.
+
+**Deux points que je tranche, dites-moi si je me trompe.** Un retrait d'épargne apparaîtra **deux fois** dans le relevé d'un planteur — une fois en Règlements, parce que l'argent est bien sorti de la caisse, une fois en Épargne, parce que son compte a bien été débité. Les deux sont vrais, en cacher un rendrait une section fausse ; le document le dira en une ligne, et les sections ne s'additionnent jamais entre elles. Et la case « inclure l'épargne » ne fera pas qu'ajouter une section : elle ajoute la colonne **Retenue** aux livraisons et change le reste à payer, puisqu'une mise en compte est de l'argent qu'on ne verse pas.
+
+Voici à quoi ressemblerait le relevé d'entreprise — le dessin suit.
+
+## Les deux petites demandes sont faites
+
+**« Voir » en couleur primaire.** Le nom du fichier ne servait à rien dans une colonne — on ne choisit pas entre deux documents, il n'y en a qu'un par ligne — et il forçait une troncature à 176 px sur des tables déjà larges. La table des versements est passée de 1 390 à 1 280 px au passage. Le nom reste en **infobulle**, avec le libellé quand il y en a un.
+
+**La colonne dans l'export.** Versements *et* caisses, en dernière position. Elle n'est pas là pour lire le relevé, elle est là pour préparer un contrôle : on filtre sur « non vide » et on sait quelles lignes ont un papier à sortir du classeur. J'ai décodé le vrai classeur produit pour le vérifier — votre versement de 56 F sort avec `SJSJ`, le numéro de pièce que vous aviez saisi, qui passe bien avant le nom du fichier ; les trois autres sortent avec leur nom de fichier ; les lignes sans pièce ont une case vide, jamais « Non ».
+
+Pas de lien dans le classeur : il part chez un tiers, à qui une adresse interne ne servirait de rien.
+
+## Sur le #9
+
+Votre question a changé mon plan, et dans le bon sens. Je partais sur cinq états séparés ; vos deux relevés — un par planteur, un par entreprise — couvrent mieux l'énoncé, parce que **l'énoncé décrit une position, pas une liste**. Les trois états détaillés qui existent déjà (pesées, versements, caisses) restent les annexes qu'on joint quand l'établissement veut le détail ligne à ligne.
+
+Ce qui manque vraiment, c'est l'**épargne** : aucun export ne la porte aujourd'hui, alors que c'est de l'argent que l'entreprise doit à ses planteurs — exactement le genre de passif qu'un établissement financier veut voir avant de prêter.
+
+Pour le relevé d'entreprise, le bloc du bas dit ce qu'aucun des trois états existants ne dit : **les blocs ne s'additionnent pas entre eux**. Un achat n'est pas une sortie de caisse tant qu'il n'est pas réglé, une dotation déplace de l'argent sans en créer, un versement en vol est sorti sans être confirmé. C'est la phrase qui évite qu'un lecteur pressé fasse une addition qui ne veut rien dire.
+
+Les données sont toutes là : `/api/stats/production` pour les achats, `/api/stats/paiements` pour les modes, `/api/stats/caisses` pour les natures, `/api/mouvement_epargnes` pour l'épargne — qui chaîne déjà ses soldes. Côté fabrication, `ExportService::recu()` est déjà un document composite rendu par un gabarit Twig puis Dompdf : les deux relevés suivront le même chemin, sans toucher à `Etat`, qui ne sait traiter qu'une seule ressource.
+
+
+
+
+
+
+
+
+
+On vas mettre en place une page dédié pour les relevés.
+
+Aussi :
+- Je ne pense si le `Règlements par mode` sur le relevé est nécessaire
+- Concernant le libellé `en vol` partout dans l'application, on vas le modifié pour être plus explicite du genre `transfert en cours` !
+
+
+
+
+Je pose les briques du relevé.
+
+Je branche les deux sorties sur `ExportService`.
+
+Maintenant la page et son contrôleur.
+
+
+Le PDF sort, mais deux défauts de mise en page que je corrige : le « F » dans chaque cellule fait passer les nombres à la ligne, et le pied à six totaux se tasse.
+
+Le lecteur PDF du panneau ne se laisse pas capturer. Je récupère le document par le shell pour le regarder vraiment.
+
+Les deux défauts sont corrigés. Je vérifie le relevé d'entreprise de la même façon.
+
+Un vrai bug trouvé : les trois soldes de l'entreprise sortent à zéro. J'ai deviné les noms de champs.
+
+## La page `/releves`
+
+Dans la barre, sous Trésorerie. Deux cartes, une période commune, et pour chacune **Imprimer** et **Excel** — un seul formulaire, deux adresses via `formaction`, donc pas de champ « format » à choisir avant de cliquer.
+
+L'écran ne montre **aucun chiffre**, et c'est délibéré : il ne porte que les paramètres. Un aperçu serait un quatrième endroit où lire les mêmes montants, avec le risque habituel — deux écrans de la même donnée finissent par ne plus filtrer pareil. En pied de page, un lien vers les trois journaux détaillés, qui restent les annexes.
+
+La ventilation par mode est partie, comme vous l'avez demandé. Elle vit déjà au bilan des versements avec ses filtres.
+
+## Ce que la mécanique a demandé
+
+Un relevé n'est pas un `Etat`. Un état décrit **une** ressource et se rend en une table ; `ExportService` pagine, aplatit, additionne. Un relevé croise trois ou quatre ressources et doit les empiler, chacune avec son arithmétique. D'où `Domain/Releve` : `Releve` (le document), `Bloc` (une rangée de chiffres ou un tableau), et **un assembleur par relevé**. Le troisième sera un assembleur de plus — ni gabarit à écrire, ni écriture de classeur à reprendre.
+
+## Lu ligne par ligne dans le vrai PDF
+
+Le lecteur du panneau refuse de se laisser capturer, alors j'ai décompressé les flux du PDF et relu les opérateurs de texte avec leurs positions. C'est ce qui a montré deux défauts de mise en page que je n'aurais pas vus autrement :
+
+- le **« F » dans chaque cellule** faisait passer « 7 200 000 » puis « F » dessous, doublant la hauteur du tableau pour une unité qui ne change jamais. Les cellules n'ont plus d'unité, les tuiles et les pieds la gardent, et elle est dite une fois en pied de document ;
+- le **pied à six totaux** se partageait la largeur à parts égales et se tassait sous le tableau. Il tient maintenant sur une ligne.
+
+Et un vrai bug : **les trois soldes de l'entreprise sortaient à zéro**. J'avais deviné `soldePhysique` ; l'API les nomme `soldeEntreprisePhysique`, parce que les deux niveaux cohabitent dans la même charge utile. Trois zéros sur un document qui annonce une trésorerie, et rien qui lève. Ils sont en plus **nuls pour un opérateur**, à qui la trésorerie globale ne regarde pas — le relevé affiche donc un tiret, zéro se lirait « l'entreprise n'a plus rien ».
+
+## « Transfert en cours »
+
+Partout où ça se voit : les tuiles du tableau de bord, de la file à payer et du bilan des versements, les deux en-têtes de colonne du bilan, la colonne de la file, les textes de détail sous les montants, le bandeau sur la fiche d'un versement, et le total de l'export. Zéro « en vol » restant à l'écran, vérifié page par page.
+
+**Les noms de champs n'ont pas bougé** — `enVol`, `montantenvol`, `versementsEnVol`. Ce sont des clés de l'API : les renommer serait un changement de contrat des deux côtés pour un mot. Le code dit `enVol`, l'écran dit « transfert en cours », et c'est écrit dans le README pour qu'on ne cherche pas la correspondance.
+
+Lints PHP et Twig au vert, `tsc` sans erreur, `public/build` reconstruit. 67 fichiers en attente côté web, rien de commité dans l'un ou l'autre dépôt.
+
+
+
+
+
+
+
+
+
+
+Enlève la couleur de fond des en-têtes de colonnes, puis je veux que le relevé ressemble aux exemple que m'a montré.
+
+Ensuite, vérifie que tout l'application est correcte et cohérent.
+
+
+
+
+
+Maintenant le gabarit, au style des maquettes.
+
+Maintenant les deux assembleurs, avec les totaux sous leurs colonnes.
+
+Il reste à ajouter la ligne de clôture aux deux relevés et à adapter l'écriture du classeur.
+
+Deux vrais manques trouvés par le balayage des modèles. Je les comble.
+
+Pendant que la suite tourne, je revérifie les deux relevés après les derniers changements.
+
+Les relevés sont au style des maquettes et le balayage de cohérence est passé. J'attends la suite de tests pour conclure.
+
+## Le relevé, au style des maquettes
+
+**Plus d'aplat sombre en tête de colonne**, et plus de lignes grisées une sur deux non plus. Un état imprimé se balaie sur trois cents lignes et a besoin de repères forts ; un relevé tient sur une page et se **lit** — le bandeau bleu y pesait plus que les chiffres. Reste ce qui sépare vraiment : un filet sous l'en-tête, un autre au-dessus du total. Vérifié dans le PDF lui-même : les seules couleurs restantes sont des gris de texte et le fond très clair des tuiles.
+
+Trois autres choses sont passées des maquettes au document :
+
+- **les tuiles de tête** ont leur fond clair, le libellé au-dessus de la valeur ;
+- **le total est une ligne du tableau**, sous ses propres colonnes — « 1 livraison » à gauche, puis 18 000 kg, 7 200 000, 0, 5 699 724 chacun sous son en-tête. C'est la différence entre un relevé et un pense-bête : une somme posée à côté oblige à compter les colonnes à l'œil. Ce qui ne correspond à aucune colonne — le transport dans un tableau d'achats, les entrées et sorties qu'on n'additionne pas — vit dans le libellé plutôt que sous une colonne qui ne le porte pas ;
+- **la position de clôture** ferme le document : « Position au 30/11/2026 — 5 699 724 F dus · 0 F en compte ». Elle ne se sépare plus de sa note, qui partait seule sur la page suivante.
+
+Le classeur suit : en-têtes en gras sans aplat, totaux alignés sur leurs colonnes, clôture et note à la fin. Et un bloc vide ne s'y totalise plus — il n'affichait que des en-têtes sans ligne et un total à zéro qui se lisait comme un résultat.
+
+## Le balayage de cohérence
+
+Cinq contrôles mécaniques sur l'application entière. Ce qui est propre :
+
+| Contrôle | Résultat |
+|---|---|
+| Références de route | **0 morte** — 93 routes citées, 114 déclarées |
+| Chaînes de droit | **0 inconnue** de la table — 53 attributs interrogés, tous valides |
+| Filtres relayés mais inatteignables | **aucun** — le bilan des pesées propose bien ses douze |
+| Invariants SQL | **les cinq tiennent** : deux parts, deux livres chaînés, montants positifs, une cible par pièce |
+
+**Trois champs servis par l'API et absents des modèles TypeScript** — donc inatteignables depuis React : `prixModifiable` et `transportModifiable` sur une pesée, `nomAvecCode` sur un planteur. Déclarés. C'est la quatrième fois que ce contrôle trouve quelque chose ; il mérite d'être refait à chaque fois qu'un groupe `read:` bouge.
+
+**Sept droits que le web n'interroge jamais**, à savoir sans être à corriger. Les cinq `*_JOINDRE` : le champ justificatif s'affiche sans vérifier le droit de déposer — ça tient parce que tous les rôles qui atteignent ces formulaires l'ont, **par coïncidence de la table et non par construction**. `MOUVEMENTEPARGNE_VOIR` : aucun écran ne le teste, alors que le relevé lit le livre d'épargne — même coïncidence, mais si elle cesse le document échoue bruyamment, ce qui est le bon comportement. Et `USER_SUPPRIMER`, un droit sans geste. C'est écrit dans `A-FAIRE.md`.
+
+Lints et `tsc` au vert, `public/build` reconstruit. La suite de tests de l'API tourne encore — elle prend une vingtaine de minutes — et je vous dis ce qu'elle rend. 68 fichiers en attente côté web, 39 côté API, rien de commité.
+
+**Suite complète au vert : 253 tests, 1 531 assertions**, 8 ignorés — les mêmes qu'avant. 21 minutes.
+
+Rien n'a bougé côté API ce tour-ci à part `A-FAIRE.md`, donc le résultat était attendu, mais il confirme que le balayage de cohérence n'a rien cassé en passant.
+
+Les deux relevés sont donc finis et vérifiés dans le vrai PDF, le balayage est propre sur les cinq contrôles, et les trois champs manquants des modèles TypeScript sont déclarés. Les deux dépôts attendent toujours d'être commités — 68 fichiers côté web, 39 côté API.
+
+
+
+
+
+
+
+
+Dans les exports de relevé, met le FCFA `F` là où c'est de l'argent ! fais le aussi pour les autres exports.
+
+Ensuite, on vas améliorer les autres exports car il ont été mal fait, mais d'abord montre moi un exemple de ce que tu compte faire pour chacune d'entre eux.
+
+
+
+
+
+Maintenant les trois états, qui n'ont d'unité nulle part.
+
+Un défaut de fond trouvé en vérifiant : **les zéros disparaissent des exports**.
+
+Le `F` est en place. Voici ce que je propose pour chacun des trois états — trois dessins suivent.
+
+## Le F est en place
+
+Partout où c'est de l'argent : les cellules des deux relevés, et les trois états qui n'avaient d'unité nulle part. Les poids portent leur `kg`, les compteurs — nombre de pesées, nombre d'écritures — n'ont rien, parce qu'ils ne se paient pas.
+
+**Dans les classeurs, c'est un format de nombre, pas du texte collé derrière.** La case contient `7200000` et affiche « 7 200 000 F » : elle s'additionne, se trie et se filtre encore. Écrire la chaîne aurait fait d'un classeur un document mort. C'est la différence avec le relevé, qui sort du texte — lui se lit, il ne se calcule pas.
+
+J'ai aussi renommé « Prix unitaire » en « Prix au kilo », comme dans le relevé : c'est ce que la colonne contient.
+
+**Deux défauts trouvés en vérifiant ça**, et le premier est vilain : `fromArray` comparait chaque valeur à `null` sans type et **sautait donc les zéros**. « Transport 0 » sortait en case vide dans tous les classeurs — ce qui se lit « sans objet » là où le chiffre dit « rien n'a été payé sur ce trajet ». Un classeur à trous reste un classeur valide, et personne ne compte les cases manquantes. Corrigé et vérifié : la case porte maintenant `0` et affiche « 0 F ».
+
+## Ce que je propose pour les trois états
+
+**Le bilan des pesées** a vingt colonnes en paysage et chaque pesée prend trois lignes physiques : « T- » puis « 4503 », « Pont de » puis « Soubré ». Ce n'est pas un tableau, c'est un vidage de base. Je garde les sept colonnes qu'on lit vraiment et je mets l'acheminement — opération, transporteur, chauffeur, véhicule, provenance, destination — en **ligne de détail sous chaque pesée**, en petit. Le classeur, lui, garde ses vingt colonnes : il n'a pas de problème de largeur.
+
+**Le bilan des versements** devient **groupé par mode**, avec un sous-total par groupe. C'est la question qu'on pose à ce document : ce qui est sorti du tiroir, du flotte et de la banque ne se mélange pas, et seuls les chèques se rapprochent d'un relevé bancaire. Les transferts en cours se comptent dans le sous-total de leur mode plutôt qu'au fond du document.
+
+**Le grand livre est celui qui va le plus loin, parce qu'il promet quelque chose qu'il ne tient pas.** Son propre commentaire dit : « pour une même caisse, le solde après d'une écriture doit être le solde avant de la suivante — un relevé imprimé est l'endroit où un écart se voit ». Or il sort en `createdAt DESC`, **toutes caisses mélangées** : deux lignes qui se suivent n'appartiennent presque jamais au même compte, et quand c'est le cas elles sont à l'envers. La propriété est invérifiable aujourd'hui. Je le coupe en **une section par caisse**, du plus ancien au plus récent, avec un report de début et un solde de fin — et entrée/sortie en deux colonnes plutôt qu'un montant toujours positif plus une colonne « Sens ».
+
+Les trois gardent le même socle `Etat` ; ce qui change est la façon dont `ExportService` regroupe et le gabarit rend. Lints au vert, `public/build` reconstruit, rien de commité.
+
+
+
+
+
+
+
+
+Oui, fais-les
+
+Maintenant le grand livre, celui qui promettait un chaînage invérifiable.
+
+Maintenant le gabarit des états, qui doit rendre les sections.
+
+Maintenant les versements, groupés par mode.
+
+Un défaut dans le sous-total : le libellé mange une colonne de montant. Je corrige le calcul.
+
+## Le document et le classeur ne sont plus le même tableau
+
+C'était la racine du problème : vingt colonnes tiennent dans un tableur, pas sur une feuille. `Domain/Export/Impression` sépare maintenant les deux — le PDF n'imprime que les colonnes qu'on lit, met le reste en ligne de détail, et se coupe en sections quand l'état le demande. Le classeur, lui, garde tout.
+
+**Le bilan des pesées** : sept colonnes, l'acheminement sous chaque ligne. Les sept pesées de novembre tiennent maintenant sur **une page** là où il en fallait trois — chaque pesée prenait trois lignes physiques, « T- » puis « 4503 », « Pont de » puis « Soubré ». Le classeur garde ses vingt et une colonnes, avec un « Reste à payer » en plus.
+
+**Les versements** sont groupés par mode, chaque groupe avec son sous-total : Mobile money 12 000 000 F dont 3 000 000 en transfert, Espèces 1 500 276 F. Le poste, la pesée, le numéro, le chèque, la pièce et le message d'erreur descendent en détail — quatre colonnes dont trois sont vides la plupart du temps coûtaient la largeur de toutes les lignes pour en servir quelques-unes.
+
+**Le grand livre chaîne enfin.** Une section par compte et par caisse, report d'ouverture, et entrée/sortie en deux colonnes au lieu d'un montant plus un « Sens » :
+
+```
+Entreprise — caisse physique
+Report au début de la période                                   0 F
+24/11  Recharge du solde de l'entreprise    12 000 000 F   12 000 000 F
+24/11  Montant attribué à un pont bascule    2 000 000 F   10 000 000 F
+24/11  Montant attribué à un pont bascule    3 000 000 F    7 000 000 F
+25/11  Recharge du solde de l'entreprise     2 500 000 F    9 500 000 F
+25/11  Recharge du solde de l'entreprise         3 500 F    9 503 500 F
+5 écritures                 14 503 500 F    5 000 000 F    9 503 500 F
+```
+
+Chaque solde est le précédent plus l'entrée, moins la sortie. **C'est ce que l'état promettait depuis toujours dans son propre commentaire, et qu'il ne tenait pas** : il sortait en `createdAt DESC`, toutes caisses mélangées, donc deux lignes qui se suivent n'étaient presque jamais du même compte, et quand elles l'étaient, elles étaient à l'envers.
+
+## Deux défauts silencieux trouvés en vérifiant
+
+Le libellé d'un total occupait ses colonnes **par soustraction** — « nombre de colonnes moins nombre de valeurs ». Faux dès qu'une colonne du milieu ne totalise rien : sur les versements, le libellé mangeait la colonne Récolte et ses **onze millions disparaissaient du sous-total**. Le calcul part maintenant de la première colonne réellement totalisée, et c'est fait en PHP — Twig ne sait pas garder une variable au travers d'une boucle, le piège est déjà au tableau.
+
+Et le `fromArray` du tour précédent, qui sautait les zéros : corrigé et revérifié, la case porte `0` et affiche « 0 F ».
+
+## Le F
+
+Partout où c'est de l'argent, dans les cinq documents. Dans les classeurs c'est un **format de nombre**, pas du texte : la case contient `7200000` et affiche « 7 200 000 F », donc elle s'additionne encore. J'ai aussi unifié « F CFA » en « F » — les cases disaient « F » et les totaux « F CFA » dans le même document, ce qui fait douter qu'il s'agisse de la même unité. Elle est dite une fois en toutes lettres, en pied.
+
+Huit documents sortent, lints et `tsc` au vert, `public/build` reconstruit. Rien n'est commité : 71 fichiers côté web, 39 côté API.

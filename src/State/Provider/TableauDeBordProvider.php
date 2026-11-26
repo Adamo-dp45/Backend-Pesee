@@ -5,9 +5,15 @@ namespace App\State\Provider;
 use ApiPlatform\Metadata\Operation as ApiOperation;
 use ApiPlatform\State\ProviderInterface;
 use App\Domain\Enum\Role;
+use App\Domain\Enum\StatutDemande;
 use App\Entity\Operation;
 use App\Entity\Output\TableauDeBordOutput;
+use App\Repository\CompteEpargneRepository;
+use App\Repository\DemandePrelevementRepository;
+use App\Repository\DemandeRetraitRepository;
+use App\Repository\DemandeSoldeRepository;
 use App\Repository\OperationRepository;
+use App\Repository\PaiementRepository;
 use App\Repository\SiteRepository;
 use App\Repository\SynchronisationLotRepository;
 use App\Security\Perimetre;
@@ -32,6 +38,11 @@ final class TableauDeBordProvider implements ProviderInterface
         private readonly OperationRepository $operations,
         private readonly SiteRepository $sites,
         private readonly SynchronisationLotRepository $lots,
+        private readonly PaiementRepository $paiements,
+        private readonly CompteEpargneRepository $epargnes,
+        private readonly DemandeSoldeRepository $demandesSolde,
+        private readonly DemandePrelevementRepository $demandesPrelevement,
+        private readonly DemandeRetraitRepository $demandesRetrait,
         private readonly RequestStack $requetes
     )
     {
@@ -63,10 +74,59 @@ final class TableauDeBordProvider implements ProviderInterface
         $sortie->parProduit = $this->operations->parProduit($siteIds, $periode->du, $periode->au);
 
         $this->remplirSites($sortie, $siteIds, $periode);
+        $this->remplirCreance($sortie, $siteIds);
+        $this->remplirDemandes($sortie, $siteIds);
 
         $sortie->dernieresPesees = array_map($this->resumerPesee(...), $this->operations->dernieres($siteIds, 10));
 
         return $sortie;
+    }
+
+    /*
+        - LA FILE DU GUICHET, SANS AUCUN FILTRE : la créance ne connaît pas de période. Une pesée
+          de mars non réglée est due aujourd'hui, et 'totaux.montantRestant' — qui s'arrête au mois
+          affiché — ne la voit pas. Les deux chiffres cohabitent désormais sur l'écran, nommés à
+          part, parce qu'ils répondent à deux questions : « combien ce mois-ci » et « combien en
+          tout ».
+
+        - LA MÊME MÉTHODE QUE L'ÉCRAN « À PAYER », appelée avec un tableau de critères vide. Écrire
+          ici une requête qui lui ressemble donnerait deux créances, et c'est toujours celle qu'on
+          ne regarde pas qui est juste.
+
+        @param list<int> $siteIds
+    */
+    private function remplirCreance(TableauDeBordOutput $sortie, array $siteIds): void
+    {
+        $file = $this->operations->totauxAPayer($siteIds, []);
+
+        $sortie->creance = [
+            'total' => $file['resteProduit'] + $file['resteTransport'],
+            'produit' => $file['resteProduit'],
+            'transport' => $file['resteTransport'],
+            'nbPesees' => $file['nbPesees'],
+            'nbSansPrix' => $file['nbSansPrix'],
+        ];
+    }
+
+    /*
+        - TROIS COMPTEURS, TROIS ÉCRANS. Ils ne s'additionnent que pour la pastille ; le détail est
+          ce qui dit où aller. Un opérateur les voit aussi : ce sont ses demandes à lui qui dorment,
+          et savoir qu'elles n'ont pas été tranchées lui évite de redemander.
+
+        @param list<int> $siteIds
+    */
+    private function remplirDemandes(TableauDeBordOutput $sortie, array $siteIds): void
+    {
+        $solde = $this->demandesSolde->compterParStatut($siteIds, StatutDemande::EN_ATTENTE);
+        $prelevement = $this->demandesPrelevement->compterParStatut($siteIds, StatutDemande::EN_ATTENTE);
+        $retrait = $this->demandesRetrait->compterParStatut($siteIds, StatutDemande::EN_ATTENTE);
+
+        $sortie->demandes = [
+            'solde' => $solde,
+            'prelevement' => $prelevement,
+            'retrait' => $retrait,
+            'total' => $solde + $prelevement + $retrait,
+        ];
     }
 
     /** @param list<int> $siteIds */
@@ -79,13 +139,18 @@ final class TableauDeBordProvider implements ProviderInterface
         }
 
         $soldeSites = 0;
+        $immobiliseTotal = 0;
         $lignes = [];
         $silencieux = [];
         $maintenant = new \DateTimeImmutable();
 
+        /* Une requête groupée pour tous les postes, et non une par ligne : c'est la même source que l'écran Trésorerie. */
+        $immobiliseParSite = $this->paiements->montantsImmobilises($siteIds);
+
         foreach($this->sites->findBy(['id' => $siteIds, 'deletedAt' => null]) as $site) {
             $id = (int) $site->getId();
             $soldeSites += $site->getSolde();
+            $immobiliseTotal += $immobiliseParSite[$id] ?? 0;
 
             /* Un poste sans pesée sur la période reste dans la liste, à zéro : son absence se remarque, sa disparition non. */
             $lignes[] = ($production[$id] ?? [
@@ -125,12 +190,18 @@ final class TableauDeBordProvider implements ProviderInterface
         /*
             - Même règle que 'CaisseProvider' : un opérateur tient la caisse d'un poste, la trésorerie globale de l'entreprise ne le regarde pas.
             - 'null' et non zéro, qui se lirait « l'entreprise n'a plus rien ». Et ça se filtre ICI, pas dans le gabarit : sinon la valeur voyage quand même dans la réponse JSON, où elle se lit en deux clics.
+            - L'ÉPARGNE DUE SUIT LA MÊME PORTE : c'est une dette de l'entreprise envers les planteurs, pas un chiffre de poste, et elle se lit sur le compte de l'entreprise entière.
         */
+        $operateur = $this->perimetre->utilisateur()?->aLeRole(Role::OPERATEUR) ?? false;
+        $entreprise = $operateur ? null : $this->perimetre->entreprise();
+
         $sortie->soldes = [
-            'entreprise' => $this->perimetre->utilisateur()?->aLeRole(Role::OPERATEUR)
-                ? null
-                : ($this->perimetre->entreprise()?->getSolde() ?? 0),
+            'entreprise' => $operateur ? null : ($entreprise?->getSolde() ?? 0),
             'sites' => $soldeSites,
+            'immobilise' => $immobiliseTotal,
+            /* Ce qu'on peut encore engager aujourd'hui. L'épargne due n'en est PAS retranchée : elle n'est dans aucune caisse, les billets sont bien là, et la soustraire les ferait disparaître deux fois. */
+            'disponible' => max(0, $soldeSites - $immobiliseTotal),
+            'epargneDue' => $operateur ? null : ($entreprise === null ? 0 : $this->epargnes->totalDu($entreprise)),
         ];
     }
 
